@@ -1,0 +1,193 @@
+<!-- textimage.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文本图像互转 - AI模型集成平台</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/">主页</a>
+        <a href="/text">文本对话</a>
+        <a href="/textaudio">文本语音互转</a>
+        <a href="/textimage" class="active">文本图像互转</a>
+    </nav>
+
+    <div class="split-container">
+        <div class="left-panel">
+            <textarea id="inputText" placeholder="请输入要生成图像的文本描述..." class="text-input"></textarea>
+        </div>
+        <div class="right-panel">
+            <div class="preview-area">
+                <div id="imagePreview" style="width: 100%; text-align: center;">
+                    <img id="generatedImage" style="max-width: 100%; max-height: 400px; display: none;">
+                    <div id="placeholderText" style="color: #999; padding: 2rem;">点击或拖拽上传图片</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="action-buttons">
+        <button id="textToImage" class="action-btn primary">文本转图像→</button>
+        <button id="imageToText" class="action-btn secondary">←图像转文本</button>
+    </div>
+
+    <!-- 隐藏的文件上传输入框 -->
+    <input type="file" id="imageFile" accept="image/*" style="display: none;">
+
+    <script src="/script.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputText = document.getElementById('inputText');
+            const imageFile = document.getElementById('imageFile');
+            const generatedImage = document.getElementById('generatedImage');
+            const placeholderText = document.getElementById('placeholderText');
+            const rightPanel = document.querySelector('.right-panel');
+            
+            // 点击预览区域上传文件
+            rightPanel.addEventListener('click', () => imageFile.click());
+            
+            // 拖拽上传到预览区域
+            rightPanel.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                rightPanel.style.backgroundColor = '#e3f2fd';
+            });
+            
+            rightPanel.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                rightPanel.style.backgroundColor = '#f9f9f9';
+            });
+            
+            rightPanel.addEventListener('drop', (e) => {
+                e.preventDefault();
+                rightPanel.style.backgroundColor = '#f9f9f9';
+                const file = e.dataTransfer.files[0];
+                if (file && file.type.startsWith('image/')) {
+                    handleImageFile(file);
+                } else {
+                    alert('请上传图片文件');
+                }
+            });
+            
+            imageFile.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) handleImageFile(file);
+            });
+            
+            function handleImageFile(file) {
+                const url = URL.createObjectURL(file);
+                generatedImage.src = url;
+                generatedImage.style.display = 'inline-block';
+                placeholderText.style.display = 'none';
+            }
+            
+            // 文本转图像
+            document.getElementById('textToImage').addEventListener('click', async function() {
+                const text = inputText.value.trim();
+                if (!text) {
+                    alert('请输入文本描述');
+                    return;
+                }
+                
+                // 显示加载状态
+                const originalText = this.textContent;
+                this.textContent = '生成中...';
+                this.disabled = true;
+                
+                try {
+                    const response = await fetch('/api/text-to-image', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: text})
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || '生成失败');
+                    }
+                    
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    
+                    // 显示生成的图像
+                    generatedImage.src = url;
+                    generatedImage.style.display = 'inline-block';
+                    placeholderText.style.display = 'none';
+                    
+                } catch (error) {
+                    alert('生成失败：' + error.message);
+                } finally {
+                    this.textContent = originalText;
+                    this.disabled = false;
+                }
+            });
+            
+            // 图像转文本
+            document.getElementById('imageToText').addEventListener('click', async function() {
+                // 获取当前显示的图像
+                if (!generatedImage.src) {
+                    alert('请先上传或生成图像');
+                    return;
+                }
+                
+                // 显示加载状态
+                const originalText = this.textContent;
+                this.textContent = '识别中...';
+                this.disabled = true;
+                
+                try {
+                    // 从src获取blob
+                    let imageBlob;
+                    if (generatedImage.src.startsWith('blob:')) {
+                        const response = await fetch(generatedImage.src);
+                        imageBlob = await response.blob();
+                    } else {
+                        // 如果是本地文件，需要通过canvas转换
+                        const canvas = document.createElement('canvas');
+                        canvas.width = generatedImage.naturalWidth;
+                        canvas.height = generatedImage.naturalHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(generatedImage, 0, 0);
+                        
+                        const response = await fetch(canvas.toDataURL('image/png'));
+                        imageBlob = await response.blob();
+                    }
+                    
+                    const formData = new FormData();
+                    formData.append('image', imageBlob, 'image.png');
+                    
+                    const response = await fetch('/api/image-to-text', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || '识别失败');
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // 将识别结果填入文本框
+                    inputText.value = data.text;
+                    
+                } catch (error) {
+                    alert('识别失败：' + error.message);
+                } finally {
+                    this.textContent = originalText;
+                    this.disabled = false;
+                }
+            });
+
+            // 清理对象URL避免内存泄漏
+            window.addEventListener('beforeunload', function() {
+                if (generatedImage.src && generatedImage.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(generatedImage.src);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

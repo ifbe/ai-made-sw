@@ -1,0 +1,143 @@
+<!-- text.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文本对话 - AI模型集成平台</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/">主页</a>
+        <a href="/text" class="active">文本对话</a>
+        <a href="/textaudio">文本语音互转</a>
+        <a href="/textimage">文本图像互转</a>
+    </nav>
+
+    <div class="chat-container">
+        <!-- 对话历史区域 - 占60%高度 -->
+        <div class="chat-history" id="chatHistory"></div>
+        
+        <!-- 底部区域 - 占40%高度，分为三部分 -->
+        <div class="bottom-area">
+            <!-- 左边：我的输入 -->
+            <div class="input-section">
+                <textarea id="inputText" placeholder="请输入您的消息..." class="chat-input"></textarea>
+            </div>
+            
+            <!-- 中间：按钮区域 -->
+            <div class="chat-buttons">
+                <button id="textToText" class="chat-btn primary">发送消息</button>
+                <button id="clearChat" class="chat-btn secondary">清空对话</button>
+            </div>
+            
+            <!-- 右边：AI输出预览 -->
+            <div class="output-section">
+                <div class="output-header">AI回复预览</div>
+                <div class="output-content" id="responseContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/script.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputText = document.getElementById('inputText');
+            const responseContent = document.getElementById('responseContent');
+            const chatHistory = document.getElementById('chatHistory');
+            
+            // 处理AI回复，将思考部分标灰
+            function formatAIResponse(text) {
+                if (!text) return '';
+                
+                // 处理 "Thinking..." 到 "...done thinking." 之间的内容
+                const thinkPattern = /Thinking\.\.\.([\s\S]*?)\.\.\.done thinking\./gi;
+                let formattedText = text.replace(thinkPattern, function(match, thinkContent) {
+                    return '<div class="ai-think">💭 Thinking...' + thinkContent + '...done thinking.</div>';
+                });
+                
+                // 处理其他可能的思考标记
+                formattedText = formattedText.replace(/<think>([\s\S]*?)<\/think>/gi, '<div class="ai-think">💭 $1</div>');
+                formattedText = formattedText.replace(/```think([\s\S]*?)```/gi, '<div class="ai-think">💭 $1</div>');
+                
+                // 将剩余内容按段落处理
+                const paragraphs = formattedText.split('\n\n');
+                const processedParagraphs = paragraphs.map(p => {
+                    if (p.trim() && !p.includes('ai-think')) {
+                        return `<p>${p}</p>`;
+                    }
+                    return p;
+                });
+                
+                return processedParagraphs.join('\n');
+            }
+            
+            document.getElementById('textToText').addEventListener('click', async function() {
+                const text = inputText.value.trim();
+                if (!text) return;
+                
+                // 添加用户消息到历史
+                const userMsg = document.createElement('div');
+                userMsg.className = 'chat-message user-message';
+                userMsg.textContent = text;
+                chatHistory.appendChild(userMsg);
+                
+                responseContent.innerHTML = '<div class="thinking-indicator">🤔 正在思考...</div>';
+                
+                // 禁用按钮防止重复点击
+                this.disabled = true;
+                
+                try {
+                    const response = await fetch('/api/text-chat', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({message: text})
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // 格式化AI回复
+                    const formattedResponse = formatAIResponse(data.response);
+                    
+                    // 显示在右侧预览区
+                    responseContent.innerHTML = formattedResponse;
+                    
+                    // 添加AI回复到历史
+                    const aiMsg = document.createElement('div');
+                    aiMsg.className = 'chat-message ai-message';
+                    aiMsg.innerHTML = formattedResponse;
+                    chatHistory.appendChild(aiMsg);
+                    
+                    // 滚动到底部
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                    
+                } catch (error) {
+                    responseContent.innerHTML = '❌ 请求失败：' + error.message;
+                } finally {
+                    this.disabled = false;
+                }
+                
+                inputText.value = '';
+            });
+            
+            document.getElementById('clearChat').addEventListener('click', function() {
+                chatHistory.innerHTML = '';
+                responseContent.innerHTML = '';
+            });
+            
+            // 支持回车发送
+            inputText.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    document.getElementById('textToText').click();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

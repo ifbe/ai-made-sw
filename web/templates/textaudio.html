@@ -1,0 +1,185 @@
+<!-- textaudio.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文本语音互转 - AI模型集成平台</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/">主页</a>
+        <a href="/text">文本对话</a>
+        <a href="/textaudio" class="active">文本语音互转</a>
+        <a href="/textimage">文本图像互转</a>
+    </nav>
+
+    <div class="split-container">
+        <div class="left-panel">
+            <textarea id="inputText" placeholder="请输入要转换的文本..." class="text-input"></textarea>
+        </div>
+        <div class="right-panel">
+            <div class="preview-area">
+                <div id="audioPreview" style="width: 100%;">
+                    <audio id="audioPlayer" controls style="width: 100%;">
+                        您的浏览器不支持音频播放
+                    </audio>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="action-buttons">
+        <button id="textToAudio" class="action-btn primary">文本转语音→</button>
+        <button id="audioToText" class="action-btn secondary">←语音转文本</button>
+    </div>
+
+    <!-- 隐藏的文件上传输入框 -->
+    <input type="file" id="audioFile" accept="audio/*" style="display: none;">
+
+    <script src="/script.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputText = document.getElementById('inputText');
+            const audioFile = document.getElementById('audioFile');
+            const audioPlayer = document.getElementById('audioPlayer');
+            
+            // 点击播放器区域上传文件
+            document.querySelector('.right-panel').addEventListener('click', () => audioFile.click());
+            
+            // 拖拽上传到播放器区域
+            document.querySelector('.right-panel').addEventListener('dragover', (e) => {
+                e.preventDefault();
+                document.querySelector('.right-panel').style.backgroundColor = '#e3f2fd';
+            });
+            
+            document.querySelector('.right-panel').addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                document.querySelector('.right-panel').style.backgroundColor = '#f9f9f9';
+            });
+            
+            document.querySelector('.right-panel').addEventListener('drop', (e) => {
+                e.preventDefault();
+                document.querySelector('.right-panel').style.backgroundColor = '#f9f9f9';
+                const file = e.dataTransfer.files[0];
+                if (file && file.type.startsWith('audio/')) {
+                    handleAudioFile(file);
+                } else {
+                    alert('请上传音频文件');
+                }
+            });
+            
+            audioFile.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) handleAudioFile(file);
+            });
+            
+            function handleAudioFile(file) {
+                const url = URL.createObjectURL(file);
+                audioPlayer.src = url;
+                audioPlayer.load();
+                // 可选：自动播放
+                // audioPlayer.play().catch(e => console.log('自动播放失败'));
+            }
+            
+            // 文本转语音
+            document.getElementById('textToAudio').addEventListener('click', async function() {
+                const text = inputText.value.trim();
+                if (!text) {
+                    alert('请输入文本');
+                    return;
+                }
+                
+                // 显示加载状态
+                const originalText = this.textContent;
+                this.textContent = '生成中...';
+                this.disabled = true;
+                
+                try {
+                    const response = await fetch('/api/text-to-audio', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: text})
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || '生成失败');
+                    }
+                    
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    
+                    // 加载到播放器
+                    audioPlayer.src = url;
+                    audioPlayer.load();
+                    
+                } catch (error) {
+                    alert('生成失败：' + error.message);
+                } finally {
+                    this.textContent = originalText;
+                    this.disabled = false;
+                }
+            });
+            
+            // 语音转文本
+            document.getElementById('audioToText').addEventListener('click', async function() {
+                // 获取当前播放器的音频
+                if (!audioPlayer.src) {
+                    alert('请先上传或生成音频文件');
+                    return;
+                }
+                
+                // 从blob URL获取文件
+                let audioBlob;
+                if (audioPlayer.src.startsWith('blob:')) {
+                    const response = await fetch(audioPlayer.src);
+                    audioBlob = await response.blob();
+                } else {
+                    alert('请先上传或生成音频文件');
+                    return;
+                }
+                
+                // 显示加载状态
+                const originalText = this.textContent;
+                this.textContent = '识别中...';
+                this.disabled = true;
+                
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'audio.wav');
+                
+                try {
+                    const response = await fetch('/api/audio-to-text', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || '识别失败');
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // 将识别结果填入文本框
+                    inputText.value = data.text;
+                    
+                } catch (error) {
+                    alert('识别失败：' + error.message);
+                } finally {
+                    this.textContent = originalText;
+                    this.disabled = false;
+                }
+            });
+
+            // 清理对象URL避免内存泄漏
+            window.addEventListener('beforeunload', function() {
+                if (audioPlayer.src && audioPlayer.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(audioPlayer.src);
+                }
+            });
+        });
+    </script>
+</body>
+</html>
