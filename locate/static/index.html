@@ -1,0 +1,1120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>旅迹 · 实时队友定位</title>
+    <!-- 使用 Leaflet 地图库 -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- 引入 CryptoJS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+    <style>
+        /* ========== 全局样式 ========== */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+            background: #1a2a32;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ========== 登录页面 ========== */
+        #loginPage {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-container {
+            width: 90%;
+            max-width: 360px;
+            background: rgba(32, 45, 55, 0.95);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 32px;
+            padding: 32px 24px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            color: white;
+            text-align: center;
+        }
+
+        .login-container h2 {
+            font-weight: 400;
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+
+        .login-container .sub {
+            color: #b0d4f0;
+            margin-bottom: 32px;
+            font-size: 14px;
+            border-bottom: 1px dashed rgba(255,255,255,0.2);
+            padding-bottom: 16px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .input-group label {
+            display: block;
+            font-size: 13px;
+            opacity: 0.7;
+            margin-bottom: 4px;
+        }
+
+        .input-group input {
+            width: 100%;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 60px;
+            padding: 14px 18px;
+            font-size: 16px;
+            color: white;
+            outline: none;
+        }
+
+        .input-group input:focus {
+            border-color: #6ab0ff;
+            background: rgba(0,0,0,0.5);
+        }
+
+        .login-btn {
+            width: 100%;
+            background: #3b6eff;
+            border: none;
+            border-radius: 60px;
+            padding: 16px;
+            font-size: 18px;
+            font-weight: 600;
+            color: white;
+            cursor: pointer;
+            box-shadow: 0 8px 20px rgba(59,110,255,0.4);
+            margin-top: 12px;
+        }
+
+        .login-btn:hover {
+            background: #2952d0;
+        }
+
+        .login-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .error-msg {
+            color: #ffa07a;
+            font-size: 14px;
+            margin-top: 16px;
+            min-height: 20px;
+        }
+
+        /* ========== 地图页面 ========== */
+        #mapPage {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            display: none;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+            background: #cad2d3;
+            z-index: 1;
+        }
+
+        /* 顶部状态栏 */
+        .status-bar {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            right: 16px;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(10px);
+            border-radius: 40px;
+            padding: 12px 20px;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 10;
+            border: 1px solid rgba(255,255,255,0.15);
+            font-size: 15px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        .online-count {
+            background: #2ecc71;
+            padding: 5px 12px;
+            border-radius: 30px;
+            font-weight: 600;
+            color: black;
+            font-size: 14px;
+        }
+
+        .logout-btn {
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 18px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .logout-btn:hover {
+            background: rgba(255,80,80,0.7);
+        }
+
+        /* 地图标记样式 */
+        .leaflet-div-icon {
+            background: transparent;
+            border: none;
+        }
+
+        .custom-marker {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            filter: drop-shadow(0 4px 4px rgba(0,0,0,0.5));
+        }
+
+        .marker-label {
+            background: var(--bg-color, #1e6eb5);
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 20px;
+            white-space: nowrap;
+            border: 2px solid white;
+            margin-bottom: 4px;
+            box-shadow: 0 2px 4px black;
+        }
+
+        .marker-arrow {
+            font-size: 32px;
+            line-height: 1;
+            color: var(--arrow-color, #7ec8ff);
+            text-shadow: 0 0 8px #000;
+            transform-origin: center;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* 底部控件容器 */
+        .bottom-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            padding: 0 20px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .bottom-left, .bottom-center, .bottom-right {
+            pointer-events: auto;
+        }
+
+        .bottom-center {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .bottom-right {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        /* 调试按钮 */
+        .debug-btn {
+            background: rgba(0,0,0,0.5);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid #666;
+            backdrop-filter: blur(4px);
+        }
+
+        /* 连接状态 */
+        .connection-status {
+            background: rgba(0,0,0,0.5);
+            color: #ffd700;
+            padding: 8px 14px;
+            border-radius: 30px;
+            font-size: 13px;
+            backdrop-filter: blur(4px);
+            text-align: center;
+        }
+
+        .connection-status.connected {
+            color: #2ecc71;
+        }
+
+        .connection-status.disconnected {
+            color: #e74c3c;
+        }
+
+        /* 重连按钮容器 */
+        .reconnect-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .reconnect-btn {
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 13px;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+            display: none;
+        }
+
+        .reconnect-btn.show {
+            display: block;
+        }
+
+        .reconnect-btn.auto {
+            background: rgba(46, 204, 113, 0.8);
+            border: 1px solid #2ecc71;
+            color: white;
+        }
+
+        .reconnect-btn.manual {
+            background: rgba(255,165,0,0.8);
+            border: 1px solid orange;
+            color: white;
+        }
+
+        /* 图例 */
+        .legend {
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            backdrop-filter: blur(4px);
+            border: 1px solid #444;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 6px 0;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            border-radius: 4px;
+        }
+
+        .legend-note {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #aaa;
+            text-align: center;
+        }
+
+        /* 调试面板 */
+        .debug-panel {
+            position: absolute;
+            bottom: 100px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            color: #0f0;
+            font-family: monospace;
+            font-size: 10px;
+            padding: 10px;
+            border-radius: 8px;
+            max-height: 150px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+            border: 1px solid #0f0;
+            line-height: 1.4;
+        }
+
+        .debug-panel.show {
+            display: block;
+        }
+
+        /* 加载动画 */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- 登录界面 -->
+    <div id="loginPage">
+        <div class="login-container">
+            <h2>🚐 旅迹·定位</h2>
+            <div class="sub">安全认证 · 挑战响应</div>
+            <div class="input-group">
+                <label>👤 账号</label>
+                <input type="text" id="username" placeholder="输入用户名" autocomplete="off">
+            </div>
+            <div class="input-group">
+                <label>🔑 密码</label>
+                <input type="password" id="password" placeholder="密码" autocomplete="off">
+            </div>
+            <button class="login-btn" id="loginBtn">登录</button>
+            <div id="loginError" class="error-msg"></div>
+            <div style="margin-top: 20px; font-size:12px; opacity:0.5;">
+                ⭐ 使用 python3 secret.py add 用户名 添加用户
+            </div>
+        </div>
+    </div>
+
+    <!-- 地图主界面 -->
+    <div id="mapPage">
+        <!-- 顶部状态栏 -->
+        <div class="status-bar">
+            <span>👥 在线人数 <span id="onlineCount" class="online-count">0</span></span>
+            <span id="currentUserDisplay" style="font-weight:600;">未登录</span>
+            <button class="logout-btn" id="logoutBtn">退出</button>
+        </div>
+        
+        <!-- 地图容器 -->
+        <div id="map"></div>
+        
+        <!-- 底部控件 -->
+        <div class="bottom-controls">
+            <!-- 左下：调试按钮和面板 -->
+            <div class="bottom-left">
+                <div class="debug-btn" id="debugToggle">🔧 调试日志</div>
+                <div class="debug-panel" id="debugPanel"></div>
+            </div>
+            
+            <!-- 中下：连接状态和重连按钮 -->
+            <div class="bottom-center">
+                <div id="connectionStatus" class="connection-status disconnected">⚡ 连接中...</div>
+                <div class="reconnect-buttons">
+                    <div class="reconnect-btn auto" id="autoReconnectBtn">🔄 自动重连</div>
+                    <div class="reconnect-btn manual" id="manualReconnectBtn">👆 手动重连</div>
+                </div>
+            </div>
+            
+            <!-- 右下：图例 -->
+            <div class="bottom-right">
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ffdf7e;"></div>
+                        <span>自己 (本地GPS)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff7e7e;"></div>
+                        <span>自己 (云端数据)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #7ec8ff;"></div>
+                        <span>其他队友</span>
+                    </div>
+                    <div class="legend-note">🧭 箭头 = 朝向</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 引入 Leaflet -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        (function() {
+            // ========== 全局变量 ==========
+            let currentUser = null;
+            let sessionToken = null;
+            let savedPassword = null;
+            let map = null;
+            let userMarkers = new Map();
+            let mapInitialized = false;
+            let watchId = null;
+            let socket = null;
+            let debugEnabled = true;
+            let reconnectTimer = null;
+            let isReconnecting = false;
+            let lastPosition = null;
+            let autoReconnectEnabled = true;
+
+            // 位置数据
+            let localLat = 32.0455;
+            let localLng = 118.7908;
+            let localHeading = 0;
+            let serverLat = 32.0455;
+            let serverLng = 118.7908;
+            let serverHeading = 0;
+
+            // 标记对象
+            let selfLocalMarker = null;
+            let selfServerMarker = null;
+
+            // DOM 元素
+            const loginPage = document.getElementById('loginPage');
+            const mapPage = document.getElementById('mapPage');
+            const usernameInput = document.getElementById('username');
+            const passwordInput = document.getElementById('password');
+            const loginBtn = document.getElementById('loginBtn');
+            const logoutBtn = document.getElementById('logoutBtn');
+            const loginError = document.getElementById('loginError');
+            const onlineCountSpan = document.getElementById('onlineCount');
+            const currentUserDisplay = document.getElementById('currentUserDisplay');
+            const connectionStatus = document.getElementById('connectionStatus');
+            const debugPanel = document.getElementById('debugPanel');
+            const debugToggle = document.getElementById('debugToggle');
+            const autoReconnectBtn = document.getElementById('autoReconnectBtn');
+            const manualReconnectBtn = document.getElementById('manualReconnectBtn');
+
+            // ========== 工具函数 ==========
+            function debugLog(...args) {
+                const timestamp = new Date().toLocaleTimeString();
+                const message = `[${timestamp}] ${args.join(' ')}`;
+                console.log(message);
+
+                if (debugEnabled) {
+                    const line = document.createElement('div');
+                    line.textContent = message;
+                    debugPanel.appendChild(line);
+                    debugPanel.scrollTop = debugPanel.scrollHeight;
+
+                    while (debugPanel.children.length > 100) {
+                        debugPanel.removeChild(debugPanel.firstChild);
+                    }
+                }
+            }
+
+            function sha256(message) {
+                return CryptoJS.SHA256(message).toString(CryptoJS.enc.Hex);
+            }
+
+            function hmacSha256(key, message) {
+                return CryptoJS.HmacSHA256(message, key).toString(CryptoJS.enc.Hex);
+            }
+
+            // WGS-84 转 GCJ-02
+            function wgs84_to_gcj02(wgsLat, wgsLng) {
+                const a = 6378245.0;
+                const ee = 0.00669342162296594323;
+
+                function transformLat(x, y) {
+                    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+                    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+                    ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
+                    ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
+                    return ret;
+                }
+
+                function transformLng(x, y) {
+                    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+                    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+                    ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
+                    ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
+                    return ret;
+                }
+
+                let dLat = transformLat(wgsLng - 105.0, wgsLat - 35.0);
+                let dLng = transformLng(wgsLng - 105.0, wgsLat - 35.0);
+                let radLat = wgsLat / 180.0 * Math.PI;
+                let magic = Math.sin(radLat);
+                magic = 1 - ee * magic * magic;
+                let sqrtMagic = Math.sqrt(magic);
+                dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI);
+                dLng = (dLng * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
+
+                return {
+                    lat: wgsLat + dLat,
+                    lng: wgsLng + dLng
+                };
+            }
+
+            // ========== 地图功能 ==========
+            function createHeadingIcon(headingDeg, userName, type = 'other') {
+                let arrowColor, bgColor;
+
+                switch(type) {
+                    case 'self_local':
+                        arrowColor = '#ffdf7e';
+                        bgColor = '#d4a500';
+                        break;
+                    case 'self_server':
+                        arrowColor = '#ff7e7e';
+                        bgColor = '#d45a5a';
+                        break;
+                    default:
+                        arrowColor = '#7ec8ff';
+                        bgColor = '#1e6eb5';
+                        break;
+                }
+
+                const container = document.createElement('div');
+                container.className = 'custom-marker';
+                container.style.setProperty('--bg-color', bgColor);
+                container.style.setProperty('--arrow-color', arrowColor);
+
+                const label = document.createElement('div');
+                label.className = 'marker-label';
+                label.textContent = userName + (type === 'self_local' ? ' (我)' : type === 'self_server' ? ' (云)' : '');
+                container.appendChild(label);
+
+                const arrow = document.createElement('div');
+                arrow.className = 'marker-arrow';
+                arrow.style.transform = `rotate(${headingDeg}deg)`;
+                arrow.innerHTML = '↑';
+                container.appendChild(arrow);
+
+                return L.divIcon({
+                    html: container.outerHTML,
+                    className: 'leaflet-div-icon',
+                    iconSize: [60, 60],
+                    iconAnchor: [30, 50]
+                });
+            }
+
+            function updateSelfMarkers() {
+                if (!map || !currentUser) return;
+
+                if (selfLocalMarker) map.removeLayer(selfLocalMarker);
+                const localIcon = createHeadingIcon(localHeading, currentUser, 'self_local');
+                selfLocalMarker = L.marker([localLat, localLng], { icon: localIcon }).addTo(map);
+
+                if (selfServerMarker) map.removeLayer(selfServerMarker);
+                const serverIcon = createHeadingIcon(serverHeading, currentUser, 'self_server');
+                selfServerMarker = L.marker([serverLat, serverLng], { icon: serverIcon }).addTo(map);
+            }
+
+            function refreshOtherMarkers(users) {
+                if (!map || !users) return;
+
+                onlineCountSpan.innerText = users.length;
+
+                const otherUsers = users.filter(u => u.username !== currentUser);
+
+                const existingIds = new Set(userMarkers.keys());
+                const newIds = new Set(otherUsers.map(u => u.username));
+
+                existingIds.forEach(id => {
+                    if (!newIds.has(id)) {
+                        const marker = userMarkers.get(id);
+                        if (marker) map.removeLayer(marker);
+                        userMarkers.delete(id);
+                    }
+                });
+
+                otherUsers.forEach(user => {
+                    let marker = userMarkers.get(user.username);
+                    const icon = createHeadingIcon(user.heading || 0, user.nickname || user.username, 'other');
+
+                    if (marker) {
+                        marker.setLatLng([user.lat, user.lng]);
+                        marker.setIcon(icon);
+                    } else {
+                        marker = L.marker([user.lat, user.lng], { icon: icon }).addTo(map);
+                        userMarkers.set(user.username, marker);
+                    }
+                });
+            }
+
+            function initMap() {
+                map = L.map('map', {
+                    center: [localLat, localLng],
+                    zoom: 17
+                });
+                
+                L.tileLayer('https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+                    attribution: '© 高德地图'
+                }).addTo(map);
+                
+                setTimeout(() => map.invalidateSize(), 300);
+                mapInitialized = true;
+            }
+
+            // ========== GPS功能 ==========
+            function sendPositionToServer() {
+                if (!currentUser || !socket || socket.readyState !== WebSocket.OPEN || !sessionToken) return;
+
+                socket.send(JSON.stringify({
+                    type: 'update_position',
+                    token: sessionToken,
+                    username: currentUser,
+                    lat: localLat,
+                    lng: localLng,
+                    heading: localHeading
+                }));
+            }
+
+            function startGPSWatch() {
+                if (!navigator.geolocation) {
+                    debugLog('浏览器不支持GPS定位');
+                    return;
+                }
+
+                if (watchId !== null) {
+                    navigator.geolocation.clearWatch(watchId);
+                }
+
+                debugLog('开始GPS定位...');
+
+                watchId = navigator.geolocation.watchPosition(
+                    (position) => {
+                        const wgsLat = position.coords.latitude;
+                        const wgsLng = position.coords.longitude;
+
+                        const gcj02 = wgs84_to_gcj02(wgsLat, wgsLng);
+                        localLat = gcj02.lat;
+                        localLng = gcj02.lng;
+
+                        if (position.coords.heading !== null) {
+                            localHeading = position.coords.heading;
+                        }
+
+                        if (!lastPosition ||
+                            Math.abs(localLat - lastPosition.lat) > 0.00001 ||
+                            Math.abs(localLng - lastPosition.lng) > 0.00001) {
+
+                            debugLog('GPS更新:', localLat.toFixed(6), localLng.toFixed(6), localHeading + '°');
+
+                            updateSelfMarkers();
+
+                            if (currentUser) {
+                                sendPositionToServer();
+                            }
+
+                            lastPosition = { lat: localLat, lng: localLng };
+                        }
+                    },
+                    (error) => {
+                        debugLog('GPS定位错误:', error.code, error.message);
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 0
+                    }
+                );
+            }
+
+            // ========== 认证功能 ==========
+            async function handleLogin() {
+                const username = usernameInput.value.trim();
+                const password = passwordInput.value.trim();
+
+                debugLog('登录尝试 - 用户名:', username);
+
+                if (username === '') {
+                    loginError.innerText = '请输入用户名';
+                    return;
+                }
+                if (password === '') {
+                    loginError.innerText = '请输入密码';
+                    return;
+                }
+
+                loginBtn.disabled = true;
+                loginBtn.innerHTML = '<span class="loading"></span> 登录中...';
+                loginError.innerText = '';
+
+                try {
+                    const challengeResponse = await fetch('/api/challenge', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username })
+                    });
+
+                    const challengeData = await challengeResponse.json();
+
+                    if (!challengeData.success) {
+                        throw new Error(challengeData.message || '获取挑战码失败');
+                    }
+
+                    const { challenge, salt } = challengeData;
+
+                    currentUser = username;
+                    savedPassword = password;
+
+                    const passwordHash = sha256(password + salt);
+                    const response = hmacSha256(passwordHash, challenge);
+
+                    if (!socket || socket.readyState !== WebSocket.OPEN) {
+                        initSocket();
+                        await new Promise(resolve => {
+                            const checkInterval = setInterval(() => {
+                                if (socket && socket.readyState === WebSocket.OPEN) {
+                                    clearInterval(checkInterval);
+                                    resolve();
+                                }
+                            }, 100);
+                        });
+                    }
+
+                    socket.send(JSON.stringify({
+                        type: 'login',
+                        username: username,
+                        response: response,
+                        lat: localLat,
+                        lng: localLng,
+                        heading: localHeading
+                    }));
+
+                } catch (error) {
+                    debugLog('登录错误:', error);
+                    loginError.innerText = error.message || '登录失败';
+                    loginBtn.disabled = false;
+                    loginBtn.innerHTML = '登录';
+                }
+            }
+
+            function handleLogout() {
+                debugLog('用户登出');
+
+                if (socket && socket.readyState === WebSocket.OPEN && sessionToken) {
+                    socket.send(JSON.stringify({
+                        type: 'logout',
+                        token: sessionToken,
+                        username: currentUser
+                    }));
+                }
+
+                if (map) {
+                    userMarkers.forEach((marker) => map.removeLayer(marker));
+                    userMarkers.clear();
+                    if (selfLocalMarker) map.removeLayer(selfLocalMarker);
+                    if (selfServerMarker) map.removeLayer(selfServerMarker);
+                }
+
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = null;
+                }
+
+                currentUser = null;
+                sessionToken = null;
+                savedPassword = null;
+                lastPosition = null;
+
+                mapPage.style.display = 'none';
+                loginPage.style.display = 'flex';
+                usernameInput.value = '';
+                passwordInput.value = '';
+                loginError.innerText = '';
+                onlineCountSpan.innerText = '0';
+                loginBtn.disabled = false;
+                loginBtn.innerHTML = '登录';
+                
+                autoReconnectBtn.classList.remove('show');
+                manualReconnectBtn.classList.remove('show');
+            }
+
+            // ========== WebSocket功能 ==========
+            async function reconnect() {
+                if (isReconnecting || !currentUser || !savedPassword) return;
+
+                isReconnecting = true;
+                debugLog('开始重新认证...');
+
+                try {
+                    const challengeResponse = await fetch('/api/challenge', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: currentUser })
+                    });
+
+                    const challengeData = await challengeResponse.json();
+
+                    if (!challengeData.success) {
+                        throw new Error(challengeData.message || '获取挑战码失败');
+                    }
+
+                    const { challenge, salt } = challengeData;
+
+                    const passwordHash = sha256(savedPassword + salt);
+                    const response = hmacSha256(passwordHash, challenge);
+
+                    if (!socket || socket.readyState !== WebSocket.OPEN) {
+                        initSocket();
+                        await new Promise(resolve => {
+                            const checkInterval = setInterval(() => {
+                                if (socket && socket.readyState === WebSocket.OPEN) {
+                                    clearInterval(checkInterval);
+                                    resolve();
+                                }
+                            }, 100);
+                        });
+                    }
+
+                    socket.send(JSON.stringify({
+                        type: 'login',
+                        username: currentUser,
+                        response: response,
+                        lat: localLat,
+                        lng: localLng,
+                        heading: localHeading
+                    }));
+
+                    debugLog('重新认证成功');
+
+                } catch (error) {
+                    debugLog('重新认证错误:', error);
+                    savedPassword = null;
+                    handleLogout();
+                    alert('重新认证失败，请手动登录');
+                } finally {
+                    isReconnecting = false;
+                }
+            }
+
+            function initSocket() {
+                if (socket) {
+                    socket.close();
+                }
+
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}`;
+
+                debugLog('连接 WebSocket:', wsUrl);
+                socket = new WebSocket(wsUrl);
+
+                socket.onopen = () => {
+                    debugLog('WebSocket连接成功');
+                    connectionStatus.innerText = '✅ 已连接';
+                    connectionStatus.className = 'connection-status connected';
+                    autoReconnectBtn.classList.remove('show');
+                    manualReconnectBtn.classList.remove('show');
+                };
+
+                socket.onclose = (event) => {
+                    debugLog('WebSocket连接断开:', event.code, event.reason);
+                    connectionStatus.innerText = '❌ 连接断开';
+                    connectionStatus.className = 'connection-status disconnected';
+
+                    if (currentUser) {
+                        autoReconnectBtn.classList.add('show');
+                        manualReconnectBtn.classList.add('show');
+                        
+                        if (autoReconnectEnabled) {
+                            debugLog('自动重连已开启，3秒后尝试...');
+                            if (reconnectTimer) clearTimeout(reconnectTimer);
+                            reconnectTimer = setTimeout(() => {
+                                reconnect();
+                            }, 3000);
+                        }
+                    }
+                };
+
+                socket.onerror = (error) => {
+                    debugLog('WebSocket错误:', error);
+                };
+
+                socket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        debugLog('收到消息:', data.type);
+
+                        switch (data.type) {
+                            case 'login_success':
+                                debugLog('登录成功:', data);
+                                sessionToken = data.token;
+                                currentUserDisplay.innerText = `👋 ${data.nickname}`;
+
+                                loginPage.style.display = 'none';
+                                mapPage.style.display = 'block';
+
+                                if (!mapInitialized) {
+                                    initMap();
+                                } else {
+                                    setTimeout(() => map.invalidateSize(), 100);
+                                }
+
+                                userMarkers.forEach((marker) => map.removeLayer(marker));
+                                userMarkers.clear();
+                                if (selfLocalMarker) map.removeLayer(selfLocalMarker);
+                                if (selfServerMarker) map.removeLayer(selfServerMarker);
+
+                                updateSelfMarkers();
+
+                                socket.send(JSON.stringify({
+                                    type: 'get_users',
+                                    token: sessionToken,
+                                    username: currentUser
+                                }));
+
+                                sendPositionToServer();
+
+                                loginBtn.disabled = false;
+                                loginBtn.innerHTML = '登录';
+                                break;
+
+                            case 'user_list':
+                                const selfInList = data.users.find(u => u.username === currentUser);
+                                if (selfInList) {
+                                    serverLat = selfInList.lat;
+                                    serverLng = selfInList.lng;
+                                    serverHeading = selfInList.heading || 0;
+                                    updateSelfMarkers();
+                                }
+                                refreshOtherMarkers(data.users);
+                                break;
+
+                            case 'position_update':
+                                if (data.username === currentUser) {
+                                    serverLat = data.lat;
+                                    serverLng = data.lng;
+                                    serverHeading = data.heading;
+                                    updateSelfMarkers();
+                                } else {
+                                    const marker = userMarkers.get(data.username);
+                                    if (marker) {
+                                        const icon = createHeadingIcon(data.heading, data.nickname || data.username, 'other');
+                                        marker.setLatLng([data.lat, data.lng]);
+                                        marker.setIcon(icon);
+                                    }
+                                }
+                                break;
+
+                            case 'user_joined':
+                            case 'user_left':
+                                if (sessionToken && currentUser && socket.readyState === WebSocket.OPEN) {
+                                    socket.send(JSON.stringify({
+                                        type: 'get_users',
+                                        token: sessionToken,
+                                        username: currentUser
+                                    }));
+                                }
+                                break;
+
+                            case 'force_logout':
+                                debugLog('被强制登出:', data.message);
+                                alert(data.message || '您的账号已在其他地方登录');
+                                handleLogout();
+                                break;
+
+                            case 'error':
+                                debugLog('服务器错误:', data.message);
+                                if (data.message.includes('认证') || data.message.includes('登录')) {
+                                    loginError.innerText = data.message;
+                                    loginBtn.disabled = false;
+                                    loginBtn.innerHTML = '登录';
+                                } else {
+                                    alert('错误: ' + data.message);
+                                }
+                                break;
+
+                            case 'logout_success':
+                                debugLog('登出成功');
+                                break;
+                        }
+                    } catch (error) {
+                        debugLog('处理消息错误:', error);
+                    }
+                };
+            }
+
+            // ========== 事件绑定 ==========
+            loginBtn.addEventListener('click', handleLogin);
+            logoutBtn.addEventListener('click', handleLogout);
+
+            passwordInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') handleLogin();
+            });
+            usernameInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') handleLogin();
+            });
+
+            debugToggle.addEventListener('click', () => {
+                debugPanel.classList.toggle('show');
+                debugToggle.textContent = debugPanel.classList.contains('show') ? '🔧 隐藏日志' : '🔧 调试日志';
+            });
+
+            autoReconnectBtn.addEventListener('click', () => {
+                debugLog('开启自动重连');
+                autoReconnectEnabled = true;
+                if (currentUser && savedPassword) {
+                    reconnect();
+                }
+            });
+
+            manualReconnectBtn.addEventListener('click', () => {
+                debugLog('手动触发重连');
+                if (currentUser && savedPassword) {
+                    reconnect();
+                } else if (currentUser) {
+                    handleLogout();
+                    alert('密码已丢失，请重新登录');
+                }
+            });
+
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && currentUser && savedPassword && autoReconnectEnabled) {
+                    reconnect();
+                }
+            });
+
+            window.addEventListener('resize', () => {
+                if (map) {
+                    setTimeout(() => map.invalidateSize(), 100);
+                }
+            });
+
+            window.addEventListener('beforeunload', () => {
+                if (watchId !== null) {
+                    navigator.geolocation.clearWatch(watchId);
+                }
+                if (socket) {
+                    socket.close();
+                }
+            });
+
+            // ========== 初始化 ==========
+            function startApp() {
+                debugLog('应用启动...');
+                startGPSWatch();
+                initSocket();
+                debugLog('应用初始化完成');
+            }
+
+            // 确保登录页面显示
+            loginPage.style.display = 'flex';
+            mapPage.style.display = 'none';
+            
+            // 启动应用
+            startApp();
+        })();
+    </script>
+</body>
+</html>
