@@ -41,8 +41,8 @@ CONFIG = {
     'debug': False
 }
 
-# 在线用户存储
-online_users = {}  # username -> {conn, lat, lng, heading, last_update, nickname, token}
+# 在线用户存储 - 添加 target_lat, target_lng
+online_users = {}  # username -> {conn, lat, lng, heading, last_update, nickname, token, target_lat, target_lng}
 token_to_username = {}  # token -> username
 
 # 挑战码存储
@@ -346,20 +346,40 @@ class CombinedServer:
                     headers[key.lower()] = value
             
             # 处理请求
+            logger.debug(f"HTTP {method} {path}")
+        
             if method == 'GET':
-                if path == '/' or path == '/index.html':
-                    self.serve_file(client_sock, 'static/index.html', 'text/html')
-                elif path.startswith('/static/'):
-                    filepath = path[1:]  # 去掉开头的 /
+                # 所有 GET 请求都从 static 目录提供文件
+                if path == '/':
+                    # 根路径返回 index.html
+                    filepath = 'static/index.html'
                     content_type = 'text/html'
+                else:
+                    # 其他路径，去掉开头的 /，加上 static/ 前缀
+                    # 例如: /css/style.css -> static/css/style.css
+                    #        /js/map.js -> static/js/map.js
+                    #        /index.html -> static/index.html
+                    filepath = 'static' + path
+                
+                    # 根据文件扩展名判断 Content-Type
                     if path.endswith('.css'):
                         content_type = 'text/css'
                     elif path.endswith('.js'):
                         content_type = 'application/javascript'
-                    self.serve_file(client_sock, filepath, content_type)
-                else:
-                    self.send_http_response(client_sock, 404, 'Not Found')
-                    
+                    elif path.endswith('.html'):
+                        content_type = 'text/html'
+                    elif path.endswith('.png'):
+                        content_type = 'image/png'
+                    elif path.endswith('.jpg') or path.endswith('.jpeg'):
+                        content_type = 'image/jpeg'
+                    elif path.endswith('.ico'):
+                        content_type = 'image/x-icon'
+                    else:
+                        content_type = 'text/plain'
+            
+                logger.debug(f"提供文件: {filepath}")
+                self.serve_file(client_sock, filepath, content_type)
+
             elif method == 'POST' and path == '/api/challenge':
                 # 读取 body
                 content_length = int(headers.get('content-length', 0))
@@ -451,12 +471,14 @@ class CombinedServer:
             
             if msg_type == 'login':
                 self.handle_login(ws_conn, data)
-            elif msg_type == 'update_position':
-                self.handle_position(ws_conn, data)
-            elif msg_type == 'get_users':
-                self.handle_get_users(ws_conn, data)
             elif msg_type == 'logout':
                 self.handle_logout(ws_conn, data)
+            elif msg_type == 'update_position':
+                self.handle_position(ws_conn, data)
+            elif msg_type == 'update_target':
+                self.handle_target(ws_conn, data)
+            elif msg_type == 'get_users':
+                self.handle_get_users(ws_conn, data)
             else:
                 ws_conn.send(json.dumps({'type': 'error', 'message': '未知消息类型'}))
                 
@@ -469,6 +491,8 @@ class CombinedServer:
         """处理登录"""
         username = data.get('username')
         response = data.get('response')
+        target_lat = data.get('target_lat')  # 新增
+        target_lng = data.get('target_lng')  # 新增
         lat = data.get('lat', 31.2317)
         lng = data.get('lng', 121.4725)
         heading = data.get('heading', 0)
@@ -500,6 +524,8 @@ class CombinedServer:
         ws_conn.username = username
         online_users[username] = {
             'conn': ws_conn,
+            'target_lat': target_lat,  # 新增
+            'target_lng': target_lng,  # 新增
             'lat': lat,
             'lng': lng,
             'heading': heading,
@@ -525,6 +551,8 @@ class CombinedServer:
             'type': 'user_joined',
             'username': username,
             'nickname': nickname,
+            'target_lat': target_lat,
+            'target_lng': target_lng,
             'lat': lat,
             'lng': lng,
             'heading': heading
@@ -559,7 +587,7 @@ class CombinedServer:
             # 广播位置更新
             self.broadcast(
                 json.dumps({
-                'type': 'position_update',
+                'type': 'update_position',
                 'username': username,
                 'lat': online_users[username]['lat'],
                 'lng': online_users[username]['lng'],
@@ -567,7 +595,37 @@ class CombinedServer:
                 'timestamp': time.time() * 1000
                 })
             )
+
+    def handle_target(self, ws_conn, data):
+        """处理目标更新"""
+        token = data.get('token')
+        username = data.get('username')
+        target_lat = data.get('target_lat')
+        target_lng = data.get('target_lng')
     
+        if not self.authenticate(token, username):
+            ws_conn.send(json.dumps({'type': 'error', 'message': '认证失败'}))
+            return
+    
+        if username in online_users:
+            # 更新用户的目标
+            online_users[username]['target_lat'] = target_lat
+            online_users[username]['target_lng'] = target_lng
+            online_users[username]['last_update'] = time.time()
+        
+            logger.info(f"目标更新 - 用户: {username}, 目标: ({target_lat}, {target_lng})")
+        
+            # 广播目标更新给所有用户（包括发送者自己）
+            self.broadcast(
+                json.dumps({
+                    'type': 'update_target',
+                    'username': username,
+                    'target_lat': target_lat,
+                    'target_lng': target_lng,
+                    'timestamp': time.time() * 1000
+                })
+            )
+
     def handle_get_users(self, ws_conn, data):
         """处理获取用户列表"""
         token = data.get('token')
@@ -619,6 +677,8 @@ class CombinedServer:
             users_list.append({
                 'username': username,
                 'nickname': info.get('nickname', username),
+                'target_lat': info.get('target_lat'),
+                'target_lng': info.get('target_lng'),
                 'lat': info['lat'],
                 'lng': info['lng'],
                 'heading': info['heading']
