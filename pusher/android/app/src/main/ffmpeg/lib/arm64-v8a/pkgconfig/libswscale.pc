@@ -1,0 +1,14 @@
+prefix=/Users/ifbe/Desktop/code/github/ffmpeg-build/android/arm64
+exec_prefix=${prefix}
+libdir=/Users/ifbe/Desktop/code/github/ffmpeg-build/android/arm64/lib
+includedir=/Users/ifbe/Desktop/code/github/ffmpeg-build/android/arm64/include
+
+Name: libswscale
+Description: FFmpeg image rescaling library
+Version: 9.7.100
+Requires: 
+Requires.private: libavutil >= 60.29.100
+Conflicts:
+Libs: -L${libdir}  -lswscale 
+Libs.private: -lm -latomic
+Cflags: -I${includedir}

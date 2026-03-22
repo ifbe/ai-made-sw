@@ -1,0 +1,41 @@
+<resources>
+    <string name="app_name">Pusher</string>
+
+    <!-- 协议选择 -->
+    <string-array name="protocols">
+        <item>RTMP</item>
+        <item>RTSP</item>
+        <item>SRT</item>
+    </string-array>
+    
+    <!-- 封装格式选择 -->
+    <string-array name="formats">
+        <item>FLV</item>
+        <item>fMP4</item>
+        <item>MPEG-TS</item>
+    </string-array>
+    
+    <!-- 视频编码器选择 -->
+    <string-array name="video_codecs">
+        <item>H.264</item>
+        <item>H.265</item>
+    </string-array>
+    
+    <!-- 音频编码器选择 -->
+    <string-array name="audio_codecs">
+        <item>AAC</item>
+        <item>OPUS</item>
+    </string-array>
+    
+    <!-- 相机选择 -->
+    <string-array name="camera_ids">
+        <item>后置</item>
+        <item>前置</item>
+    </string-array>
+    
+    <!-- 声道选择 -->
+    <string-array name="channels">
+        <item>单声道</item>
+        <item>立体声</item>
+    </string-array>
+</resources>

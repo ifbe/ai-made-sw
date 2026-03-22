@@ -1,0 +1,5 @@
+[versions]
+appcompat = "1.7.0"
+
+[libraries]
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
