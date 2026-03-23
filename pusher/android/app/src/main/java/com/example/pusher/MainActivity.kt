@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
 import android.widget.*
 import androidx.annotation.RequiresPermission
@@ -41,7 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spinnerResolution: Spinner
     private lateinit var spinnerMic: Spinner
     private lateinit var spinnerChannels: Spinner
-    private lateinit var texturePreview: SurfaceView
+    private lateinit var texturePreview: TextureView
     private lateinit var waveformView: AudioWaveformView
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
@@ -98,7 +99,7 @@ class MainActivity : AppCompatActivity() {
             Log.d("MainActivity", "SurfaceView size: ${texturePreview.width} x ${texturePreview.height}")
             Log.d("MainActivity", "SurfaceView visibility: ${texturePreview.visibility}")
             Log.d("MainActivity", "SurfaceView isShown: ${texturePreview.isShown}")
-            Log.d("MainActivity", "SurfaceView holder surface isValid: ${texturePreview.holder.surface.isValid}")
+            //Log.d("MainActivity", "SurfaceView holder surface isValid: ${texturePreview.holder.surface.isValid}")
         }
 
         // ========== 设置 Spinner 适配器 ==========
@@ -292,7 +293,7 @@ class MainActivity : AppCompatActivity() {
                         var count = 0
                         while (shortBuffer.hasRemaining()) {
                             val sample = shortBuffer.get().toFloat() / 32768f
-                            if (count % 8 == 0) {
+                            if (count % 64 == 0) {
                                 val normalized = (sample.coerceIn(-1f, 1f) + 1f) / 2f
                                 samples.add(normalized)
                             }
@@ -318,14 +319,9 @@ class MainActivity : AppCompatActivity() {
                 // 无论推流是否成功，都启动相机（编码器已经初始化）
                 cameraHelper = CameraHelper(this)
                 cameraHelper?.startPreview(texturePreview, inputSurface) { cameraSuccess ->
+                    Log.d("MainActivity", "Camera start result: $cameraSuccess")
                     if (cameraSuccess) {
-                        texturePreview.setZOrderOnTop(true)
-                        texturePreview.setZOrderMediaOverlay(true)
-                        if (errorMsg.isNotEmpty()) {
-                            Toast.makeText(this, "相机预览已启动，推流失败: $errorMsg", Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(this, "推流已启动", Toast.LENGTH_SHORT).show()
-                        }
+                        Toast.makeText(this, "推流已启动", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(this, "相机启动失败", Toast.LENGTH_SHORT).show()
                     }
@@ -335,9 +331,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopPushing() {
+        Log.d("MainActivity", "stopPushing called")
+
+        // 先停止 PusherController，停止所有 JNI 回调
         pusherController?.stopPush()
-        pusherController?.stopPush()
+        pusherController = null
+
+        // 再停止相机预览
         cameraHelper?.stopPreview()
+        cameraHelper = null
+
         Toast.makeText(this, "推流已停止", Toast.LENGTH_SHORT).show()
     }
 

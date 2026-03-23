@@ -6,6 +6,7 @@ import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class VideoEncoder(
     private val width: Int,
@@ -17,7 +18,7 @@ class VideoEncoder(
     private var mediaCodec: MediaCodec? = null
     private var inputSurface: Surface? = null
     private var callback: EncoderCallback? = null
-    private var isEncoding = false
+    private val isEncoding = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor()
 
     private fun bytesToHex(bytes: ByteArray, maxLen: Int = 32): String {
@@ -38,6 +39,10 @@ class VideoEncoder(
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                 setInteger(MediaFormat.KEY_LATENCY, 1)  // 低延迟模式
                 setInteger(MediaFormat.KEY_PRIORITY, 0) // 实时优先级
+            }
+            // 关键：强制输出不旋转
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                setInteger(MediaFormat.KEY_ROTATION, 0)
             }
         }
 
@@ -101,7 +106,7 @@ class VideoEncoder(
             })
 
             mediaCodec?.start()
-            isEncoding = true
+            isEncoding.set(true)
             Log.d("VideoEncoder", "prepare SUCCESS")
             return inputSurface
 
@@ -110,9 +115,12 @@ class VideoEncoder(
             return null
         }
     }
-
     fun stop() {
-        isEncoding = false
+        Log.d("VideoEncoder", "stop called")
+        if (!isEncoding.getAndSet(false)) {
+            return
+        }
+
         try {
             mediaCodec?.stop()
             mediaCodec?.release()
@@ -123,5 +131,6 @@ class VideoEncoder(
         mediaCodec = null
         inputSurface = null
         executor.shutdown()
+        Log.d("VideoEncoder", "stop completed")
     }
 }

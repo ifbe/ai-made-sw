@@ -21,6 +21,7 @@ extern jobject g_listener;
 jmethodID g_onSendData = nullptr;
 jmethodID g_onRecvData = nullptr;
 
+static AVIOContext* real_avio_ctx = nullptr;
 AVFormatContext* format_ctx = nullptr;
 AVStream* video_stream = nullptr;
 AVStream* audio_stream = nullptr;
@@ -484,8 +485,8 @@ int init_ffmpeg_pusher(const char* url, const char* format_name,
         LOGI("Opening URL: %s", url);
 
         // 先打开原始 IO
-        AVIOContext* real_pb = nullptr;
-        ret = avio_open2(&real_pb, url, AVIO_FLAG_WRITE, nullptr, nullptr);
+        real_avio_ctx = nullptr;
+        ret = avio_open2(&real_avio_ctx, url, AVIO_FLAG_WRITE, nullptr, nullptr);
         if (ret < 0) {
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
@@ -495,12 +496,12 @@ int init_ffmpeg_pusher(const char* url, const char* format_name,
         LOGI("URL opened successfully");
 
         // 创建自定义 AVIOContext 来捕获数据
-        AVIOContext* hooked_pb = create_hooked_avio_context(real_pb);
+        AVIOContext* hooked_pb = create_hooked_avio_context(real_avio_ctx);
         if (hooked_pb) {
             format_ctx->pb = hooked_pb;
             LOGI("Custom AVIOContext installed for data capture");
         } else {
-            format_ctx->pb = real_pb;
+            format_ctx->pb = real_avio_ctx;
             LOGE("Failed to create custom AVIOContext, using default");
         }
     }
@@ -532,26 +533,60 @@ int init_ffmpeg_pusher(const char* url, const char* format_name,
  * 关闭推流器并释放资源
  */
 void close_ffmpeg_pusher() {
-    if (format_ctx) {
-        av_write_trailer(format_ctx);
+    LOGI("close_ffmpeg_pusher called");
 
-        if (format_ctx->pb) {
-            avio_closep(&format_ctx->pb);
+    if (format_ctx) {
+        // 写入尾部
+        int ret = av_write_trailer(format_ctx);
+        if (ret < 0) {
+            char errbuf[256];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            LOGE("av_write_trailer failed: %d (%s)", ret, errbuf);
         }
 
+        // 关闭输出流
+        if (format_ctx->pb) {
+            LOGI("Closing AVIO context");
+
+            // 获取自定义 AVIO 上下文
+            AVIOContext* custom_ctx = format_ctx->pb;
+
+            // 释放自定义上下文的缓冲区
+            if (custom_ctx->buffer) {
+                av_free(custom_ctx->buffer);
+            }
+
+            // 释放自定义上下文
+            av_free(custom_ctx);
+            format_ctx->pb = nullptr;
+        }
+
+        // 关闭真实的 AVIO 上下文
+        if (real_avio_ctx) {
+            LOGI("Closing real AVIO context");
+            avio_close(real_avio_ctx);
+            real_avio_ctx = nullptr;
+        }
+
+        // 释放上下文
         avformat_free_context(format_ctx);
         format_ctx = nullptr;
+        LOGI("AVFormatContext freed");
     }
 
+    // 重置流指针
     video_stream = nullptr;
     audio_stream = nullptr;
     video_stream_index = -1;
     audio_stream_index = -1;
 
+    // 重置时间戳基准
     reset_pts_base();
+
+    // 重置 SPS/PPS 状态
     reset_sps_pps_state();
 
-    LOGI("FFmpeg pusher closed");
+    LOGI("FFmpeg pusher closed successfully");
 }
 
 /**

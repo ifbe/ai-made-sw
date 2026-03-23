@@ -501,12 +501,20 @@
                 android:lineSpacingExtra="2dp"
                 android:layout_marginTop="2dp"/>
 
-            <SurfaceView
-                android:id="@+id/texture_preview"
+            <FrameLayout
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1"
-                android:background="#FF0000"/>
+                android:background="#000000"
+                android:gravity="center">
+
+                <TextureView
+                    android:id="@+id/texture_preview"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center">
+                </TextureView>
+            </FrameLayout>
         </LinearLayout>
 
         <!-- 区域6：底部-右 音频设备设置 + 音频波形预览 (粉色系) -->

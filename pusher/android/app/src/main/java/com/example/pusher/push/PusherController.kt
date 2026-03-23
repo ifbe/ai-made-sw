@@ -8,6 +8,7 @@ import com.example.pusher.encoder.*
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.TimeUnit
 
 class PusherController(
     private val onAvioData: (direction: Int, timestamp: Long, data: ByteArray) -> Unit,
@@ -117,10 +118,12 @@ class PusherController(
                     try {
                         JniWrapper.setAvioCallback(object : AvioDataListener {
                             override fun onSendData(data: ByteArray, timestamp: Long) {
+                                if (!isPushing.get()) return  // 添加检查
                                 Log.d(tag, "AVIO send: size=${data.size}, ts=$timestamp")
                                 onAvioData(0, timestamp, data)
                             }
                             override fun onRecvData(data: ByteArray, timestamp: Long) {
+                                if (!isPushing.get()) return  // 添加检查
                                 Log.d(tag, "AVIO recv: size=${data.size}, ts=$timestamp")
                                 onAvioData(1, timestamp, data)
                             }
@@ -259,18 +262,58 @@ class PusherController(
 
     fun stopPush() {
         Log.d(tag, "stopPush called")
+
+        // 1. 先设置标志
         isPushing.set(false)
+        isStreamingEnabled = false
+
+        // 2. 停止音频采集
         try {
             audioCapture?.stop()
-            audioEncoder?.stop()
-            videoEncoder?.stop()
-            if (isStreamingEnabled) {
-                JniWrapper.closePusher()
-            }
-            Log.d(tag, "stopPush completed")
+            audioCapture = null
         } catch (e: Exception) {
-            Log.e(tag, "stopPush error", e)
+            Log.e(tag, "stop audio capture error", e)
         }
-        executor.shutdown()
+
+        // 3. 停止编码器（先停止，让它们释放资源）
+        try {
+            videoEncoder?.stop()
+            videoEncoder = null
+        } catch (e: Exception) {
+            Log.e(tag, "stop video encoder error", e)
+        }
+
+        try {
+            audioEncoder?.stop()
+            audioEncoder = null
+        } catch (e: Exception) {
+            Log.e(tag, "stop audio encoder error", e)
+        }
+
+        // 4. 等待编码器完全停止
+        try {
+            Thread.sleep(100)
+        } catch (e: InterruptedException) {
+            // ignore
+        }
+
+        // 5. 关闭 FFmpeg
+        try {
+            JniWrapper.closePusher()
+        } catch (e: Exception) {
+            Log.e(tag, "closePusher error", e)
+        }
+
+        // 6. 关闭线程池
+        try {
+            executor.shutdown()
+            if (!executor.awaitTermination(500, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow()
+            }
+        } catch (e: Exception) {
+            executor.shutdownNow()
+        }
+
+        Log.d(tag, "stopPush completed")
     }
 }
