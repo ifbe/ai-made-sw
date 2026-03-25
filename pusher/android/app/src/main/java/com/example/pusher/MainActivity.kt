@@ -6,7 +6,6 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
 import android.widget.*
@@ -26,6 +25,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etServerHost: EditText
     private lateinit var etAppPath: EditText
     private lateinit var etPort: EditText
+    private lateinit var etFilePath: EditText
     private lateinit var spinnerProtocol: Spinner
     private lateinit var previewRtmp: PreviewLogView
     private lateinit var spinnerFormat: Spinner
@@ -44,8 +44,33 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spinnerChannels: Spinner
     private lateinit var texturePreview: TextureView
     private lateinit var waveformView: AudioWaveformView
-    private lateinit var btnStart: Button
-    private lateinit var btnStop: Button
+
+    // 7个模块的 FrameLayout（用于控制背景色）
+    private lateinit var frameRtmp: FrameLayout      // 模块1: RTMP 推流
+    private lateinit var frameRecord: FrameLayout    // 模块2: 本地录制
+    private lateinit var frameFlv: FrameLayout       // 模块3: FLV 封装器
+    private lateinit var frameVideoEncoder: FrameLayout  // 模块4: 视频编码
+    private lateinit var frameAudioEncoder: FrameLayout  // 模块5: 音频编码
+    private lateinit var frameVideoPreview: FrameLayout  // 模块6: 视频采集
+    private lateinit var frameAudioPreview: FrameLayout  // 模块7: 音频采集
+
+    // 7个模块的 Switch
+    private lateinit var switchRtmp: Switch
+    private lateinit var switchRecord: Switch
+    private lateinit var switchFlv: Switch
+    private lateinit var switchVideoEncoder: Switch
+    private lateinit var switchAudioEncoder: Switch
+    private lateinit var switchVideoPreview: Switch
+    private lateinit var switchAudioPreview: Switch
+
+    // 7个模块的状态
+    private var rtmpEnabled = false
+    private var recordEnabled = false
+    private var flvEnabled = false
+    private var videoEncoderEnabled = false
+    private var audioEncoderEnabled = false
+    private var videoPreviewEnabled = false
+    private var audioPreviewEnabled = false
 
     private var pusherController: PusherController? = null
     private var cameraHelper: CameraHelper? = null
@@ -74,6 +99,7 @@ class MainActivity : AppCompatActivity() {
         etServerHost = findViewById(R.id.et_server_host)
         etAppPath = findViewById(R.id.et_app_path)
         etPort = findViewById(R.id.et_port)
+        etFilePath = findViewById(R.id.et_file_path)
         spinnerProtocol = findViewById(R.id.spinner_protocol)
         previewRtmp = findViewById(R.id.preview_rtmp)
         spinnerFormat = findViewById(R.id.spinner_format)
@@ -91,15 +117,30 @@ class MainActivity : AppCompatActivity() {
         spinnerMic = findViewById(R.id.spinner_mic)
         spinnerChannels = findViewById(R.id.spinner_channels)
         waveformView = findViewById(R.id.waveform_view)
-        btnStart = findViewById(R.id.btn_start)
-        btnStop = findViewById(R.id.btn_stop)
         texturePreview = findViewById(R.id.texture_preview)
+
+        // 初始化7个模块的 FrameLayout
+        frameRtmp = findViewById(R.id.frame_rtmp)
+        frameRecord = findViewById(R.id.frame_record)
+        frameFlv = findViewById(R.id.frame_flv)
+        frameVideoEncoder = findViewById(R.id.frame_video_encoder)
+        frameAudioEncoder = findViewById(R.id.frame_audio_encoder)
+        frameVideoPreview = findViewById(R.id.frame_video_preview)
+        frameAudioPreview = findViewById(R.id.frame_audio_preview)
+
+        // 初始化7个模块的 Switch
+        switchRtmp = findViewById(R.id.switch_rtmp)
+        switchRecord = findViewById(R.id.switch_record)
+        switchFlv = findViewById(R.id.switch_flv)
+        switchVideoEncoder = findViewById(R.id.switch_video_encoder)
+        switchAudioEncoder = findViewById(R.id.switch_audio_encoder)
+        switchVideoPreview = findViewById(R.id.switch_video_preview)
+        switchAudioPreview = findViewById(R.id.switch_audio_preview)
 
         texturePreview.post {
             Log.d("MainActivity", "SurfaceView size: ${texturePreview.width} x ${texturePreview.height}")
             Log.d("MainActivity", "SurfaceView visibility: ${texturePreview.visibility}")
             Log.d("MainActivity", "SurfaceView isShown: ${texturePreview.isShown}")
-            //Log.d("MainActivity", "SurfaceView holder surface isValid: ${texturePreview.holder.surface.isValid}")
         }
 
         // ========== 设置 Spinner 适配器 ==========
@@ -144,10 +185,120 @@ class MainActivity : AppCompatActivity() {
             setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         }
 
-        requestPermissions()
+        // 设置默认文件路径
+        val defaultPath = "${getExternalFilesDir(null)}/record_${System.currentTimeMillis()}.flv"
+        etFilePath.setText(defaultPath)
 
-        btnStart.setOnClickListener { checkPermissionsAndStart() }
-        btnStop.setOnClickListener { stopPushing() }
+        // 设置浏览按钮点击事件
+        val btnBrowse = findViewById<Button>(R.id.btn_browse)
+        btnBrowse.setOnClickListener {
+            // TODO: 实现文件选择器
+            Toast.makeText(this, "文件将保存到: ${etFilePath.text}", Toast.LENGTH_SHORT).show()
+        }
+
+        // ========== 设置7个模块的 Switch 监听（控制背景色和推流功能） ==========
+        setupSwitchListeners()
+
+        // 批量初始化所有模块为禁用状态
+        initAllModulesDisabled()
+
+        requestPermissions()
+    }
+
+    private fun setupSwitchListeners() {
+        // 模块1: RTMP 推流（控制推流）
+        switchRtmp.setOnCheckedChangeListener { _, isChecked ->
+            rtmpEnabled = isChecked
+            updateModuleState(frameRtmp, rtmpEnabled)
+            Log.d("MainActivity", "RTMP推流模块: enabled=$rtmpEnabled")
+
+            if (rtmpEnabled) {
+                // 启用推流
+                checkPermissionsAndStart()
+            } else {
+                // 停止推流
+                stopPushing()
+            }
+        }
+
+        // 模块2: 本地录制
+        switchRecord.setOnCheckedChangeListener { _, isChecked ->
+            recordEnabled = isChecked
+            updateModuleState(frameRecord, recordEnabled)
+            Log.d("MainActivity", "本地录制模块: enabled=$recordEnabled")
+            // TODO: 控制本地录制
+        }
+
+        // 模块3: FLV 封装器
+        switchFlv.setOnCheckedChangeListener { _, isChecked ->
+            flvEnabled = isChecked
+            updateModuleState(frameFlv, flvEnabled)
+            Log.d("MainActivity", "FLV封装器模块: enabled=$flvEnabled")
+            // TODO: 控制 FLV 封装
+        }
+
+        // 模块4: 视频编码
+        switchVideoEncoder.setOnCheckedChangeListener { _, isChecked ->
+            videoEncoderEnabled = isChecked
+            updateModuleState(frameVideoEncoder, videoEncoderEnabled)
+            Log.d("MainActivity", "视频编码模块: enabled=$videoEncoderEnabled")
+            // TODO: 控制视频编码
+        }
+
+        // 模块5: 音频编码
+        switchAudioEncoder.setOnCheckedChangeListener { _, isChecked ->
+            audioEncoderEnabled = isChecked
+            updateModuleState(frameAudioEncoder, audioEncoderEnabled)
+            Log.d("MainActivity", "音频编码模块: enabled=$audioEncoderEnabled")
+            // TODO: 控制音频编码
+        }
+
+        // 模块6: 视频采集/预览
+        switchVideoPreview.setOnCheckedChangeListener { _, isChecked ->
+            videoPreviewEnabled = isChecked
+            updateModuleState(frameVideoPreview, videoPreviewEnabled)
+            Log.d("MainActivity", "视频采集模块: enabled=$videoPreviewEnabled")
+            // TODO: 控制视频采集
+        }
+
+        // 模块7: 音频采集/预览
+        switchAudioPreview.setOnCheckedChangeListener { _, isChecked ->
+            audioPreviewEnabled = isChecked
+            updateModuleState(frameAudioPreview, audioPreviewEnabled)
+            Log.d("MainActivity", "音频采集模块: enabled=$audioPreviewEnabled")
+            // TODO: 控制音频采集
+        }
+    }
+
+    private fun initAllModulesDisabled() {
+        val frames = listOf(
+            frameRtmp, frameRecord, frameFlv,
+            frameVideoEncoder, frameAudioEncoder,
+            frameVideoPreview, frameAudioPreview
+        )
+        frames.forEach { frame ->
+            frame.isEnabled = false
+        }
+
+        rtmpEnabled = false
+        recordEnabled = false
+        flvEnabled = false
+        videoEncoderEnabled = false
+        audioEncoderEnabled = false
+        videoPreviewEnabled = false
+        audioPreviewEnabled = false
+
+        Log.d("MainActivity", "All modules initialized to disabled")
+    }
+
+    /**
+     * 更新模块的启用状态（改变背景色）
+     * @param frame 模块的 FrameLayout
+     * @param enabled 是否启用
+     */
+    private fun updateModuleState(frame: FrameLayout, enabled: Boolean) {
+        frame.isEnabled = enabled
+        Log.d("MainActivity", "updateModuleState: frame=${frame.id}, enabled=$enabled")
     }
 
     private fun requestPermissions() {
@@ -308,6 +459,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             )
+
+            // 设置推流停止回调，当推流异常断开时重置 Switch
+//            pusherController?.onPushStoppedByError = {
+//                runOnUiThread {
+//                    switchRtmp.isChecked = false
+//                    Log.d("MainActivity", "推流异常断开，RTMP Switch 已重置")
+//                }
+//            }
 
             val result = pusherController?.initPush(
                 url, protocol, format, videoCodec, videoBitrate * 1000, encodeWidth, encodeHeight,
