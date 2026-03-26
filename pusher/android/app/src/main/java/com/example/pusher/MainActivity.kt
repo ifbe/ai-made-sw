@@ -205,74 +205,120 @@ class MainActivity : AppCompatActivity() {
         requestPermissions()
     }
 
-    private fun setupSwitchListeners() {
-        // 模块1: RTMP 推流（控制推流）
-        switchRtmp.setOnCheckedChangeListener { _, isChecked ->
-            rtmpEnabled = isChecked
-            updateModuleState(frameRtmp, rtmpEnabled)
-            Log.d("MainActivity", "RTMP推流模块: enabled=$rtmpEnabled")
+    private var isUpdating = false  // 防止循环的标志位
 
-            if (rtmpEnabled) {
-                // 启用推流
+    private fun setAllButtonsEnabled(enabled: Boolean) {
+        if (isUpdating) return
+        isUpdating = true
+
+        try {
+            // 设置所有 Switch 的状态
+            switchRtmp.isChecked = enabled
+            switchRecord.isChecked = enabled
+            switchFlv.isChecked = enabled
+            switchVideoEncoder.isChecked = enabled
+            switchAudioEncoder.isChecked = enabled
+            switchVideoPreview.isChecked = enabled
+            switchAudioPreview.isChecked = enabled
+
+            // 更新所有模块的背景色
+            updateModuleState(frameRtmp, enabled)
+            updateModuleState(frameRecord, enabled)
+            updateModuleState(frameFlv, enabled)
+            updateModuleState(frameVideoEncoder, enabled)
+            updateModuleState(frameAudioEncoder, enabled)
+            updateModuleState(frameVideoPreview, enabled)
+            updateModuleState(frameAudioPreview, enabled)
+
+            // 更新状态变量
+            rtmpEnabled = enabled
+            recordEnabled = enabled
+            flvEnabled = enabled
+            videoEncoderEnabled = enabled
+            audioEncoderEnabled = enabled
+            videoPreviewEnabled = enabled
+            audioPreviewEnabled = enabled
+
+            if (enabled) {
+                // 打开：启动推流
                 checkPermissionsAndStart()
             } else {
-                // 停止推流
+                // 关闭：停止推流
                 stopPushing()
             }
+        } finally {
+            isUpdating = false
+        }
+    }
+
+    private fun setupSwitchListeners() {
+        // 模块1: RTMP 推流
+        switchRtmp.setOnCheckedChangeListener { _, isChecked ->
+            setAllButtonsEnabled(isChecked)
+//            rtmpEnabled = isChecked
+//            updateModuleState(frameRtmp, rtmpEnabled)
+//            Log.d("MainActivity", "RTMP推流模块: enabled=$rtmpEnabled")
         }
 
         // 模块2: 本地录制
         switchRecord.setOnCheckedChangeListener { _, isChecked ->
-            recordEnabled = isChecked
-            updateModuleState(frameRecord, recordEnabled)
-            Log.d("MainActivity", "本地录制模块: enabled=$recordEnabled")
+            setAllButtonsEnabled(isChecked)
+//            recordEnabled = isChecked
+//            updateModuleState(frameRecord, recordEnabled)
+//            Log.d("MainActivity", "本地录制模块: enabled=$recordEnabled")
             // TODO: 控制本地录制
         }
 
         // 模块3: FLV 封装器
         switchFlv.setOnCheckedChangeListener { _, isChecked ->
-            flvEnabled = isChecked
-            updateModuleState(frameFlv, flvEnabled)
-            Log.d("MainActivity", "FLV封装器模块: enabled=$flvEnabled")
+            setAllButtonsEnabled(isChecked)
+//            flvEnabled = isChecked
+//            updateModuleState(frameFlv, flvEnabled)
+//            Log.d("MainActivity", "FLV封装器模块: enabled=$flvEnabled")
             // TODO: 控制 FLV 封装
         }
 
         // 模块4: 视频编码
         switchVideoEncoder.setOnCheckedChangeListener { _, isChecked ->
-            videoEncoderEnabled = isChecked
-            updateModuleState(frameVideoEncoder, videoEncoderEnabled)
-            Log.d("MainActivity", "视频编码模块: enabled=$videoEncoderEnabled")
+            setAllButtonsEnabled(isChecked)
+//            videoEncoderEnabled = isChecked
+//            updateModuleState(frameVideoEncoder, videoEncoderEnabled)
+//            Log.d("MainActivity", "视频编码模块: enabled=$videoEncoderEnabled")
             // TODO: 控制视频编码
         }
 
         // 模块5: 音频编码
         switchAudioEncoder.setOnCheckedChangeListener { _, isChecked ->
-            audioEncoderEnabled = isChecked
-            updateModuleState(frameAudioEncoder, audioEncoderEnabled)
-            Log.d("MainActivity", "音频编码模块: enabled=$audioEncoderEnabled")
+            setAllButtonsEnabled(isChecked)
+//            audioEncoderEnabled = isChecked
+//            updateModuleState(frameAudioEncoder, audioEncoderEnabled)
+//            Log.d("MainActivity", "音频编码模块: enabled=$audioEncoderEnabled")
             // TODO: 控制音频编码
         }
 
         // 模块6: 视频采集/预览
         switchVideoPreview.setOnCheckedChangeListener { _, isChecked ->
-            videoPreviewEnabled = isChecked
-            updateModuleState(frameVideoPreview, videoPreviewEnabled)
-            Log.d("MainActivity", "视频采集模块: enabled=$videoPreviewEnabled")
+            setAllButtonsEnabled(isChecked)
+//            videoPreviewEnabled = isChecked
+//            updateModuleState(frameVideoPreview, videoPreviewEnabled)
+//            Log.d("MainActivity", "视频采集模块: enabled=$videoPreviewEnabled")
             // TODO: 控制视频采集
         }
 
         // 模块7: 音频采集/预览
         switchAudioPreview.setOnCheckedChangeListener { _, isChecked ->
-            audioPreviewEnabled = isChecked
-            updateModuleState(frameAudioPreview, audioPreviewEnabled)
-            Log.d("MainActivity", "音频采集模块: enabled=$audioPreviewEnabled")
+            setAllButtonsEnabled(isChecked)
+//            audioPreviewEnabled = isChecked
+//            updateModuleState(frameAudioPreview, audioPreviewEnabled)
+//            Log.d("MainActivity", "音频采集模块: enabled=$audioPreviewEnabled")
             // TODO: 控制音频采集
         }
     }
 
     private fun initAllModulesDisabled() {
         val frames = listOf(
-            frameRtmp, frameRecord, frameFlv,
+            frameRtmp, frameRecord,
+            frameFlv,
             frameVideoEncoder, frameAudioEncoder,
             frameVideoPreview, frameAudioPreview
         )

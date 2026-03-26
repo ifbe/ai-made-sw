@@ -21,11 +21,12 @@ class PreviewLogView @JvmOverloads constructor(
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
     }
     private val entries = mutableListOf<PreviewEntry>()
-    private var maxEntries = 10
+    private var maxEntries = 20
 
     init {
         addView(container)
         isVerticalScrollBarEnabled = true
+        isFillViewport = true
     }
 
     fun setMaxEntries(max: Int) {
@@ -51,11 +52,13 @@ class PreviewLogView @JvmOverloads constructor(
         entries.forEach { entry ->
             val tv = TextView(context).apply {
                 text = entry.toShortString()
-                textSize = 9f
+                textSize = 5f
                 // 使用 Typeface.MONOSPACE
                 typeface = Typeface.MONOSPACE
-                setPadding(2, 1, 2, 1)
-                TextViewCompat.setTextAppearance(this, android.R.style.TextAppearance_Small)
+                //setPadding(2, 1, 2, 1)
+                setPadding(0, 0, 0, 0)  // 减少内边距
+                includeFontPadding = false  // 去除字体自带的内边距
+                //TextViewCompat.setTextAppearance(this, android.R.style.TextAppearance_Small)
             }
             container.addView(tv)
         }
