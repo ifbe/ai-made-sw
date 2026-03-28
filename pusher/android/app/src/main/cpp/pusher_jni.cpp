@@ -27,11 +27,15 @@ extern int init_ffmpeg_pusher(const char* url, const char* format_name,
 extern int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame);
 extern int write_audio_frame(uint8_t* data, int size, int64_t pts_ms);
 extern void close_ffmpeg_pusher();
-extern void set_avio_callback(JNIEnv* env, jobject listener);
+//extern void set_avio_callback(JNIEnv* env, jobject listener);
 
 // 全局 JVM 引用
 JavaVM* g_jvm = nullptr;
+jmethodID g_onSendData = nullptr;
+jmethodID g_onRecvData = nullptr;
+jmethodID g_onRtmpError = nullptr;
 jobject g_listener = nullptr;
+
 
 // JNI 函数实现
 extern "C" {
@@ -183,8 +187,16 @@ Java_com_example_pusher_push_JniWrapper_setAvioCallback(
         LOGI("JavaVM saved");
     }
 
-    // 设置回调
-    set_avio_callback(env, listener);
+    if (g_listener != nullptr) {
+        env->DeleteGlobalRef(g_listener);
+    }
+    g_listener = env->NewGlobalRef(listener);
+
+    jclass clazz = env->GetObjectClass(listener);
+    g_onSendData = env->GetMethodID(clazz, "onSendData", "([BJ)V");
+    g_onRecvData = env->GetMethodID(clazz, "onRecvData", "([BJ)V");
+    g_onRtmpError = env->GetMethodID(clazz, "onRtmpError", "(Ljava/lang/String;)V");
+
     LOGI("setAvioCallback completed");
 }
 
@@ -337,6 +349,77 @@ Java_com_example_pusher_push_JniWrapper_closePusher(
     }
 
     LOGI("closePusher completed");
+}
+
+// =============================================================================
+// 以下三个函数由 ffmpeg_utils.cpp 调用，实现 Java 回调的 JNI 细节
+// ffmpeg_utils.cpp 只调用这些函数，不直接写 JNI 代码
+// =============================================================================
+
+/**
+ * 回调 Java AvioDataListener.onSendData
+ */
+extern "C" void java_on_send_callback(const uint8_t* buf, int buf_size, int64_t ts_ms) {
+    if (!g_jvm || !g_listener || !g_onSendData) return;
+    JNIEnv* env = nullptr;
+    int attached = 0;
+    if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (g_jvm->AttachCurrentThread(&env, nullptr) != 0) return;
+        attached = 1;
+    }
+    if (!env) return;
+
+    int copy_len = buf_size > 16 ? 16 : buf_size;
+    jbyteArray data = env->NewByteArray(copy_len);
+    if (data) {
+        env->SetByteArrayRegion(data, 0, copy_len, reinterpret_cast<const jbyte*>(buf));
+        env->CallVoidMethod(g_listener, g_onSendData, data, ts_ms);
+        env->DeleteLocalRef(data);
+    }
+    if (attached) g_jvm->DetachCurrentThread();
+}
+
+/**
+ * 回调 Java AvioDataListener.onRecvData
+ */
+extern "C" void java_on_recv_callback(const uint8_t* buf, int buf_size, int64_t ts_ms) {
+    if (!g_jvm || !g_listener || !g_onRecvData) return;
+    JNIEnv* env = nullptr;
+    int attached = 0;
+    if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (g_jvm->AttachCurrentThread(&env, nullptr) != 0) return;
+        attached = 1;
+    }
+    if (!env) return;
+
+    int copy_len = buf_size > 16 ? 16 : buf_size;
+    jbyteArray data = env->NewByteArray(copy_len);
+    if (data) {
+        env->SetByteArrayRegion(data, 0, copy_len, reinterpret_cast<const jbyte*>(buf));
+        env->CallVoidMethod(g_listener, g_onRecvData, data, ts_ms);
+        env->DeleteLocalRef(data);
+    }
+    if (attached) g_jvm->DetachCurrentThread();
+}
+
+/**
+ * 回调 Java AvioDataListener.onRtmpError
+ */
+extern "C" void java_on_rtmp_error_callback(const char* error_msg) {
+    if (!g_jvm || !g_listener || !g_onRtmpError) return;
+    JNIEnv* env = nullptr;
+    int attached = 0;
+    if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (g_jvm->AttachCurrentThread(&env, nullptr) != 0) return;
+        attached = 1;
+    }
+    if (!env) return;
+    jstring jmsg = env->NewStringUTF(error_msg);
+    if (jmsg) {
+        env->CallVoidMethod(g_listener, g_onRtmpError, jmsg);
+        env->DeleteLocalRef(jmsg);
+    }
+    if (attached) g_jvm->DetachCurrentThread();
 }
 
 } // extern "C"

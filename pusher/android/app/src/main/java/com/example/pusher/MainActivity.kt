@@ -537,14 +537,6 @@ class MainActivity : AppCompatActivity() {
                 }
             )
 
-            // 设置推流停止回调，当推流异常断开时重置 Switch
-//            pusherController?.onPushStoppedByError = {
-//                runOnUiThread {
-//                    switchRtmp.isChecked = false
-//                    Log.d("MainActivity", "推流异常断开，RTMP Switch 已重置")
-//                }
-//            }
-
             val result = pusherController?.initPush(
                 url, protocol, format, videoCodec, videoBitrate * 1000, encodeWidth, encodeHeight,
                 audioCodec, audioBitrate * 1000, audioSamplerate.toInt(), channelCount, videoFps

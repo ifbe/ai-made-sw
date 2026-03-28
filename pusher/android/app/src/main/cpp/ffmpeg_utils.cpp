@@ -1,4 +1,3 @@
-#include <jni.h>
 #include <android/log.h>
 #include <string>
 #include <cstring>
@@ -16,13 +15,14 @@ extern "C"{
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// 全局变量定义
-extern JavaVM* g_jvm;
-extern jobject g_listener;
-jmethodID g_onSendData = nullptr;
-jmethodID g_onRecvData = nullptr;
-static int64_t g_stream_start_time = 0;  // 流开始的绝对时间（微秒）
+// ffmpeg_utils.cpp 只调用以下三个函数，不直接写 JNI 代码
+extern "C" {
+    void java_on_send_callback(const uint8_t* buf, int buf_size, int64_t ts_ms);
+    void java_on_recv_callback(const uint8_t* buf, int buf_size, int64_t ts_ms);
+    void java_on_rtmp_error_callback(const char* error_msg);
+}
 
+static int64_t g_stream_start_time = 0;  // 流开始的绝对时间（微秒）
 static AVIOContext* real_avio_ctx = nullptr;
 AVFormatContext* format_ctx = nullptr;
 AVStream* video_stream = nullptr;
@@ -154,18 +154,8 @@ static int write_packet_callback(void* opaque, const uint8_t* buf, int buf_size)
     int64_t ts_ms = (ts_us - g_stream_start_time) / 1000;
     int copy_len = buf_size > 16 ? 16 : buf_size;
 
-    if (copy_len > 0 && g_listener != nullptr) {
-        JNIEnv* env = nullptr;
-        if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-            g_jvm->AttachCurrentThread(&env, nullptr);
-        }
-
-        if (env != nullptr) {
-            jbyteArray data = env->NewByteArray(copy_len);
-            env->SetByteArrayRegion(data, 0, copy_len, reinterpret_cast<const jbyte*>(buf));
-            env->CallVoidMethod(g_listener, g_onSendData, data, ts_ms);
-            env->DeleteLocalRef(data);
-        }
+    if (copy_len > 0) {
+        java_on_send_callback(buf, buf_size, ts_ms);
     }
 
     AVIOContext* ctx = (AVIOContext*)opaque;
@@ -179,7 +169,7 @@ static int read_packet_callback(void* opaque, uint8_t* buf, int buf_size) {
     AVIOContext* ctx = (AVIOContext*)opaque;
     int ret = ctx->read_packet(ctx->opaque, buf, buf_size);
 
-    if (ret > 0 && g_listener != nullptr) {
+    if (ret > 0) {
         int64_t ts_us = av_gettime();
         if (g_stream_start_time == 0) g_stream_start_time = ts_us;
         int64_t ts_ms = (ts_us - g_stream_start_time) / 1000;
@@ -195,17 +185,7 @@ static int read_packet_callback(void* opaque, uint8_t* buf, int buf_size) {
             LOGI("read_packet_callback data: %s", hex);
         }
 
-        JNIEnv* env = nullptr;
-        if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-            g_jvm->AttachCurrentThread(&env, nullptr);
-        }
-
-        if (env != nullptr) {
-            jbyteArray data = env->NewByteArray(copy_len);
-            env->SetByteArrayRegion(data, 0, copy_len, reinterpret_cast<jbyte*>(buf));
-            env->CallVoidMethod(g_listener, g_onRecvData, data, ts_ms);
-            env->DeleteLocalRef(data);
-        }
+        java_on_recv_callback(buf, ret, ts_ms);
     }
 
     return ret;
@@ -352,7 +332,7 @@ int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame)
         for (int i = 0; i < print_len; i++) {
             sprintf(hex + i * 3, "%02x ", data[i]);
         }
-        LOGI("writeVideoFrame/JNI：timestamp=%lld size=%d pts=%lld key=%d data=%s",
+        LOGI("writeVideoFrame：timestamp=%lld size=%d pts=%lld key=%d data=%s",
              (long long)pts_ms, size, (long long)pts_ms * video_stream->time_base.den / 1000,
              is_key_frame, hex);
     }
@@ -399,6 +379,7 @@ int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame)
         char errbuf[256];
         av_strerror(ret, errbuf, sizeof(errbuf));
         LOGE("Error writing video frame: %d (%s)", ret, errbuf);
+        java_on_rtmp_error_callback(errbuf);
     }
 
     av_packet_free(&pkt);
@@ -429,7 +410,7 @@ int write_audio_frame(uint8_t* data, int size, int64_t pts_ms) {
     int64_t time_base_den = audio_stream->time_base.den;
     int64_t pts = adjusted_pts_ms * time_base_den / 1000;
 
-    LOGI("writeAudioFrame/JNI：timestamp=%lld size=%d pts=%lld",
+    LOGI("writeAudioFrame：timestamp=%lld size=%d pts=%lld",
          (long long)pts_ms, size, (long long)pts);
 
     pkt->pts = pts;
@@ -442,6 +423,7 @@ int write_audio_frame(uint8_t* data, int size, int64_t pts_ms) {
         char errbuf[256];
         av_strerror(ret, errbuf, sizeof(errbuf));
         LOGE("Error writing audio frame: %d (%s)", ret, errbuf);
+        java_on_rtmp_error_callback(errbuf);
     }
 
     av_packet_free(&pkt);
@@ -652,24 +634,4 @@ void close_ffmpeg_pusher() {
     reset_sps_pps_state();
 
     LOGI("FFmpeg pusher closed successfully");
-}
-
-/**
- * 设置 AVIO 数据回调
- */
-void set_avio_callback(JNIEnv* env, jobject listener) {
-    if (g_jvm == nullptr) {
-        env->GetJavaVM(&g_jvm);
-    }
-
-    if (g_listener != nullptr) {
-        env->DeleteGlobalRef(g_listener);
-    }
-    g_listener = env->NewGlobalRef(listener);
-
-    jclass clazz = env->GetObjectClass(listener);
-    g_onSendData = env->GetMethodID(clazz, "onSendData", "([BJ)V");
-    g_onRecvData = env->GetMethodID(clazz, "onRecvData", "([BJ)V");
-
-    LOGI("AVIO callback set");
 }

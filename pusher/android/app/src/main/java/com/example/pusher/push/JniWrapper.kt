@@ -30,4 +30,5 @@ object JniWrapper {
 interface AvioDataListener {
     fun onSendData(data: ByteArray, timestamp: Long)
     fun onRecvData(data: ByteArray, timestamp: Long)
+    fun onRtmpError(errorMsg: String)
 }

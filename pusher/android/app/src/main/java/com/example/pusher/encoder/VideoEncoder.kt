@@ -57,28 +57,33 @@ class VideoEncoder(
                 override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
 
                 override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                    // 检查是否是 CSD 数据 (SPS/PPS)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                        val buffer = codec.getOutputBuffer(index) ?: return
-                        buffer.rewind()  // 确保从 buffer 开头读
-                        val csdData = ByteArray(info.size)
-                        buffer.get(csdData, 0, info.size)
-                        Log.d("VideoEncoder", "CSD from output buffer: info.size=${info.size}, buffer.limit=${buffer.limit()}, hex=${bytesToHex(csdData)}")
-                        callback.onVideoFrame(csdData, 0, true)
-                        codec.releaseOutputBuffer(index, false)
-                        return
-                    }
+                    try {
+                        // 检查是否是 CSD 数据 (SPS/PPS)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                            val buffer = codec.getOutputBuffer(index) ?: return
+                            buffer.rewind()  // 确保从 buffer 开头读
+                            val csdData = ByteArray(info.size)
+                            buffer.get(csdData, 0, info.size)
+                            Log.d("VideoEncoder", "CSD from output buffer: info.size=${info.size}, buffer.limit=${buffer.limit()}, hex=${bytesToHex(csdData)}")
+                            callback.onVideoFrame(csdData, 0, true)
+                            codec.releaseOutputBuffer(index, false)
+                            return
+                        }
 
-                    // 普通视频帧
-                    val buffer = codec.getOutputBuffer(index) ?: return
-                    val data = ByteArray(info.size)
-                    buffer.get(data, 0, info.size)
-                    val isKey = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                    if (isKey) {
-                        Log.d("VideoEncoder", "Key frame, size=${data.size}, hex=${bytesToHex(data)}")
+                        // 普通视频帧
+                        val buffer = codec.getOutputBuffer(index) ?: return
+                        val data = ByteArray(info.size)
+                        buffer.get(data, 0, info.size)
+                        val isKey = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                        if (isKey) {
+                            Log.d("VideoEncoder", "Key frame, size=${data.size}, hex=${bytesToHex(data)}")
+                        }
+                        callback.onVideoFrame(data, info.presentationTimeUs / 1000, isKey)
+                        codec.releaseOutputBuffer(index, false)
+                    } catch (e: IllegalStateException) {
+                        // codec is released already, ignore late callbacks
+                        Log.w("VideoEncoder", "onOutputBufferAvailable after release, ignored")
                     }
-                    callback.onVideoFrame(data, info.presentationTimeUs / 1000, isKey)
-                    codec.releaseOutputBuffer(index, false)
                 }
 
                 override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {

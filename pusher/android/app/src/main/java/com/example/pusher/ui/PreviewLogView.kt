@@ -23,6 +23,15 @@ class PreviewLogView @JvmOverloads constructor(
     private val entries = mutableListOf<PreviewEntry>()
     private var maxEntries = 20
 
+    // Batching: accumulate entries, refresh at most every FLUSH_INTERVAL_MS or when batch is full
+    private val pendingEntries = mutableListOf<PreviewEntry>()
+    private var pendingFlushRunnable: Runnable? = null
+    private val pendingLock = Any()
+    private companion object {
+        private const val FLUSH_INTERVAL_MS = 1000L
+        private const val BATCH_SIZE = 10
+    }
+
     init {
         addView(container)
         isVerticalScrollBarEnabled = true
@@ -35,7 +44,52 @@ class PreviewLogView @JvmOverloads constructor(
     }
 
     fun addEntry(entry: PreviewEntry) {
-        entries.add(entry)
+        synchronized(pendingLock) {
+            pendingEntries.add(entry)
+            // Keep pendingEntries bounded too
+            while (pendingEntries.size > maxEntries * 2) {
+                pendingEntries.removeAt(0)
+            }
+            if (pendingEntries.size >= BATCH_SIZE) {
+                flushInternal()
+            } else if (pendingFlushRunnable == null) {
+                pendingFlushRunnable = Runnable { flushInternal() }
+                postDelayed(pendingFlushRunnable!!, FLUSH_INTERVAL_MS)
+            }
+        }
+    }
+
+    /**
+     * Replace all entries at once (used for bulk updates), no batching.
+     */
+    fun setEntries(newEntries: List<PreviewEntry>) {
+        synchronized(pendingLock) {
+            pendingFlushRunnable?.let { removeCallbacks(it) }
+            pendingFlushRunnable = null
+            pendingEntries.clear()
+        }
+        entries.clear()
+        entries.addAll(newEntries)
+        trimEntries()
+        refreshUI()
+        post { fullScroll(FOCUS_DOWN) }
+    }
+
+    /**
+     * Force flush any pending entries immediately (e.g. when stopping streaming).
+     */
+    fun flush() {
+        synchronized(pendingLock) {
+            flushInternal()
+        }
+    }
+
+    private fun flushInternal() {
+        pendingFlushRunnable?.let { removeCallbacks(it) }
+        pendingFlushRunnable = null
+        if (pendingEntries.isEmpty()) return
+        entries.addAll(pendingEntries)
+        pendingEntries.clear()
         trimEntries()
         refreshUI()
         post { fullScroll(FOCUS_DOWN) }
@@ -53,18 +107,20 @@ class PreviewLogView @JvmOverloads constructor(
             val tv = TextView(context).apply {
                 text = entry.toShortString()
                 textSize = 5f
-                // 使用 Typeface.MONOSPACE
                 typeface = Typeface.MONOSPACE
-                //setPadding(2, 1, 2, 1)
-                setPadding(0, 0, 0, 0)  // 减少内边距
-                includeFontPadding = false  // 去除字体自带的内边距
-                //TextViewCompat.setTextAppearance(this, android.R.style.TextAppearance_Small)
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
             }
             container.addView(tv)
         }
     }
 
     fun clear() {
+        synchronized(pendingLock) {
+            pendingFlushRunnable?.let { removeCallbacks(it) }
+            pendingFlushRunnable = null
+            pendingEntries.clear()
+        }
         entries.clear()
         refreshUI()
     }

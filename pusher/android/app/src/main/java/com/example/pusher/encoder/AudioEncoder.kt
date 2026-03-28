@@ -125,6 +125,10 @@ class AudioEncoder(
                 }
             } catch (e: InterruptedException) {
                 break
+            } catch (e: IllegalStateException) {
+                // codec released, exit loop
+                Log.w("AudioEncoder", "codec released, exiting processOutput")
+                break
             } catch (e: Exception) {
                 if (!isStopping) {
                     Log.e("AudioEncoder", "processOutput error", e)

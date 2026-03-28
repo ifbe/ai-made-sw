@@ -175,6 +175,10 @@ class PusherController(
                                 Log.d(tag, "AVIO recv: size=${data.size}, ts=$timestamp")
                                 onAvioData(1, timestamp, data)
                             }
+                            override fun onRtmpError(errorMsg: String) {
+                                Log.e(tag, "RTMP error: $errorMsg")
+                                onRtmpError?.invoke(errorMsg)
+                            }
                         })
                         isStreamingEnabled = true
                         Log.d(tag, "Step 2: AVIO callback set SUCCESS, streaming enabled")
