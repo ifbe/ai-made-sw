@@ -20,6 +20,7 @@ extern JavaVM* g_jvm;
 extern jobject g_listener;
 jmethodID g_onSendData = nullptr;
 jmethodID g_onRecvData = nullptr;
+static int64_t g_stream_start_time = 0;  // 流开始的绝对时间（微秒）
 
 static AVIOContext* real_avio_ctx = nullptr;
 AVFormatContext* format_ctx = nullptr;
@@ -73,6 +74,7 @@ static int64_t adjust_audio_pts(int64_t pts_ms) {
 void reset_pts_base() {
     video_base_pts_ms = -1;
     audio_base_pts_ms = -1;
+    g_stream_start_time = 0;
     LOGI("PTS base reset");
 }
 
@@ -110,7 +112,8 @@ static int write_packet_callback(void* opaque, const uint8_t* buf, int buf_size)
     }
 
     int64_t ts_us = av_gettime();
-    int64_t ts_ms = ts_us / 1000;
+    if (g_stream_start_time == 0) g_stream_start_time = ts_us;
+    int64_t ts_ms = (ts_us - g_stream_start_time) / 1000;
     int copy_len = buf_size > 16 ? 16 : buf_size;
 
     if (copy_len > 0 && g_listener != nullptr) {
@@ -140,7 +143,8 @@ static int read_packet_callback(void* opaque, uint8_t* buf, int buf_size) {
 
     if (ret > 0 && g_listener != nullptr) {
         int64_t ts_us = av_gettime();
-        int64_t ts_ms = ts_us / 1000;
+        if (g_stream_start_time == 0) g_stream_start_time = ts_us;
+        int64_t ts_ms = (ts_us - g_stream_start_time) / 1000;
 
         int copy_len = ret > 16 ? 16 : ret;
 
@@ -310,8 +314,9 @@ int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame)
         for (int i = 0; i < print_len; i++) {
             sprintf(hex + i * 3, "%02x ", data[i]);
         }
-        LOGI("write_video_frame: size=%d, pts=%lld, key=%d, data=%s",
-             size, (long long)pts_ms, is_key_frame, hex);
+        LOGI("write_video_frame: size=%d, pts_ms=%lld (pts_ms*timebase=%lld), key=%d, data=%s",
+             size, (long long)pts_ms, (long long)pts_ms * video_stream->time_base.den / 1000,
+             is_key_frame, hex);
     }
 
     // 如果是 CSD 数据，处理 extradata
@@ -383,6 +388,9 @@ int write_audio_frame(uint8_t* data, int size, int64_t pts_ms) {
 
     int64_t time_base_den = audio_stream->time_base.den;
     int64_t pts = adjusted_pts_ms * time_base_den / 1000;
+
+    LOGI("write_audio_frame: size=%d, pts_ms=%lld, adjusted_pts_ms=%lld, pts_90k=%lld",
+         size, (long long)pts_ms, (long long)adjusted_pts_ms, (long long)pts);
 
     pkt->pts = pts;
     pkt->dts = pts;
@@ -559,6 +567,12 @@ void close_ffmpeg_pusher() {
             // 释放自定义上下文
             av_free(custom_ctx);
             format_ctx->pb = nullptr;
+        }
+
+        // 释放 video extradata（由 process_csd_data 分配）
+        if (video_stream && video_stream->codecpar->extradata) {
+            av_freep(&video_stream->codecpar->extradata);
+            video_stream->codecpar->extradata_size = 0;
         }
 
         // 关闭真实的 AVIO 上下文

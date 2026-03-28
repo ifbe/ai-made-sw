@@ -74,6 +74,7 @@ class MainActivity : AppCompatActivity() {
 
     private var pusherController: PusherController? = null
     private var cameraHelper: CameraHelper? = null
+    private var isActivityRunning = false  // 防止 Activity 销毁后回调执行导致崩溃
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(R.style.Theme_Pusher)
@@ -203,6 +204,8 @@ class MainActivity : AppCompatActivity() {
         initAllModulesDisabled()
 
         requestPermissions()
+
+        isActivityRunning = true
     }
 
     private var isUpdating = false  // 防止循环的标志位
@@ -212,8 +215,7 @@ class MainActivity : AppCompatActivity() {
         isUpdating = true
 
         try {
-            // 设置所有 Switch 的状态
-            switchRtmp.isChecked = enabled
+            // 设置所有 Switch 的状态（RTMP 开关除外，由独立逻辑控制）
             switchRecord.isChecked = enabled
             switchFlv.isChecked = enabled
             switchVideoEncoder.isChecked = enabled
@@ -222,7 +224,7 @@ class MainActivity : AppCompatActivity() {
             switchAudioPreview.isChecked = enabled
 
             // 更新所有模块的背景色
-            updateModuleState(frameRtmp, enabled)
+            updateModuleState(frameRtmp, enabled)  // 总开关控制所有 7 个
             updateModuleState(frameRecord, enabled)
             updateModuleState(frameFlv, enabled)
             updateModuleState(frameVideoEncoder, enabled)
@@ -252,12 +254,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupSwitchListeners() {
-        // 模块1: RTMP 推流
+        // 模块1: RTMP 推流（独立控制，不触发全局开关）
         switchRtmp.setOnCheckedChangeListener { _, isChecked ->
-            setAllButtonsEnabled(isChecked)
-//            rtmpEnabled = isChecked
-//            updateModuleState(frameRtmp, rtmpEnabled)
-//            Log.d("MainActivity", "RTMP推流模块: enabled=$rtmpEnabled")
+            rtmpEnabled = isChecked
+            updateModuleState(frameRtmp, rtmpEnabled)
+            if (!isChecked) {
+                // 关闭 RTMP：只停止 FFmpeg，不影响编码器和相机
+                pusherController?.stopRtmpOnly()
+                Log.d("MainActivity", "RTMP 模块已关闭，其他模块继续运行")
+            }
+            Log.d("MainActivity", "RTMP推流模块: enabled=$rtmpEnabled")
         }
 
         // 模块2: 本地录制
@@ -344,6 +350,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun updateModuleState(frame: FrameLayout, enabled: Boolean) {
         frame.isEnabled = enabled
+        frame.alpha = if (enabled) 1.0f else 0.5f
         Log.d("MainActivity", "updateModuleState: frame=${frame.id}, enabled=$enabled")
     }
 
@@ -455,34 +462,43 @@ class MainActivity : AppCompatActivity() {
             // 创建 PusherController
             pusherController = PusherController(
                 onAvioData = { direction, timestamp, data ->
+                    if (!isActivityRunning) return@PusherController
                     runOnUiThread {
+                        if (!isActivityRunning) return@runOnUiThread
                         if (data.isNotEmpty()) {
                             previewRtmp.addEntry(PreviewEntry(timestamp, direction, data))
                         }
                     }
                 },
                 onVideoFrameCallback = { data, timestamp, isKey ->
+                    if (!isActivityRunning) return@PusherController
                     runOnUiThread {
+                        if (!isActivityRunning) return@runOnUiThread
                         if (data.isNotEmpty()) {
                             previewVideo.addEntry(PreviewEntry(timestamp, -1, data, ""))
                         }
                     }
                 },
                 onAudioFrameCallback = { data, timestamp ->
+                    if (!isActivityRunning) return@PusherController
                     runOnUiThread {
+                        if (!isActivityRunning) return@runOnUiThread
                         if (data.isNotEmpty()) {
                             previewAudio.addEntry(PreviewEntry(timestamp, -1, data, ""))
                         }
                     }
                 },
                 onMuxData = { data, timestamp ->
+                    if (!isActivityRunning) return@PusherController
                     runOnUiThread {
+                        if (!isActivityRunning) return@runOnUiThread
                         if (data.isNotEmpty()) {
                             previewMux.addEntry(PreviewEntry(timestamp, -1, data, ""))
                         }
                     }
                 },
                 onPcmData = { pcmData ->
+                    if (!isActivityRunning) return@PusherController
                     // 波形显示
                     try {
                         val shortBuffer = java.nio.ByteBuffer.wrap(pcmData).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
@@ -498,10 +514,25 @@ class MainActivity : AppCompatActivity() {
                         }
                         val waveformData = samples.take(100).toFloatArray()
                         if (waveformData.isNotEmpty()) {
-                            runOnUiThread { waveformView.setWaveformData(waveformData, waveformData) }
+                            runOnUiThread {
+                                if (!isActivityRunning) return@runOnUiThread
+                                waveformView.setWaveformData(waveformData, waveformData)
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e("MainActivity", "Waveform error", e)
+                    }
+                },
+                onRtmpError = { errorMsg ->
+                    if (!isActivityRunning) return@PusherController
+                    runOnUiThread {
+                        if (!isActivityRunning) return@runOnUiThread
+                        // 仅让 RTMP 模块灰掉，不触发全局关闭
+                        rtmpEnabled = false
+                        switchRtmp.isChecked = false
+                        updateModuleState(frameRtmp, false)
+                        Toast.makeText(this, "RTMP 连接失败: $errorMsg", Toast.LENGTH_LONG).show()
+                        Log.d("MainActivity", "RTMP 错误: $errorMsg，其他模块继续运行")
                     }
                 }
             )
@@ -547,6 +578,31 @@ class MainActivity : AppCompatActivity() {
         cameraHelper = null
 
         Toast.makeText(this, "推流已停止", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onDestroy() {
+        Log.d("MainActivity", "onDestroy called")
+        isActivityRunning = false
+        stopPushing()
+        PushService.stop(this)
+        super.onDestroy()
+    }
+
+    override fun onPause() {
+        Log.d("MainActivity", "onPause called")
+        // 如果在推流中暂停应用，也停止推流释放资源
+        if (pusherController != null || cameraHelper != null) {
+            stopPushing()
+            // 重置所有 Switch 状态
+            switchRtmp.isChecked = false
+            switchRecord.isChecked = false
+            switchFlv.isChecked = false
+            switchVideoEncoder.isChecked = false
+            switchAudioEncoder.isChecked = false
+            switchVideoPreview.isChecked = false
+            switchAudioPreview.isChecked = false
+        }
+        super.onPause()
     }
 
     companion object {

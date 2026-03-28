@@ -4,6 +4,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AudioCapture(
@@ -42,7 +43,16 @@ class AudioCapture(
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        executor.shutdown()
         audioRecord = null
+        
+        // 正确关闭线程池
+        executor.shutdown()
+        try {
+            if (!executor.awaitTermination(500, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow()
+            }
+        } catch (e: InterruptedException) {
+            executor.shutdownNow()
+        }
     }
 }

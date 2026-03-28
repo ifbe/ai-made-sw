@@ -5,6 +5,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AudioEncoder(
@@ -139,6 +140,8 @@ class AudioEncoder(
             return
         }
 
+        isStopping = true
+
         try {
             // 发送 EOS 信号
             val inputIndex = mediaCodec?.dequeueInputBuffer(10000) ?: -1
@@ -146,16 +149,43 @@ class AudioEncoder(
                 mediaCodec?.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             }
 
-            // 等待一小段时间让编码器完成
-            Thread.sleep(50)
+            // 等待编码器完成 EOS 处理（最多 200ms）
+            var waited = 0
+            while (waited < 200) {
+                val info = MediaCodec.BufferInfo()
+                val idx = mediaCodec?.dequeueOutputBuffer(info, 50000) ?: -1
+                if (idx >= 0) {
+                    val isEOS = ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
+                    mediaCodec?.releaseOutputBuffer(idx, false)
+                    if (isEOS) break
+                } else if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    waited += 50
+                    Thread.sleep(50)
+                } else {
+                    break
+                }
+            }
 
             mediaCodec?.stop()
             mediaCodec?.release()
         } catch (e: Exception) {
             Log.e("AudioEncoder", "stop error", e)
+            try {
+                mediaCodec?.release()
+            } catch (e2: Exception) { /* ignore */ }
         }
         mediaCodec = null
-        executor.shutdown()
+
+        if (!executor.isShutdown) {
+            executor.shutdown()
+            try {
+                if (!executor.awaitTermination(100, TimeUnit.MILLISECONDS)) {
+                    executor.shutdownNow()
+                }
+            } catch (e: InterruptedException) {
+                executor.shutdownNow()
+            }
+        }
         Log.d("AudioEncoder", "stop completed")
     }
 }

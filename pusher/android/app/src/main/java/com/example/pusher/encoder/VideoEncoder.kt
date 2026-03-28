@@ -82,21 +82,35 @@ class VideoEncoder(
 
                 override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
                     Log.d("VideoEncoder", "Output format changed")
-                    // 从 MediaFormat 获取 SPS/PPS
+                    // 从 MediaFormat 获取 SPS/PPS（裸数据，不带起始码）
                     val csd0 = format.getByteBuffer("csd-0")
                     val csd1 = format.getByteBuffer("csd-1")
 
+                    // 合并为 Annex-B 格式（加起始码 00 00 00 01）
+                    val annexB = java.io.ByteArrayOutputStream()
                     if (csd0 != null && csd0.remaining() > 0) {
                         val sps = ByteArray(csd0.remaining())
                         csd0.get(sps)
-                        Log.d("VideoEncoder", "SPS from format, size=${sps.size}, hex=${bytesToHex(sps)}")
-                        callback.onVideoFrame(sps, 0, true)
+                        Log.d("VideoEncoder", "SPS from format, size=${sps.size}")
+                        annexB.write(0x00)
+                        annexB.write(0x00)
+                        annexB.write(0x00)
+                        annexB.write(0x01)
+                        annexB.write(sps)
                     }
                     if (csd1 != null && csd1.remaining() > 0) {
                         val pps = ByteArray(csd1.remaining())
                         csd1.get(pps)
-                        Log.d("VideoEncoder", "PPS from format, size=${pps.size}, hex=${bytesToHex(pps)}")
-                        callback.onVideoFrame(pps, 0, true)
+                        Log.d("VideoEncoder", "PPS from format, size=${pps.size}")
+                        annexB.write(0x00)
+                        annexB.write(0x00)
+                        annexB.write(0x00)
+                        annexB.write(0x01)
+                        annexB.write(pps)
+                    }
+                    val combined = annexB.toByteArray()
+                    if (combined.isNotEmpty()) {
+                        callback.onVideoFrame(combined, 0, true)
                     }
                 }
 
@@ -122,11 +136,38 @@ class VideoEncoder(
         }
 
         try {
+            // 发送 EOS 信号，让编码器完成最后几帧
+            val inputIndex = mediaCodec?.dequeueInputBuffer(10000) ?: -1
+            if (inputIndex >= 0) {
+                mediaCodec?.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            }
+
+            // 等待编码器完成（最多 200ms）
+            var waited = 0
+            while (waited < 200) {
+                val info = MediaCodec.BufferInfo()
+                val idx = mediaCodec?.dequeueOutputBuffer(info, 50000) ?: -1
+                if (idx >= 0) {
+                    val isEOS = ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
+                    mediaCodec?.releaseOutputBuffer(idx, false)
+                    if (isEOS) break
+                } else if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    waited += 50
+                    Thread.sleep(50)
+                } else {
+                    break
+                }
+            }
+
             mediaCodec?.stop()
             mediaCodec?.release()
             inputSurface?.release()
         } catch (e: Exception) {
             Log.e("VideoEncoder", "stop error", e)
+            try {
+                mediaCodec?.release()
+                inputSurface?.release()
+            } catch (e2: Exception) { /* ignore */ }
         }
         mediaCodec = null
         inputSurface = null
