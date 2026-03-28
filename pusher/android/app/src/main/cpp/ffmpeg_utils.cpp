@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <string>
 #include <cstring>
+#include <pthread.h>
 extern "C"{
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
@@ -40,9 +41,46 @@ static uint8_t* pps_buffer = nullptr;
 static int pps_size = 0;
 static int extradata_sent = 0;
 
+// FFmpeg 写入锁：音视频写入必须串行化
+static pthread_mutex_t write_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // 时间戳基准
 static int64_t video_base_pts_ms = -1;
 static int64_t audio_base_pts_ms = -1;
+
+/**
+ * 根据采样率和通道数构造 AAC AudioSpecificConfig (ASC)
+ * 返回 2 字节的 ASC， caller 负责 free
+ */
+static uint8_t* build_aac_asc(int sample_rate, int channels, int* out_size) {
+    // AAC-LC object type = 2
+    // sampling_frequency_index: 44100=4, 48000=3, 16000=7, 8000=15
+    // channel_configuration: 1=mono, 2=stereo
+    static const int sample_rate_table[] = {
+        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+        16000, 12000, 11025, 8000, 7350, 0, 0, 0
+    };
+    int sri = 0xF; // default to 8000
+    for (int i = 0; i < 16; i++) {
+        if (sample_rate_table[i] == sample_rate) {
+            sri = i;
+            break;
+        }
+    }
+    int ch = (channels >= 2) ? 2 : 1;
+
+    // ASC 2字节格式 (AAC-LC):
+    // byte0[7:5]=objecttype[4:2], byte0[4:0]=objecttype[1:0]|sri[3:2]
+    // byte1[7:4]=sri[1:0], byte1[3:0]=channel_configuration
+    uint8_t* asc = (uint8_t*)av_malloc(2);
+    asc[0] = 0x02;                  // objecttype = AAC-LC (00010)
+    asc[0] = (asc[0] << 3) | ((sri >> 1) & 0x07);
+    asc[1] = ((sri & 0x01) << 7) | (ch << 3);
+    *out_size = 2;
+    LOGI("AAC ASC: sample_rate=%d sri=%d channels=%d -> ASC=%02x %02x",
+         sample_rate, sri, ch, asc[0], asc[1]);
+    return asc;
+}
 
 /**
  * 调整视频时间戳，从0开始
@@ -314,8 +352,8 @@ int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame)
         for (int i = 0; i < print_len; i++) {
             sprintf(hex + i * 3, "%02x ", data[i]);
         }
-        LOGI("write_video_frame: size=%d, pts_ms=%lld (pts_ms*timebase=%lld), key=%d, data=%s",
-             size, (long long)pts_ms, (long long)pts_ms * video_stream->time_base.den / 1000,
+        LOGI("writeVideoFrame/JNI：timestamp=%lld size=%d pts=%lld key=%d data=%s",
+             (long long)pts_ms, size, (long long)pts_ms * video_stream->time_base.den / 1000,
              is_key_frame, hex);
     }
 
@@ -354,7 +392,9 @@ int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame)
         pkt->flags |= AV_PKT_FLAG_KEY;
     }
 
+    pthread_mutex_lock(&write_mutex);
     int ret = av_interleaved_write_frame(format_ctx, pkt);
+    pthread_mutex_unlock(&write_mutex);
     if (ret < 0) {
         char errbuf[256];
         av_strerror(ret, errbuf, sizeof(errbuf));
@@ -389,13 +429,15 @@ int write_audio_frame(uint8_t* data, int size, int64_t pts_ms) {
     int64_t time_base_den = audio_stream->time_base.den;
     int64_t pts = adjusted_pts_ms * time_base_den / 1000;
 
-    LOGI("write_audio_frame: size=%d, pts_ms=%lld, adjusted_pts_ms=%lld, pts_90k=%lld",
-         size, (long long)pts_ms, (long long)adjusted_pts_ms, (long long)pts);
+    LOGI("writeAudioFrame/JNI：timestamp=%lld size=%d pts=%lld",
+         (long long)pts_ms, size, (long long)pts);
 
     pkt->pts = pts;
     pkt->dts = pts;
 
+    pthread_mutex_lock(&write_mutex);
     int ret = av_interleaved_write_frame(format_ctx, pkt);
+    pthread_mutex_unlock(&write_mutex);
     if (ret < 0) {
         char errbuf[256];
         av_strerror(ret, errbuf, sizeof(errbuf));
@@ -479,8 +521,17 @@ int init_ffmpeg_pusher(const char* url, const char* format_name,
         codecpar->codec_id = AV_CODEC_ID_AAC;
         codecpar->sample_rate = sample_rate;
         codecpar->ch_layout.nb_channels = channel_count;
-        codecpar->format = AV_SAMPLE_FMT_FLTP;
+        codecpar->format = 0;  // 压缩音频不设 sample format，让 FFmpeg自行推导
         codecpar->bit_rate = 128000;
+
+        // 设置 AAC AudioSpecificConfig (ASC) 作为 extradata
+        int asc_size = 0;
+        uint8_t* asc = build_aac_asc(sample_rate, channel_count, &asc_size);
+        if (asc && asc_size > 0) {
+            codecpar->extradata = asc;
+            codecpar->extradata_size = asc_size;
+            LOGI("Audio extradata (ASC) set: %02x %02x", asc[0], asc[1]);
+        }
 
         audio_stream->time_base = {audio_time_base_num, sample_rate};
         audio_time_base_den = sample_rate;

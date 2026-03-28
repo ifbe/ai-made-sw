@@ -60,9 +60,10 @@ class VideoEncoder(
                     // 检查是否是 CSD 数据 (SPS/PPS)
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                         val buffer = codec.getOutputBuffer(index) ?: return
+                        buffer.rewind()  // 确保从 buffer 开头读
                         val csdData = ByteArray(info.size)
                         buffer.get(csdData, 0, info.size)
-                        Log.d("VideoEncoder", "CSD data received, size=${csdData.size}, hex=${bytesToHex(csdData)}")
+                        Log.d("VideoEncoder", "CSD from output buffer: info.size=${info.size}, buffer.limit=${buffer.limit()}, hex=${bytesToHex(csdData)}")
                         callback.onVideoFrame(csdData, 0, true)
                         codec.releaseOutputBuffer(index, false)
                         return
@@ -86,29 +87,25 @@ class VideoEncoder(
                     val csd0 = format.getByteBuffer("csd-0")
                     val csd1 = format.getByteBuffer("csd-1")
 
-                    // 合并为 Annex-B 格式（加起始码 00 00 00 01）
+                    // csd-0 / csd-1 已经包含起始码 00 00 00 01，直接拼接即可
                     val annexB = java.io.ByteArrayOutputStream()
                     if (csd0 != null && csd0.remaining() > 0) {
                         val sps = ByteArray(csd0.remaining())
                         csd0.get(sps)
-                        Log.d("VideoEncoder", "SPS from format, size=${sps.size}")
-                        annexB.write(0x00)
-                        annexB.write(0x00)
-                        annexB.write(0x00)
-                        annexB.write(0x01)
+                        val spsHex = sps.joinToString(" ") { "%02x".format(it) }
+                        Log.d("VideoEncoder", "SPS from format, size=${sps.size}, hex=$spsHex")
                         annexB.write(sps)
                     }
                     if (csd1 != null && csd1.remaining() > 0) {
                         val pps = ByteArray(csd1.remaining())
                         csd1.get(pps)
-                        Log.d("VideoEncoder", "PPS from format, size=${pps.size}")
-                        annexB.write(0x00)
-                        annexB.write(0x00)
-                        annexB.write(0x00)
-                        annexB.write(0x01)
+                        val ppsHex = pps.joinToString(" ") { "%02x".format(it) }
+                        Log.d("VideoEncoder", "PPS from format, size=${pps.size}, hex=$ppsHex")
                         annexB.write(pps)
                     }
                     val combined = annexB.toByteArray()
+                    val combinedHex = combined.joinToString(" ") { "%02x".format(it) }
+                    Log.d("VideoEncoder", "combined from format, size=${combined.size}, hex=$combinedHex")
                     if (combined.isNotEmpty()) {
                         callback.onVideoFrame(combined, 0, true)
                     }

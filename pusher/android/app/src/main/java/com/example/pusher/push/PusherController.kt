@@ -23,6 +23,8 @@ class PusherController(
     private var audioCapture: AudioCapture? = null
     private var isPushing = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor()
+    // 独立的音频写入线程池，避免网络阻塞影响音频编码
+    private var audioWriteExecutor: java.util.concurrent.ExecutorService = Executors.newSingleThreadExecutor()
 
     private var videoWidth = 0
     private var videoHeight = 0
@@ -35,11 +37,11 @@ class PusherController(
     private var videoBasePtsUs = -1L   // 视频首帧 PTS 基线（来自 camera uptime）
     private var audioBasePtsUs = -1L   // 音频首帧 PTS 基线（来自 audio encoder）
 
-    // 视频基准 PTS（微秒）：第一个非 CSD 视频帧设定
+    // 视频基准 PTS（毫秒）：第一个非 CSD 视频帧设定
     // CSD 帧的 PTS=0 不用来设定基准，这样 CSD 会相对于 I-frame 有负的 PTS
-    private var videoAnchorPtsUs = -1L
-    // 音频首个帧的 PTS（微秒）
-    private var audioStartPtsUs = -1L
+    private var videoAnchorPtsMs = -1L
+    // 音频首帧 PTS（毫秒）：来自 AudioEncoder，已经除过 1000
+    private var audioStartPtsMs = -1L
 
     private val tag = "PusherController"
 
@@ -50,6 +52,7 @@ class PusherController(
         if (data.size >= 4 &&
             data[0] == 0x00.toByte() && data[1] == 0x00.toByte() &&
             data[2] == 0x00.toByte() && data[3] == 0x01.toByte()) {
+            // 已经是 Annex-B 格式，直接返回
             return data
         }
 
@@ -135,8 +138,13 @@ class PusherController(
         this.audioFrameCount = 0L
         this.videoBasePtsUs = -1L
         this.audioBasePtsUs = -1L
-        this.videoAnchorPtsUs = -1L
-        this.audioStartPtsUs = -1L
+        this.videoAnchorPtsMs = -1L
+        this.audioStartPtsMs = -1L
+
+        // 重建音频写入线程池（stopPush 会关闭它）
+        if (audioWriteExecutor.isShutdown || audioWriteExecutor.isTerminated) {
+            audioWriteExecutor = Executors.newSingleThreadExecutor()
+        }
 
         var ffmpegErrorMsg = ""
 
@@ -222,6 +230,7 @@ class PusherController(
                                 if (isStreamingEnabled && isPushing.get()) {
                                     // CSD 帧 PTS=0（Native 层会作为 extradata 处理）
                                     if (isCsd) {
+                                        Log.d(tag, "writeVideoFrame CSD/Java：timestamp=0 size=${annexBData.size} pts=0")
                                         val result = JniWrapper.writeVideoFrame(annexBData, 0, isKeyFrame)
                                         if (!result) {
                                             Log.e(tag, "writeVideoFrame CSD FAILED")
@@ -229,16 +238,20 @@ class PusherController(
                                         return@execute
                                     }
                                     // 第一个视频帧（非 CSD）设定 PTS 基准
-                                    // CSD 帧 rawTsMs=0 不用来设定 anchor
+                                    // CSD 帧 timestamp=0 不用来设定 anchor
                                     // timestamp 已经是毫秒（来自 info.presentationTimeUs / 1000）
-                                    val isCSD = (rawTsMs == 0L)
-                                    if (!isCSD && videoAnchorPtsUs < 0) {
-                                        videoAnchorPtsUs = timestamp
-                                        Log.d(tag, "Video anchor set: rawTs=${timestamp}ms, anchorMs=$videoAnchorPtsUs")
+                                    val isCSD = (timestamp == 0L)
+                                    if (!isCSD && videoAnchorPtsMs < 0) {
+                                        videoAnchorPtsMs = timestamp
+                                        Log.d(tag, "Video anchor set: rawTs=${timestamp}ms, anchorMs=$videoAnchorPtsMs")
                                     }
-                                    // 视频帧 PTS = (现在 PTS - 基准 PTS)，归一化到第一个视频帧为 0
-                                    val videoPtsUs = timestamp - videoAnchorPtsUs  // 毫秒，传入 native 后 *1000 转微秒
-                                    Log.d(tag, "writeVideoFrame: rawTsMs=${timestamp}, ptsMs=$videoPtsUs")
+                                    // CSD 用 pts=0，IDR 用 pts=1ms（+1 偏移避免 FFmpeg 顺序错乱）
+                                    val videoPtsUs = if (isCSD) {
+                                        0L
+                                    } else {
+                                        timestamp - videoAnchorPtsMs + 1  // ms，+1 偏移
+                                    }
+                                    Log.d(tag, "writeVideoFrame/Java：timestamp=${timestamp} size=${annexBData.size} pts=$videoPtsUs")
                                     val result = JniWrapper.writeVideoFrame(annexBData, videoPtsUs, isKeyFrame)
                                     if (!result) {
                                         Log.e(tag, "writeVideoFrame FAILED: size=${annexBData.size}, pts=$videoPtsUs, key=$isKeyFrame")
@@ -285,28 +298,24 @@ class PusherController(
                     // 预览回调
                     onAudioFrameCallback(data, normalizedPreviewPts)
 
-                    // 如果推流已启用，写入 JNI
+                    // 如果推流已启用，写入 JNI（使用独立线程池，避免网络阻塞影响音频编码）
                     if (isStreamingEnabled && isPushing.get()) {
-                        executor.execute {
+                        audioWriteExecutor.execute {
                             try {
                                 // 双重检查：isStreamingEnabled 和 isPushing 都为 true 时才调用
                                 if (isStreamingEnabled && isPushing.get()) {
-                                    // 记录音频开始 PTS（微秒）
-                                    if (audioStartPtsUs < 0) {
-                                        audioStartPtsUs = timestamp
-                                        Log.d(tag, "Audio start recorded: audioTimestampUs=$audioStartPtsUs, videoAnchorMs=$videoAnchorPtsUs")
+                                    // 记录音频开始的 AudioEncoder 时间戳（用第一个真实帧设定锚点）
+                                    // CSD 帧 timestamp=0 不设定锚点
+                                    if (audioStartPtsMs < 0 && timestamp > 0) {
+                                        audioStartPtsMs = timestamp  // 用 AudioEncoder 的 timestamp 做锚点
+                                        Log.d(tag, "Audio anchor set: audioStartPtsMs=$audioStartPtsMs")
                                     }
-                                    // audioTimestamp (微秒) 和 audioStartPtsUs (微秒) 是微秒，videoAnchorPtsUs 是毫秒
-                                    // 正确公式: ((audioTimestamp - audioStartPtsUs) / 1000) - videoAnchorPtsMs
-                                    val audioPtsUs = if (videoAnchorPtsUs > 0) {
-                                        ((timestamp - audioStartPtsUs) / 1000) - videoAnchorPtsUs
-                                    } else {
-                                        0L
-                                    }
-                                    Log.d(tag, "writeAudioFrame: audioTsUs=$timestamp, ptsMs=$audioPtsUs")
-                                    val result = JniWrapper.writeAudioFrame(data, audioPtsUs)
+                                    // 音频 PTS = 相对 AudioEncoder 锚点的增量（毫秒）
+                                    val audioPtsMs = if (audioStartPtsMs >= 0) timestamp - audioStartPtsMs else 0L
+                                    Log.d(tag, "writeAudioFrame/Java：timestamp=${timestamp} size=${data.size} pts=$audioPtsMs")
+                                    val result = JniWrapper.writeAudioFrame(data, audioPtsMs)
                                     if (!result) {
-                                        Log.e(tag, "writeAudioFrame FAILED: size=${data.size}, pts=$audioPtsUs")
+                                        Log.e(tag, "writeAudioFrame FAILED: size=${data.size}, pts=$audioPtsMs")
                                     }
                                 }
                             } catch (e: Exception) {
@@ -406,12 +415,24 @@ class PusherController(
             executor.shutdownNow()
         }
 
+        // 5b. 关闭音频写入线程池
+        try {
+            audioWriteExecutor.shutdown()
+            if (!audioWriteExecutor.awaitTermination(1000, TimeUnit.MILLISECONDS)) {
+                Log.w(tag, "AudioWriteExecutor did not terminate in time, forcing shutdown")
+                audioWriteExecutor.shutdownNow()
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "AudioWriteExecutor shutdown error", e)
+            audioWriteExecutor.shutdownNow()
+        }
+
         // 6. 重置状态变量
         audioFrameCount = 0L
         videoBasePtsUs = -1L
         audioBasePtsUs = -1L
-        videoAnchorPtsUs = -1L
-        audioStartPtsUs = -1L
+        videoAnchorPtsMs = -1L
+        audioStartPtsMs = -1L
 
         Log.d(tag, "stopPush completed")
     }
