@@ -1,0 +1,216 @@
+package com.example.locate.service
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.example.locate.data.remote.ApiClient
+import com.example.locate.domain.model.Position
+import com.example.locate.ui.map.MapActivity
+import com.example.locate.util.Constants
+import com.google.android.gms.location.*
+
+/**
+ * 息屏时持续获取位置和方向的前台服务
+ */
+class LocationTrackerService : Service(), SensorEventListener {
+
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var sensorManager: SensorManager
+    private lateinit var wakeLock: PowerManager.WakeLock
+
+    private var apiClient: ApiClient? = null
+    private var currentPosition: Position? = null
+    private var currentHeading: Float = 0f
+
+    private val binder = LocalBinder()
+
+    inner class LocalBinder : Binder() {
+        fun getService(): LocationTrackerService = this@LocationTrackerService
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Locate:LocationWakeLock")
+
+        createNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            // 没有位置权限，不启动前台服务
+            return START_NOT_STICKY
+        }
+        startForeground()
+        startLocationUpdates()
+        startSensorUpdates()
+        wakeLock.acquire(10 * 60 * 1000L) // 10分钟防止休眠
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent): IBinder = binder
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopLocationUpdates()
+        stopSensorUpdates()
+        if (wakeLock.isHeld) wakeLock.release()
+    }
+
+    fun setApiClient(client: ApiClient) {
+        this.apiClient = client
+    }
+
+    private fun startForeground() {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                Constants.NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            )
+        } else {
+            startForeground(Constants.NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun buildNotification(): Notification {
+        val intent = Intent(this, MapActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("位置追踪中")
+            .setContentText("正在分享你的位置")
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            Constants.NOTIFICATION_CHANNEL_ID,
+            "位置追踪",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "息屏时持续分享位置"
+        }
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    private fun startLocationUpdates() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) return
+
+        val locationRequest = LocationRequest.Builder(
+            Priority.PRIORITY_HIGH_ACCURACY,
+            Constants.LOCATION_UPDATE_INTERVAL_MS
+        ).apply {
+            setMinUpdateIntervalMillis(Constants.LOCATION_FASTEST_INTERVAL_MS)
+            setWaitForAccurateLocation(false)
+        }.build()
+
+        fusedLocationClient.requestLocationUpdates(
+            locationRequest,
+            locationCallback,
+            mainLooper
+        )
+    }
+
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            result.lastLocation?.let { location ->
+                currentPosition = Position(
+                    lat = location.latitude,
+                    lng = location.longitude,
+                    accuracy = location.accuracy,
+                    altitude = location.altitude,
+                    speed = location.speed,
+                    bearing = location.bearing
+                )
+                sendUpdate()
+            }
+        }
+    }
+
+    private fun stopLocationUpdates() {
+        fusedLocationClient.removeLocationUpdates(locationCallback)
+    }
+
+    /**
+     * 注册方向传感器（加速度 + 地磁）
+     */
+    private fun startSensorUpdates() {
+        val accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val magneticSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+
+        accelSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
+        magneticSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
+    }
+
+    private fun stopSensorUpdates() {
+        sensorManager.unregisterListener(this)
+    }
+
+    private val accelerometerReading = FloatArray(3)
+    private val magnetometerReading = FloatArray(3)
+    private val rotationMatrix = FloatArray(9)
+    private val orientationAngles = FloatArray(3)
+
+    override fun onSensorChanged(event: SensorEvent) {
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                System.arraycopy(event.values, 0, accelerometerReading, 0, accelerometerReading.size)
+            }
+            Sensor.TYPE_MAGNETIC_FIELD -> {
+                System.arraycopy(event.values, 0, magnetometerReading, 0, magnetometerReading.size)
+            }
+        }
+
+        if (SensorManager.getRotationMatrix(rotationMatrix, null, accelerometerReading, magnetometerReading)) {
+            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+            // orientationAngles[0] 是方位角（弧度），转为度
+            var azimuth = Math.toDegrees(orientationAngles[0].toDouble()).toFloat()
+            if (azimuth < 0) azimuth += 360f
+            currentHeading = azimuth
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    private fun sendUpdate() {
+        val pos = currentPosition ?: return
+        apiClient?.sendPosition(pos.lat, pos.lng, currentHeading)
+    }
+
+    fun getCurrentPosition(): Position? = currentPosition
+    fun getCurrentHeading(): Float = currentHeading
+}

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="lib/leaflet.css" />
+    <script src="lib/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
+        #map { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+    var map = null;
+
+    function initMap(lat, lng, zoom) {
+        map = L.map('map', {
+            center: [lat, lng],
+            zoom: zoom || 15,
+            zoomControl: false,
+            attributionControl: false
+        });
+
+        L.tileLayer('https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
+        }).addTo(map);
+
+        map.on('click', function(e) {
+            if (window.Android && window.Android.onMapClick) {
+                window.Android.onMapClick(e.latlng.lat, e.latlng.lng);
+            }
+        });
+
+        map.on('moveend', function() {
+            reportCenterAndZoom();
+        });
+
+        map.on('zoomend', function() {
+            reportCenterAndZoom();
+        });
+
+        // 地图初始化完成，通知 Android
+        if (window.Android && window.Android.onMapReady) {
+            window.Android.onMapReady();
+        }
+    }
+
+    function reportCenterAndZoom() {
+        if (!map || !window.Android) return;
+        var c = map.getCenter();
+        var z = map.getZoom();
+        var container = map.getContainer();
+        console.log('reportCenterAndZoom: z=' + z + ' center=' + c.lat + ',' + c.lng + ' container=' + container.offsetWidth + 'x' + container.offsetHeight);
+        if (window.Android.onCenterAndZoom) {
+            window.Android.onCenterAndZoom(z, c.lat, c.lng, container.offsetWidth, container.offsetHeight);
+        }
+    }
+
+    // Android 调用这些方法
+    window.MapInterface = {
+        moveTo: function(lat, lng, zoom) {
+            if (!map) return;
+            map.setView([lat, lng], zoom || map.getZoom());
+        },
+        getCenterAndZoom: function() {
+            reportCenterAndZoom();
+        }
+    };
+
+    // 初始化（默认显示北京）
+    initMap(39.907, 116.391, 15);
+</script>
+</body>
+</html>
