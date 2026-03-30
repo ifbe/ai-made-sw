@@ -42,6 +42,7 @@ class MapViewImpl @JvmOverloads constructor(
     private val targetLines = mutableMapOf<String, TargetLineView>()
 
     private var clickListener: ((Double, Double) -> Unit)? = null
+    private var connectionStatusClickListener: (() -> Unit)? = null
     private var mapViewWidth = 0      // physical pixels from JS
     private var mapViewHeight = 0    // physical pixels from JS
     private var currentZoom = 15.0
@@ -122,6 +123,9 @@ class MapViewImpl @JvmOverloads constructor(
             topMargin = 60
             marginEnd = 20
         })
+        connectionStatusView?.setOnClickListener {
+            connectionStatusClickListener?.invoke()
+        }
 
         // 目标设置按钮（连接图标下方）
         targetButtonView = TargetButtonView(context)
@@ -274,14 +278,12 @@ class MapViewImpl @JvmOverloads constructor(
     override fun showServerPosition(lat: Double, lng: Double, heading: Float) {
         android.util.Log.d("MapDebug", "showServerPosition: lat=$lat lng=$lng heading=$heading")
         if (lat == 0.0 && lng == 0.0) return
+        pendingPositions["__server__"] = PendingUpdate(lat, lng, heading)
         myServerMarker?.let { marker ->
             if (marker.parent != null) {
-                android.util.Log.d("MapDebug", "showServerPosition: updating myServerMarker")
                 updateMarkerPosition(marker, lat, lng, heading, isSelf = false, isServerPos = true)
-            } else {
-                android.util.Log.d("MapDebug", "showServerPosition: myServerMarker not in overlay yet")
             }
-        } ?: android.util.Log.d("MapDebug", "showServerPosition: myServerMarker is null")
+        }
     }
 
     override fun setOnMapClickListener(listener: (Double, Double) -> Unit) {
@@ -298,6 +300,10 @@ class MapViewImpl @JvmOverloads constructor(
 
     override fun setOnTargetButtonClickListener(listener: (Double, Double) -> Unit) {
         targetButtonClickListener = listener
+    }
+
+    override fun setOnConnectionStatusClickListener(listener: () -> Unit) {
+        connectionStatusClickListener = listener
     }
 
     override fun onDestroy() {
@@ -410,6 +416,7 @@ class MapViewImpl @JvmOverloads constructor(
             when (key) {
                 "__self__" -> myMarker?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = true) }
                 "__myTarget__" -> myTargetMarker?.let { updateMarkerPosition(it, update.lat, update.lng, 0f, isTarget = true) }
+                "__server__" -> myServerMarker?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = false, isServerPos = true) }
                 else -> {
                     markerViews[key]?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = false, key = key) }
                     // 该用户有 target 时刷新 target 标记和连线

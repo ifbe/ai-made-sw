@@ -13,7 +13,15 @@ sealed class ServerMessage {
 
     data class UserList(val users: List<User>) : ServerMessage()
 
-    data class UserJoined(val username: String) : ServerMessage()
+    data class UserJoined(
+        val username: String,
+        val lat: Double,
+        val lng: Double,
+        val heading: Float = 0f,
+        val nickname: String? = null,
+        val targetLat: Double? = null,
+        val targetLng: Double? = null
+    ) : ServerMessage()
 
     data class UserLeft(val username: String) : ServerMessage()
 
@@ -58,7 +66,15 @@ sealed class ServerMessage {
                         }
                         UserList(users)
                     }
-                    "user_joined" -> UserJoined(obj.getString("username"))
+                    "user_joined" -> UserJoined(
+                        username = obj.getString("username"),
+                        lat = obj.getDouble("lat"),
+                        lng = obj.getDouble("lng"),
+                        heading = obj.optDouble("heading", 0.0).toFloat(),
+                        nickname = obj.optString("nickname", "").takeIf { it.isNotEmpty() },
+                        targetLat = obj.optDouble("target_lat").takeIf { !obj.isNull("target_lat") },
+                        targetLng = obj.optDouble("target_lng").takeIf { !obj.isNull("target_lng") }
+                    )
                     "user_left" -> UserLeft(obj.getString("username"))
                     "update_target" -> TargetUpdate(
                         username = obj.getString("username"),

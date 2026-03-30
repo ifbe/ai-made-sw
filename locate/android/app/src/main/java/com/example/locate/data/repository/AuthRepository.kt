@@ -74,8 +74,8 @@ class AuthRepository(
                 override fun onUserList(users: List<User>) {
                     existingListener?.onUserList(users)
                 }
-                override fun onUserJoined(username: String) {
-                    existingListener?.onUserJoined(username)
+                override fun onUserJoined(user: User) {
+                    existingListener?.onUserJoined(user)
                 }
                 override fun onUserLeft(username: String) {
                     existingListener?.onUserLeft(username)

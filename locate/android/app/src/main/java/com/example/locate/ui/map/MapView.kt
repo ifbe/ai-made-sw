@@ -74,6 +74,11 @@ interface MapView {
     fun setOnTargetButtonClickListener(listener: (lat: Double, lng: Double) -> Unit)
 
     /**
+     * 连接状态图标点击回调（断开连接时点击可回到登录页）
+     */
+    fun setOnConnectionStatusClickListener(listener: () -> Unit)
+
+    /**
      * 销毁视图
      */
     fun onDestroy()

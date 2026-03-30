@@ -20,7 +20,7 @@ class ApiClient(private val serverUrl: String) {
         fun onLoginSuccess(token: String, nickname: String)
         fun onLoginFailed(error: String)
         fun onUserList(users: List<User>)
-        fun onUserJoined(username: String)
+        fun onUserJoined(user: User)
         fun onUserLeft(username: String)
         fun onTargetUpdate(username: String, targetLat: Double?, targetLng: Double?)
         fun onPositionUpdate(username: String, lat: Double, lng: Double, heading: Float)
@@ -87,7 +87,17 @@ class ApiClient(private val serverUrl: String) {
                 listener?.onLoginSuccess(msg.token, msg.nickname)
             }
             is ServerMessage.UserList -> listener?.onUserList(msg.users)
-            is ServerMessage.UserJoined -> listener?.onUserJoined(msg.username)
+            is ServerMessage.UserJoined -> listener?.onUserJoined(
+                User(
+                    username = msg.username,
+                    lat = msg.lat,
+                    lng = msg.lng,
+                    heading = msg.heading,
+                    nickname = msg.nickname,
+                    targetLat = msg.targetLat,
+                    targetLng = msg.targetLng
+                )
+            )
             is ServerMessage.UserLeft -> listener?.onUserLeft(msg.username)
             is ServerMessage.TargetUpdate -> {
                 listener?.onTargetUpdate(msg.username, msg.targetLat, msg.targetLng)

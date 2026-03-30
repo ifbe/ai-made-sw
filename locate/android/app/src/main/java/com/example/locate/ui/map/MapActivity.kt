@@ -173,11 +173,16 @@ class MapViewModel(
                 mapViewInterface?.setConnectionStatus(1, validUsers.size + 1)  // +1=自己
             }
 
-            override fun onUserJoined(username: String) {
-                // 服务器会推送新的 user_list
+            override fun onUserJoined(user: User) {
+                android.util.Log.d("MapDebug", "onUserJoined: ${user.username} lat=${user.lat} lng=${user.lng} target=${user.targetLat}")
+                if (user.username == _loginUsername) return  // 忽略自己的加入事件
+                _otherUsers.value = _otherUsers.value + user
+                mapViewInterface?.showOtherUser(user)
+                mapViewInterface?.setConnectionStatus(1, _otherUsers.value.size + 1)
             }
 
             override fun onUserLeft(username: String) {
+                android.util.Log.d("MapDebug", "onUserLeft: $username")
                 _otherUsers.value = _otherUsers.value.filter { it.username != username }
                 mapViewInterface?.removeOtherUser(username)
                 mapViewInterface?.setConnectionStatus(1, _otherUsers.value.size + 1)
@@ -392,6 +397,10 @@ fun MapScreen(viewModel: MapViewModel) {
                     }
 
                     viewModel.setMapView(impl)
+                    impl.setOnConnectionStatusClickListener {
+                        val intent = android.content.Intent(ctx, LoginActivity::class.java)
+                        ctx.startActivity(intent)
+                    }
                     impl.getView()
                 },
                 modifier = Modifier.fillMaxSize()

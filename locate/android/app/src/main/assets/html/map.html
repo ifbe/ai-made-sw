@@ -42,6 +42,16 @@
             reportCenterAndZoom();
         });
 
+        // 节流：move 事件每 100ms 只触发一次
+        var moveTimer = null;
+        map.on('move', function() {
+            if (moveTimer) return;
+            moveTimer = setTimeout(function() {
+                moveTimer = null;
+                reportCenterAndZoom();
+            }, 100);
+        });
+
         // 地图初始化完成，通知 Android
         if (window.Android && window.Android.onMapReady) {
             window.Android.onMapReady();
