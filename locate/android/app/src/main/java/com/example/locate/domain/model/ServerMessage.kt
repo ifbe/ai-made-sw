@@ -60,7 +60,7 @@ sealed class ServerMessage {
                     }
                     "user_joined" -> UserJoined(obj.getString("username"))
                     "user_left" -> UserLeft(obj.getString("username"))
-                    "target_update" -> TargetUpdate(
+                    "update_target" -> TargetUpdate(
                         username = obj.getString("username"),
                         targetLat = obj.optDouble("target_lat").takeIf { !obj.isNull("target_lat") },
                         targetLng = obj.optDouble("target_lng").takeIf { !obj.isNull("target_lng") }

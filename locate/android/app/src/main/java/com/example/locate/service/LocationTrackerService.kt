@@ -38,6 +38,8 @@ class LocationTrackerService : Service(), SensorEventListener {
     private var apiClient: ApiClient? = null
     private var currentPosition: Position? = null
     private var currentHeading: Float = 0f
+    private var mapView: com.example.locate.ui.map.MapView? = null
+    private var hasMovedToSelf = false
 
     private val binder = LocalBinder()
 
@@ -206,11 +208,52 @@ class LocationTrackerService : Service(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    private fun sendUpdate() {
-        val pos = currentPosition ?: return
-        apiClient?.sendPosition(pos.lat, pos.lng, currentHeading)
-    }
-
     fun getCurrentPosition(): Position? = currentPosition
     fun getCurrentHeading(): Float = currentHeading
+    fun setMapView(view: com.example.locate.ui.map.MapView?) { this.mapView = view }
+
+    private fun sendUpdate() {
+        val pos = currentPosition ?: return
+        // 第一次 GPS 到达时，把地图飞到自己的位置
+        if (!hasMovedToSelf && mapView != null) {
+            hasMovedToSelf = true
+            mapView?.moveTo(pos.lat, pos.lng, 17.0)
+        }
+        // WGS84 → GCJ-02 转换（高德瓦片坐标系）
+        val (gcjLat, gcjLng) = wgs84ToGcj02(pos.lat, pos.lng)
+        apiClient?.sendPosition(gcjLat, gcjLng, currentHeading)
+        android.util.Log.d("GPS", "sendPosition: wgs84(${pos.lat},${pos.lng}) => gcj02($gcjLat,$gcjLng) accuracy=${pos.accuracy}m")
+    }
+
+    /**
+     * WGS84 转 GCJ-02（国测局坐标）
+     * 用于修正国产手机 GPS 返回 WGS84 导致的位置偏移
+     */
+    private fun wgs84ToGcj02(wgsLat: Double, wgsLng: Double): Pair<Double, Double> {
+        var dLat = transformLat(wgsLng - 105.0, wgsLat - 35.0)
+        var dLng = transformLng(wgsLng - 105.0, wgsLat - 35.0)
+        val radLat = wgsLat / 180.0 * Math.PI
+        var magic = kotlin.math.sin(radLat * Math.PI)
+        magic = 1 - 0.006693421622965839 * magic * magic
+        val sqrtMagic = kotlin.math.sqrt(magic)
+        dLat = (dLat * 180.0) / ((6378245.0 / sqrtMagic) * Math.PI * (1 - 0.006693421622965839) / (magic * sqrtMagic))
+        dLng = (dLng * 180.0) / (6378245.0 / sqrtMagic * kotlin.math.cos(radLat) * Math.PI)
+        return Pair(wgsLat + dLat, wgsLng + dLng)
+    }
+
+    private fun transformLat(x: Double, y: Double): Double {
+        var ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * kotlin.math.sqrt(kotlin.math.abs(x))
+        ret += (20.0 * kotlin.math.sin(6.0 * x * Math.PI) + 20.0 * kotlin.math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0
+        ret += (20.0 * kotlin.math.sin(y * Math.PI) + 40.0 * kotlin.math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0
+        ret += (160.0 * kotlin.math.sin(y / 12.0 * Math.PI) + 320.0 * kotlin.math.sin(y / 30.0 * Math.PI)) * 2.0 / 3.0
+        return ret
+    }
+
+    private fun transformLng(x: Double, y: Double): Double {
+        var ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * kotlin.math.sqrt(kotlin.math.abs(x))
+        ret += (20.0 * kotlin.math.sin(6.0 * x * Math.PI) + 20.0 * kotlin.math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0
+        ret += (20.0 * kotlin.math.sin(x * Math.PI) + 40.0 * kotlin.math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0
+        ret += (150.0 * kotlin.math.sin(x / 12.0 * Math.PI) + 300.0 * kotlin.math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0
+        return ret
+    }
 }

@@ -33,7 +33,6 @@ class ApiClient(private val serverUrl: String) {
 
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(30, TimeUnit.SECONDS)
         .build()
 
     private val wsUrl: String
@@ -123,7 +122,7 @@ class ApiClient(private val serverUrl: String) {
     fun sendTarget(targetLat: Double?, targetLng: Double?) {
         val token = this.token ?: return
         val msg = JSONObject().apply {
-            put("type", "target_update")
+            put("type", "update_target")
             put("token", token)
             put("username", username)
             put("target_lat", targetLat)

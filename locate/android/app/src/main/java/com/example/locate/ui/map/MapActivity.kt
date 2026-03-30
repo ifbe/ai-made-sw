@@ -53,6 +53,8 @@ class MapActivity : ComponentActivity() {
             serviceBound = true
             locationService?.setApiClient(viewModel.apiClient)
             viewModel.onServiceConnected(locationService!!)
+            // 把地图传给 LocationTrackerService，让它能在第一次 GPS 到达时飞图
+            viewModel.getMapView()?.let { locationService?.setMapView(it) }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -164,8 +166,11 @@ class MapViewModel(
             }
 
             override fun onUserList(users: List<User>) {
-                _otherUsers.value = users
-                mapViewInterface?.showOtherUsers(users)
+                // 过滤掉坐标无效的用户（比如残留的test用户坐标为0,0）
+                val validUsers = users.filter { !(it.lat == 0.0 && it.lng == 0.0) }
+                _otherUsers.value = validUsers
+                mapViewInterface?.showOtherUsers(validUsers)
+                mapViewInterface?.setConnectionStatus(1, validUsers.size + 1)  // +1=自己
             }
 
             override fun onUserJoined(username: String) {
@@ -175,9 +180,11 @@ class MapViewModel(
             override fun onUserLeft(username: String) {
                 _otherUsers.value = _otherUsers.value.filter { it.username != username }
                 mapViewInterface?.removeOtherUser(username)
+                mapViewInterface?.setConnectionStatus(1, _otherUsers.value.size + 1)
             }
 
             override fun onTargetUpdate(username: String, targetLat: Double?, targetLng: Double?) {
+                android.util.Log.d("MapDebug", "onTargetUpdate: username=$username targetLat=$targetLat targetLng=$targetLng")
                 _otherUsers.value = _otherUsers.value.map { user ->
                     if (user.username == username) {
                         user.copy(targetLat = targetLat, targetLng = targetLng)
@@ -191,8 +198,9 @@ class MapViewModel(
                 android.util.Log.d("MapDebug", "onPositionUpdate: username=$username lat=$lat lng=$lng currentUser=$_loginUsername")
                 val currentUser = _loginUsername
                 if (username == currentUser) {
-                    // 自己的位置
+                    // 自己的位置：本地GPS（金色）和服务器广播（绿色"云"）都显示
                     mapViewInterface?.showUser(lat, lng, heading)
+                    mapViewInterface?.showServerPosition(lat, lng, heading)
                 } else {
                     // 其他用户的位置
                     _otherUsers.value = _otherUsers.value.map { user ->
@@ -208,8 +216,13 @@ class MapViewModel(
                 _uiState.value = _uiState.value.copy(error = message)
             }
 
-            override fun onConnected() {}
-            override fun onDisconnected() {}
+            override fun onConnected() {
+                val count = _otherUsers.value.size + 1  // 包含自己
+                mapViewInterface?.setConnectionStatus(1, count)
+            }
+            override fun onDisconnected() {
+                mapViewInterface?.setConnectionStatus(2)  // 红色-断开
+            }
         }
     }
 
@@ -258,13 +271,26 @@ class MapViewModel(
         this.mapViewInterface = mapView
         // 恢复已有用户
         mapView.showOtherUsers(_otherUsers.value)
+        // 恢复目标点状态
+        val hasTarget = _uiState.value.targetLat != null
+        mapView.updateTargetButton(hasTarget)
         // 恢复目标点
         _uiState.value.targetLat?.let { lat ->
             _uiState.value.targetLng?.let { lng ->
                 mapView.showTarget(lat, lng)
             }
         }
+        // 目标按钮点击
+        mapView.setOnTargetButtonClickListener { lat, lng ->
+            if (_uiState.value.targetLat != null) {
+                clearTarget()
+            } else {
+                onMapClick(lat, lng)
+            }
+        }
     }
+
+    fun getMapView(): MapView? = mapViewInterface
 
     fun onMapClick(lat: Double, lng: Double) {
         _uiState.value = _uiState.value.copy(
@@ -272,6 +298,7 @@ class MapViewModel(
             targetLng = lng
         )
         mapViewInterface?.showTarget(lat, lng)
+        mapViewInterface?.updateTargetButton(true)
         apiClient.sendTarget(lat, lng)
     }
 
@@ -281,6 +308,7 @@ class MapViewModel(
             targetLng = null
         )
         mapViewInterface?.clearTarget()
+        mapViewInterface?.updateTargetButton(false)
         apiClient.sendTarget(null, null)
     }
 
