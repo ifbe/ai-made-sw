@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p2pnet</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; padding: 20px; }
+h1 { font-size: 1.2rem; margin-bottom: 16px; color: #e94560; text-align: center; }
+.section { margin-bottom: 16px; }
+.section-label { font-size: 0.75rem; color: #555; margin-bottom: 6px; }
+
+/* 第一栏：连接 */
+.conn-row { display: flex; align-items: center; gap: 12px; }
+.btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 0.9rem; cursor: pointer; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-connect { background: #27ae60; color: #fff; }
+.btn-connect:hover:not(:disabled) { background: #219653; }
+.btn-disconnect { background: #555; color: #ccc; }
+.btn-disconnect:hover:not(:disabled) { background: #666; }
+.status { font-size: 0.85rem; }
+.status .ok { color: #2ecc71; }
+.status .fail { color: #e74c3c; }
+.status .none { color: #555; }
+
+hr { border: none; border-top: 1px solid #2a2a4a; margin: 16px 0; }
+
+/* 第二栏：登录+列表+自定义 */
+.row2 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.panel { background: #16213e; border-radius: 8px; padding: 16px; }
+.panel-title { font-size: 0.8rem; color: #aaa; margin-bottom: 12px; }
+
+.form-group { margin-bottom: 10px; }
+.form-group label { display: block; font-size: 0.75rem; color: #888; margin-bottom: 4px; }
+.form-group input { width: 100%; padding: 8px 10px; border: 1px solid #333; border-radius: 4px; background: #0f3460; color: #eee; font-size: 0.9rem; outline: none; }
+.form-group input:focus { border-color: #e94560; }
+
+.btn-login { width: 100%; background: #e94560; color: #fff; margin-top: 4px; }
+.btn-login:hover:not(:disabled) { background: #d63a52; }
+.btn-list { width: 100%; background: #0f3460; color: #e94560; border: 1px solid #e94560; }
+.btn-list:hover:not(:disabled) { background: #1a4a7a; }
+
+.result-box { margin-top: 10px; background: #0a0a1a; border-radius: 4px; padding: 8px; min-height: 60px; max-height: 150px; overflow-y: auto; font-size: 0.8rem; color: #8ab; white-space: pre-wrap; word-break: break-all; }
+.result-box:empty::before { content: '(无)'; color: #444; }
+
+/* 第三栏：历史 */
+.history-box { background: #0a0a1a; border-radius: 6px; padding: 12px; min-height: 80px; max-height: 200px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; }
+.history-box:empty::before { content: '(空)'; color: #444; }
+.history-box .entry { margin-bottom: 4px; border-bottom: 1px solid #1a1a3a; padding-bottom: 4px; }
+.history-box .entry:last-child { border-bottom: none; }
+.history-box .ts { color: #555; margin-right: 6px; }
+.history-box .recv { color: #3498db; }
+.history-box .send { color: #27ae60; }
+.history-box .err { color: #e74c3c; }
+</style>
+</head>
+<body>
+
+<h1>p2pnet</h1>
+
+<!-- 第一栏：连接 -->
+<div class="section">
+  <div class="section-label">【连接状态】</div>
+  <div class="conn-row">
+    <button class="btn btn-connect" id="btn-connect" onclick="do_connect()">连接服务器</button>
+    <button class="btn btn-disconnect" id="btn-disconnect" onclick="do_disconnect()" disabled>断开服务器</button>
+    <span class="status" id="conn-status"><span class="none">● 未连接</span></span>
+  </div>
+</div>
+
+<hr>
+
+<!-- 第二栏：登录+列表 -->
+<div class="row2">
+  <div class="panel">
+    <div class="panel-title">登录</div>
+    <div class="form-group">
+      <label>用户名</label>
+      <input id="f-user" placeholder="账号">
+    </div>
+    <div class="form-group">
+      <label>密码</label>
+      <input id="f-pass" type="password" placeholder="密码">
+    </div>
+    <button class="btn btn-login" id="btn-login" onclick="do_login()" disabled>登录</button>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">已登录用户</div>
+    <button class="btn btn-list" id="btn-list" onclick="do_list()">发送 list（需登录）</button>
+    <div class="result-box" id="user-list">(无)</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">自定义消息</div>
+    <div class="form-group">
+      <textarea id="f-raw" rows="4" placeholder='{"type":"list","username":"alice"}' style="width:100%;padding:8px 10px;border:1px solid #333;border-radius:4px;background:#0f3460;color:#eee;font-size:0.85rem;font-family:'Courier New',monospace;resize:none;outline:none;"></textarea>
+    </div>
+    <button class="btn" id="btn-raw" onclick="do_send_raw()" disabled style="width:100%;background:#0f3460;color:#e94560;border:1px solid #e94560;">发送</button>
+  </div>
+</div>
+
+<hr>
+
+<!-- 第三栏：历史 -->
+<div class="section">
+  <div class="section-label">【服务器回复】</div>
+  <div class="history-box" id="history"></div>
+</div>
+
+<script>
+// ====== 加密工具 (SHA256 + HMAC-SHA256，使用 Web Crypto API) ======
+
+function hex_to_bytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
+  return bytes;
+}
+
+function bytes_to_hex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256_hex(str) {
+  const msgUint8 = new TextEncoder().encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+  return bytes_to_hex(new Uint8Array(hashBuffer));
+}
+
+async function hmac_sha256_hex(key_hex, data_hex) {
+  const keyBytes = hex_to_bytes(key_hex);
+  const dataBytes = hex_to_bytes(data_hex);
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sigBuffer = await crypto.subtle.sign('HMAC', cryptoKey, dataBytes);
+  return bytes_to_hex(new Uint8Array(sigBuffer));
+}
+
+// 同步 sha256_hex 配合 async hmac_sha256_hex 用
+let _sha256_cache = {};
+async function sha256_hex_async(str) {
+  if (_sha256_cache[str] !== undefined) return _sha256_cache[str];
+  const result = await sha256_hex(str);
+  _sha256_cache[str] = result;
+  return result;
+}
+
+// ====== 状态 ======
+
+const WS_URL = `ws://${location.host}`;
+let ws = null;
+let logged_in = false;
+let pending_user = '';
+let pending_pass = '';
+
+function set_conn(connected) {
+  document.getElementById('btn-connect').disabled = connected;
+  document.getElementById('btn-disconnect').disabled = !connected;
+  document.getElementById('btn-login').disabled = !connected;
+  document.getElementById('btn-raw').disabled = !connected;
+  const s = document.getElementById('conn-status');
+  s.innerHTML = connected
+    ? '<span class="ok">● 已连接</span>'
+    : '<span class="none">● 未连接</span>';
+  if (!connected) {
+    logged_in = false;
+    document.getElementById('btn-list').disabled = true;
+    document.getElementById('user-list').textContent = '(无)';
+  }
+}
+
+function enable_list() {
+  document.getElementById('btn-list').disabled = !logged_in;
+}
+
+// ====== 历史日志 ======
+
+function log_entry(type, text) {
+  const el = document.getElementById('history');
+  const d = new Date();
+  const ts = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+  const div = document.createElement('div');
+  div.className = 'entry';
+  const cls = type === 'recv' ? 'recv' : type === 'send' ? 'send' : 'err';
+  div.innerHTML = `<span class="ts">[${ts}]</span><span class="${cls}">${type === 'send' ? '→' : type === 'err' ? '!' : '←'} ${text}</span>`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ====== 连接 ======
+
+function do_connect() {
+  if (ws) { ws.close(); ws = null; }
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch(e) {
+    log_entry('err', 'WebSocket 创建失败: ' + e);
+    set_conn(false);
+    return;
+  }
+  ws.onopen = () => {
+    set_conn(true);
+    log_entry('recv', '{type: "connected"}');
+  };
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    log_entry('recv', JSON.stringify(msg));
+    handle_msg(msg);
+  };
+  ws.onclose = () => {
+    log_entry('recv', '{type: "disconnected"}');
+    set_conn(false);
+    ws = null;
+  };
+  ws.onerror = () => log_entry('err', 'WebSocket 错误');
+}
+
+function do_disconnect() {
+  if (ws) { ws.close(); ws = null; }
+  set_conn(false);
+}
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    log_entry('send', JSON.stringify(obj));
+    ws.send(JSON.stringify(obj));
+  } else {
+    log_entry('err', '未连接，无法发送');
+  }
+}
+
+// ====== 登录（完整挑战响应） ======
+
+function do_login() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log_entry('err', '未连接');
+    return;
+  }
+  const u = document.getElementById('f-user').value.trim();
+  const p = document.getElementById('f-pass').value;
+  if (!u || !p) { log_entry('err', '用户名或密码为空'); return; }
+  pending_user = u;
+  pending_pass = p;
+  // 第一步：发 login 只有 username，服务器返回 challenge
+  send({ type: 'login', username: u });
+}
+
+async function finish_login(challenge, salt) {
+  // 第二步：客户端计算 response
+  // password_hash = SHA256(password + salt)
+  // response = HMAC-SHA256(password_hash, challenge)
+  const pw_hash = await sha256_hex(pending_pass + salt);
+  const response = await hmac_sha256_hex(pw_hash, challenge);
+  // 调试日志：把计算结果打出来
+  log_entry('send', `[DEBUG] SHA256(${pending_pass}+${salt}) = ${pw_hash}`);
+  log_entry('send', `[DEBUG] HMAC(${pw_hash}, ${challenge}) = ${response}`);
+  send({ type: 'login', username: pending_user, response: response });
+}
+
+// ====== 操作 ======
+
+function do_list() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  send({ type: 'list' });
+}
+
+function do_send_raw() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const text = document.getElementById('f-raw').value.trim();
+  if (!text) return;
+  try {
+    const obj = JSON.parse(text);
+    send(obj);
+  } catch(e) {
+    log_entry('err', 'JSON 格式错误: ' + e);
+  }
+}
+
+// ====== 消息处理 ======
+
+function handle_msg(msg) {
+  if (msg.type === 'challenge') {
+    // 服务器返回 challenge，开始第二步
+    finish_login(msg.challenge, msg.salt);
+  } else if (msg.type === 'login_ok') {
+    logged_in = true;
+    enable_list();
+  } else if (msg.type === 'list_result') {
+    const el = document.getElementById('user-list');
+    if (!msg.users || msg.users.length === 0) {
+      el.textContent = '(无在线用户)';
+      return;
+    }
+    el.textContent = msg.users.map(u =>
+      `${u.username.padEnd(16)} ${u.ip}:${u.port}`
+    ).join('\n');
+  } else if (msg.type === 'error') {
+    log_entry('err', msg.message);
+  } else if (msg.type === 'kicked') {
+    logged_in = false;
+    enable_list();
+    log_entry('err', '被踢: ' + msg.message);
+  }
+}
+
+// 回车登录
+document.getElementById('f-pass').addEventListener('keydown', e => {
+  if (e.key === 'Enter') do_login();
+});
+</script>
+</body>
+</html>
