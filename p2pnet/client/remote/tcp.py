@@ -83,20 +83,22 @@ def ts():
 
 def main():
     parser = argparse.ArgumentParser(description='p2pnet P2P TCP 直接打洞')
-    parser.add_argument('peer_ip', help='对方公网 IP')
-    parser.add_argument('peer_port', type=int, help='对方公网端口')
-    parser.add_argument('local_port', type=int, help='本地绑定端口（与 TCP 中继注册时相同）')
-    parser.add_argument('peer_name', nargs='?', default='', help='对方用户名（仅日志用）')
+    parser.add_argument('--peeraddr', help='对方公网 IP')
+    parser.add_argument('--peerport', type=int, help='对方公网端口')
+    parser.add_argument('--localaddr', default='0.0.0.0', help='本地绑定地址（默认 0.0.0.0）')
+    parser.add_argument('--localport', type=int, help='本地绑定端口（与 TCP 中继注册时相同）')
+    parser.add_argument('--peername', nargs='?', default='', help='对方用户名（仅日志用）')
     parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
                         default='auto', help='网络接口类型（auto: tun→tap→fake）')
     parser.add_argument('--socketpath', default=None,
                         help='clientsocket 模式下 Unix socket 路径（client.py 传入）')
     args = parser.parse_args()
 
-    peer_ip = args.peer_ip
-    peer_port = args.peer_port
-    local_port = args.local_port
-    peer_name = args.peer_name
+    peer_ip = args.peeraddr
+    peer_port = args.peerport
+    local_addr = args.localaddr
+    local_port = args.localport
+    peer_name = args.peername
 
     print(f"[{ts()}][tcp]  启动 -> {peer_ip}:{peer_port} (bind {local_port})")
 

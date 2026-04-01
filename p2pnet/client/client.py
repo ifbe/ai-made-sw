@@ -320,16 +320,20 @@ def handle_server_message(obj):
 
         # 根据 LOCAL_MODE 决定 nettype
         if LOCAL_MODE == 'fake':
-            remote_args = [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port),
-                           '--nettype', 'fake']
+            remote_args = [sys.executable, 'remote/udp.py',
+                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
+                           '--localport', str(hello_port), '--nettype', 'fake']
         elif LOCAL_MODE == 'clientsocket':
             sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
-            remote_args = [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port),
+            remote_args = [sys.executable, 'remote/udp.py',
+                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
+                           '--localport', str(hello_port),
                            '--nettype', 'clientsocket', '--socketpath', sock_path]
             log(f"[P2P] clientsocket 模式，socket={sock_path}")
         else:  # 'auto' or None(default)
-            remote_args = [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port),
-                           '--nettype', 'auto']
+            remote_args = [sys.executable, 'remote/udp.py',
+                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
+                           '--localport', str(hello_port), '--nettype', 'auto']
 
         try:
             p = subprocess.Popen(
@@ -374,15 +378,21 @@ def handle_server_message(obj):
 
         # 根据 LOCAL_MODE 决定 nettype
         if LOCAL_MODE == 'fake':
-            remote_args = [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name,
+            remote_args = [sys.executable, 'remote/tcp.py',
+                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
+                           '--localport', str(my_port), '--peername', peer_name,
                            '--nettype', 'fake']
         elif LOCAL_MODE == 'clientsocket':
             sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
-            remote_args = [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name,
+            remote_args = [sys.executable, 'remote/tcp.py',
+                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
+                           '--localport', str(my_port), '--peername', peer_name,
                            '--nettype', 'clientsocket', '--socketpath', sock_path]
             log(f"[P2P] clientsocket 模式，socket={sock_path}")
         else:  # 'auto' or None(default)
-            remote_args = [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name,
+            remote_args = [sys.executable, 'remote/tcp.py',
+                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
+                           '--localport', str(my_port), '--peername', peer_name,
                            '--nettype', 'auto']
 
         try:

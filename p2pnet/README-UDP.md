@@ -55,7 +55,7 @@ bob:    收到后启动 udptunnel.py 1.2.3.4 40001 <hello_port>
 ## udptunnel.py 参数
 
 ```
-python3 udp.py <peer_ip> <peer_port> <local_port> [--nettype tun|tap|clientsocket|auto] [--socketpath PATH]
+python3 udp.py --peeraddr <ip> --peerport <port> --localport <port> [--localaddr <addr>] [--nettype tun|tap|clientsocket|auto] [--socketpath PATH]
 ```
 
 收到 `thisisyourpeer_udp` 后由 client.py 自动 spawn。

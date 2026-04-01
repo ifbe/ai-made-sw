@@ -90,25 +90,33 @@ def ts():
 
 def main():
     parser = argparse.ArgumentParser(description='p2pnet P2P UDP')
-    parser.add_argument('peer_ip', help='对方 IP')
-    parser.add_argument('peer_port', type=int, help='对方端口')
-    parser.add_argument('local_port', type=int, help='本地 UDP 端口（与 hello 相同）')
+    parser.add_argument('--peeraddr', required=True, help='对方 IP')
+    parser.add_argument('--peerport', type=int, required=True, help='对方端口')
+    parser.add_argument('--localaddr', default='0.0.0.0', help='本地监听地址（默认 0.0.0.0）')
+    parser.add_argument('--localport', type=int, required=True, help='本地 UDP 端口')
     parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
                         default='auto', help='网络接口类型（auto: tun→tap→fake）')
     parser.add_argument('--socketpath', default=None,
                         help='clientsocket 模式下 Unix socket 路径（client.py 传入）')
     args = parser.parse_args()
 
-    peer_ip = args.peer_ip
-    peer_port = args.peer_port
-    local_port = args.local_port
+    peer_ip = args.peeraddr
+    peer_port = args.peerport
+    local_addr = args.localaddr
+    local_port = args.localport
+    nettype = args.nettype or 'auto'
+    sock_path = args.socketpath or ''
+
+    print(f"[{ts()}][udptunnel]  args: peer={peer_ip}:{peer_port} local={local_addr}:{local_port} nettype={nettype}" + (f" socket={sock_path}" if sock_path else ""))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(('127.0.0.1', local_port))
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    sock.bind((local_addr, local_port))
     sock.setblocking(False)
-    my_port = sock.getsockname()[1]
-    print(f"[{ts()}][udptunnel]  监听 {my_port}/UDP -> {peer_ip}:{peer_port}")
+    actual_port = sock.getsockname()[1]
+    print(f"[{ts()}][udptunnel]  本端: {local_addr}:{actual_port}")
+    print(f"[{ts()}][udptunnel]  目标: {peer_ip}:{peer_port}")
 
     # 状态
     stop_event = threading.Event()
