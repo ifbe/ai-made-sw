@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 p2pnet P2P UDP 隧道
-用法: python3 udp.py <peer_ip> <peer_port> <local_port> [--nettype tun|tap|auto]
+用法: python3 udp.py <peer_ip> <peer_port> <local_port> [--nettype tun|tap|clientsocket|auto]
 
 架构:
   主线程:    select 监听 socket，收 UDP，ping/pong 自己处理，非 ping/pong 推进队列
@@ -61,6 +61,14 @@ def _auto_tun(nettype):
             if nettype == 'tap':
                 raise RuntimeError(f"TAP 不可用: {e}")
 
+    if nettype == 'clientsocket':
+        path = args.socketpath
+        if not path:
+            raise RuntimeError("--socketpath 未设置（clientsocket 模式由 client.py 启动）")
+        from local.clientsocket import ClientSocket
+        print(f"[{ts()}][udptunnel]  clientsocket 连接 {path}")
+        return ClientSocket(path)
+
     if nettype == 'auto':
         # 最后 fallback fake
         from local.fake import FakeTun
@@ -85,8 +93,10 @@ def main():
     parser.add_argument('peer_ip', help='对方 IP')
     parser.add_argument('peer_port', type=int, help='对方端口')
     parser.add_argument('local_port', type=int, help='本地 UDP 端口（与 hello 相同）')
-    parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake'],
+    parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
                         default='auto', help='网络接口类型（auto: tun→tap→fake）')
+    parser.add_argument('--socketpath', default=None,
+                        help='clientsocket 模式下 Unix socket 路径（client.py 传入）')
     args = parser.parse_args()
 
     peer_ip = args.peer_ip

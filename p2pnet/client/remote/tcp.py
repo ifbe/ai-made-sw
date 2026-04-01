@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 remote/tcp.py - P2P TCP 隧道（直接打洞，无 relay）
-用法: python3 tcp.py <peer_ip> <peer_port> <local_port> <peer_name> [--nettype tun|tap|auto]
+用法: python3 tcp.py <peer_ip> <peer_port> <local_port> <peer_name> [--nettype tun|tap|clientsocket|auto]
 
 打洞原理：
   1. bind(local_port) + listen() — 让 NAT 记住这个端口的映射
@@ -57,6 +57,14 @@ def _auto_tun(nettype):
             if nettype == 'tap':
                 raise RuntimeError(f"TAP 不可用: {e}")
 
+    if nettype == 'clientsocket':
+        path = args.socketpath
+        if not path:
+            raise RuntimeError("--socketpath 未设置（clientsocket 模式由 client.py 启动）")
+        from local.clientsocket import ClientSocket
+        print(f"[tcp]  clientsocket 连接 {path}")
+        return ClientSocket(path)
+
     if nettype == 'auto':
         from local.fake import FakeTun
         print(f"[tcp]  警告: Tun/Tap 均不可用，使用 FakeTun")
@@ -79,8 +87,10 @@ def main():
     parser.add_argument('peer_port', type=int, help='对方公网端口')
     parser.add_argument('local_port', type=int, help='本地绑定端口（与 TCP 中继注册时相同）')
     parser.add_argument('peer_name', nargs='?', default='', help='对方用户名（仅日志用）')
-    parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake'],
+    parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
                         default='auto', help='网络接口类型（auto: tun→tap→fake）')
+    parser.add_argument('--socketpath', default=None,
+                        help='clientsocket 模式下 Unix socket 路径（client.py 传入）')
     args = parser.parse_args()
 
     peer_ip = args.peer_ip

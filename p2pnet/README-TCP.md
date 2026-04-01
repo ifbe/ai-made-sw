@@ -70,7 +70,7 @@ bob:    收到后启动 tcp.py 1.2.3.4 40001 my_port
 ## tcp.py 参数
 
 ```
-python3 tcp.py <peer_ip> <peer_port> <local_port> <peer_name> [--nettype tun|tap|auto]
+python3 tcp.py <peer_ip> <peer_port> <local_port> <peer_name> [--nettype tun|tap|clientsocket|auto] [--socketpath PATH]
 ```
 
 收到 `thisisyourpeer_tcp` 后由 client.py 自动 spawn。
@@ -79,6 +79,7 @@ python3 tcp.py <peer_ip> <peer_port> <local_port> <peer_name> [--nettype tun|tap
 - `auto`（默认）：按平台自动选择：Linux → `tun → tap → fake`，macOS → `tun → fake`
 - `tun`：强制 TUN（IP 层），macOS 用 utun，Linux 用 /dev/net/tun
 - `tap`：强制 TAP（Ethernet 层，Linux 专用）
+- `clientsocket`：连接 client.py 提供的 Unix socket（clientsocket 模式由 client.py 自动传入 `--socketpath`，不手动使用）
 - `fake`：假接口，用于测试
 
 ## tcp.py 架构

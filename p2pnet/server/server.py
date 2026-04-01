@@ -37,8 +37,8 @@ pm = PasswordManager('passwd.json')
 
 # 配置
 HOST = '0.0.0.0'
-PORT = 9999
-UDP_PORT = 9999
+PORT = 10000
+UDP_PORT = 10000
 DEBUG = False
 
 # P2P UDP 请求: username -> {target, timestamp}
@@ -63,7 +63,7 @@ def parse_args():
     global HOST, PORT, UDP_PORT, DEBUG
     parser = argparse.ArgumentParser(description='p2pnet 服务器')
     parser.add_argument('--host', default='0.0.0.0', help='监听地址')
-    parser.add_argument('--port', type=int, default=9999, help='TCP 端口')
+    parser.add_argument('--port', type=int, default=10000, help='TCP 端口')
     parser.add_argument('--udpport', type=int, default=None, help='UDP P2P 端口（默认同 port）')
     parser.add_argument('--debug', action='store_true', help='打印所有 WebSocket 消息')
     args = parser.parse_args()

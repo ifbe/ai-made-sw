@@ -15,8 +15,22 @@
 
 ```
 第一层（现在做的）：打洞 + 裸 tunnel，P2P 直连或 relay
-第二层（待加）：路由协议，在稀疏拓扑上做动态路由
+第二层（待加）：client.py 作为 central switch，多个子 tunnel 进程汇入
 ```
+
+**已实现 / 进行中（clientsocket 架构）：**
+- `local fake`（默认）→ 子进程用 `--nettype fake`
+- `local tun <dev>` / `local tap <dev>` → 子进程用 `--nettype clientsocket --socketpath`
+- `local auto` → 子进程用 `--nettype auto`
+- client.py 监听 Unix socket `/tmp/p2p/{user}-{peer}.sock`
+- 每个 udp.py / tcp.py 用 `--nettype clientsocket --socketpath PATH` 连入
+- client.py select 监听 tun fd + 各 child socket
+- tun 收包按路由表发往对应 child；child 数据汇总写 tun
+- 子进程断连 → client.py 从表里删除 + log
+
+**待实现：**
+- client.py 侧 Unix socket server + select 多路复用
+- 路由表：目的 IP → child socket（静态映射，peer IP 已知）
 
 **路由协议可选：**
 - Babel（轻量，支持有线/无线 mesh，易实现）

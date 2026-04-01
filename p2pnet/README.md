@@ -47,7 +47,7 @@ python3 secret.py add test    # 用户名/密码均输入 test
 ### 2. 启动服务器
 
 ```bash
-python3 -u server.py --debug          # 默认 0.0.0.0:9999，--debug 打印所有 WS 消息
+python3 -u server.py --debug          # 默认 0.0.0.0:10000，--debug 打印所有 WS 消息
 ```
 
 端口说明：
@@ -63,12 +63,17 @@ python3 -u client.py --server 127.0.0.1 --port 9999
 
 命令：
 ```
-login <user>   - 登录（两步：输入用户名 → 输入密码 → challenge-response）
-list           - 查看在线用户
+login <user>    - 登录（两步：输入用户名 → 输入密码 → challenge-response）
+list            - 查看在线用户
 p2pudp <user>  - 向用户发起 P2P UDP 连接
 p2ptcp <user>  - 向用户发起 P2P TCP 连接
-help           - 显示帮助
-quit           - 退出
+local            - 显示当前模式
+local fake      - 模式: fake（默认，子进程独立 tun，不汇入 client.py）
+local tun [dev] - 模式: clientsocket（子进程汇入 client.py）
+local tap [dev] - 模式: clientsocket（子进程汇入 client.py）
+local auto      - 模式: auto（tun→tap→fake，自动选择）
+help            - 显示帮助
+quit            - 退出
 ```
 
 ---

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 p2pnet 命令行客户端
-python3 client.py --server 127.0.0.1 --port 9999
+python3 client.py --server 127.0.0.1 --port 10000
 支持: login, login <username>, list, p2pudp
 """
 
@@ -43,6 +43,13 @@ logged_in_user = None
 # 服务器地址（主循环设置，handle_server_message 读取）
 SERVER_IP = None
 SERVER_PORT = None
+
+# 本地模式：
+#   None        -> fake（默认）
+#   'auto'      -> auto（tun→tap→fake）
+#   'tun' / 'tap' -> clientsocket（子进程连 client.py 的 Unix socket）
+LOCAL_MODE = None  # 初始为 fake
+LOCAL_DEVICE = None  # 设备名，如 '/dev/utun3'（仅展示用）
 
 # 线程安全的消息队列
 input_queue = []
@@ -234,7 +241,12 @@ def print_help():
     log("  list             - 发送 list")
     log("  p2pudp <user>   - 请求与对方建立 UDP P2P 连接")
     log("  p2ptcp <user>   - 请求与对方建立 TCP P2P 连接")
-    log("  help             - 显示帮助")
+    log("  local            - 显示当前模式")
+    log("  local fake       - 模式: fake（子进程独立 tun，不汇入 client.py）")
+    log("  local tun [dev] - 模式: clientsocket（子进程汇入 client.py）")
+    log("  local tap [dev] - 模式: clientsocket（子进程汇入 client.py）")
+    log("  local auto      - 模式: auto（tun→tap→fake）")
+    log("  help            - 显示帮助")
     log("  quit             - 退出")
 
 
@@ -305,9 +317,23 @@ def handle_server_message(obj):
         stop_udp_hello()
         import subprocess
         env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
+
+        # 根据 LOCAL_MODE 决定 nettype
+        if LOCAL_MODE == 'fake':
+            remote_args = [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port),
+                           '--nettype', 'fake']
+        elif LOCAL_MODE == 'clientsocket':
+            sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
+            remote_args = [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port),
+                           '--nettype', 'clientsocket', '--socketpath', sock_path]
+            log(f"[P2P] clientsocket 模式，socket={sock_path}")
+        else:  # 'auto' or None(default)
+            remote_args = [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port),
+                           '--nettype', 'auto']
+
         try:
             p = subprocess.Popen(
-                [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port), '--nettype', 'auto'],
+                remote_args,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 env=env,
                 stdout=None,
@@ -345,9 +371,23 @@ def handle_server_message(obj):
         log(f"[P2P] 收到对端 {peer_name} TCP 地址: {peer_ip}:{peer_port}，本端: {my_ip}:{my_port}，启动 tcp.py...")
         import subprocess
         env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
+
+        # 根据 LOCAL_MODE 决定 nettype
+        if LOCAL_MODE == 'fake':
+            remote_args = [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name,
+                           '--nettype', 'fake']
+        elif LOCAL_MODE == 'clientsocket':
+            sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
+            remote_args = [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name,
+                           '--nettype', 'clientsocket', '--socketpath', sock_path]
+            log(f"[P2P] clientsocket 模式，socket={sock_path}")
+        else:  # 'auto' or None(default)
+            remote_args = [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name,
+                           '--nettype', 'auto']
+
         try:
             p = subprocess.Popen(
-                [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name, '--nettype', 'auto'],
+                remote_args,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 env=env,
                 stdout=None,
@@ -384,6 +424,31 @@ def process_input_line(line):
         log(f"等待服务器验证...")
     elif cmd == 'list':
         ws_send(ws_sock, {"type": "list"})
+    elif cmd == 'local':
+        global LOCAL_MODE, LOCAL_DEVICE
+        if not arg:
+            mode = LOCAL_MODE if LOCAL_MODE else 'fake'
+            dev = LOCAL_DEVICE or '(无)'
+            log(f"当前模式: {mode}  设备: {dev}")
+            return True
+        parts = arg.strip().split(maxsplit=1)
+        sub = parts[0]
+        dev = parts[1] if len(parts) > 1 else None
+        if sub == 'fake':
+            LOCAL_MODE = 'fake'
+            LOCAL_DEVICE = None
+            log("模式: fake（子进程独立 tun，不走 client.py 汇聚）")
+        elif sub in ('tun', 'tap'):
+            LOCAL_MODE = 'clientsocket'
+            LOCAL_DEVICE = dev
+            log(f"模式: clientsocket（子进程汇入 client.py，设备: {dev or '(无)'})")
+        elif sub == 'auto':
+            LOCAL_MODE = 'auto'
+            LOCAL_DEVICE = None
+            log("模式: auto（tun→tap→fake，自动选择）")
+        else:
+            log(f"未知 local 模式: {sub}，可用: fake / tun [设备名] / tap [设备名] / auto")
+        return True
     elif cmd == 'p2pudp':
         if not arg:
             log("用法: p2pudp <对方用户名>")
@@ -410,7 +475,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='p2pnet 命令行客户端')
     parser.add_argument('--server', default='127.0.0.1', help='服务器地址')
-    parser.add_argument('--port', type=int, default=9999, help='服务器端口')
+    parser.add_argument('--port', type=int, default=10000, help='服务器端口')
     parser.add_argument('--debug', action='store_true', help='打印所有消息')
     args = parser.parse_args()
     SERVER_IP = args.server
