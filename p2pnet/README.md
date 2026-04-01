@@ -2,7 +2,7 @@
 
 P2P 隧道工具，支持链路层/网络层虚拟网卡，P2P 直连/打洞穿透。
 
-**当前状态：v2 开发中（signaling server + P2P UDP tunnel）**
+**当前状态：v2 开发中（signaling server + P2P UDP tunnel + P2P TCP tunnel）**
 
 ---
 
@@ -11,17 +11,27 @@ P2P 隧道工具，支持链路层/网络层虚拟网卡，P2P 直连/打洞穿�
 ```
 p2pnet/
 ├── server/
-│   ├── server.py           # 信号服务器（WebSocket + UDP P2P）
+│   ├── server.py           # 信号服务器（WebSocket + UDP P2P + TCP P2P 复用 9999）
 │   ├── secret.py           # 用户密码管理
 │   └── static/
 │       └── index.html     # Web 管理界面
 └── client/
     ├── client.py           # CLI 客户端
     ├── remote/
-    │   └── udptunnel.py   # P2P UDP 隧道（当前实现）
+    │   ├── udp.py        # P2P UDP 隧道
+    │   └── tcp.py        # P2P TCP 隧道
     └── local/
-        └── fake.py        # 假 tun/tap（测试用）
+        ├── fake.py        # 假 tun/tap（测试用）
+        ├── tun.py         # TUN 设备（Linux / macOS utun）
+        ├── tap.py         # TAP 设备（Linux 专用）
+        ├── tun_windows.py # TUN 设备（Windows Wintun）
+        └── tap_windows.py  # TAP 设备（Windows tap-windows）
 ```
+
+详细文档：
+- **[README-UDP.md](README-UDP.md)** — P2P UDP 打洞流程、udptunnel.py 架构
+- **[README-TCP.md](README-TCP.md)** — P2P TCP 打洞流程、tcp.py 架构
+- **[README-TODO.md](README-TODO.md)** — 大规模 Mesh 路由、 Warcraft 3 IPX 支持等待研究问题
 
 ---
 
@@ -37,8 +47,12 @@ python3 secret.py add test    # 用户名/密码均输入 test
 ### 2. 启动服务器
 
 ```bash
-python3 -u server.py --debug          # 默认 0.0.0.0:9999，-debug 打印所有 WS 消息
+python3 -u server.py --debug          # 默认 0.0.0.0:9999，--debug 打印所有 WS 消息
 ```
+
+端口说明：
+- **`<port>/TCP`**：login + WebSocket 命令 + P2P TCP 注册（通过 peek 识别 JSON vs HTTP）
+- **`<port>/UDP`**：P2P UDP 打洞（默认 `--port`，可设 `--udpport` 单独指定）
 
 ### 3. CLI 客户端
 
@@ -52,32 +66,32 @@ python3 -u client.py --server 127.0.0.1 --port 9999
 login <user>   - 登录（两步：输入用户名 → 输入密码 → challenge-response）
 list           - 查看在线用户
 p2pudp <user>  - 向用户发起 P2P UDP 连接
+p2ptcp <user>  - 向用户发起 P2P TCP 连接
 help           - 显示帮助
 quit           - 退出
 ```
 
 ---
 
-## P2P 连接流程
+## P2P 连接概述
+
+### P2P UDP
+详见 [README-UDP.md](README-UDP.md)
 
 ```
-1. alice 和 bob 各自登录服务器
+p2pudp bob → 服务器记录 → 发 send_udp_to_server
+→ 双方往服务器 UDP 发 hello → 服务器通知对方地址
+→ 启动 udptunnel.py → ping/pong 确认 → tunnel 就绪
+```
 
-2. alice 输入 p2pudp bob
-   → 服务器记录 p2p_requests['alice'] = bob
-   → 服务器同时给 alice 和 bob 发 send_udp_to_server
+### P2P TCP
+详见 [README-TCP.md](README-TCP.md)
 
-3. alice 和 bob 都往服务器 UDP 端口发 UDP hello
-   → 服务器收到后记录双方的公网地址
-
-4. 服务器给 alice 发 thisisyourpeer_udp(bob 的地址)
-   服务器给 bob   发 thisisyourpeer_udp(alice 的地址)
-
-5. alice 启动 udptunnel.py -> bob 的地址
-   bob   启动 udptunnel.py -> alice 的地址
-
-6. 双方互发 ping，收到 3 个连续 pong 后 P2P 确认
-   → Tunnel 就绪
+```
+p2ptcp bob → 服务器记录 → 发 send_tcp_to_server(tcpport=<port>)
+→ 双方连服务器 TCP 发注册后 close → 服务器通知对方地址
+→ 启动 tcp.py → bind+listen + connect 同时做 → select 竞速
+→ 直接 P2P 成功 → tunnel 就绪；超时 8s → 失败
 ```
 
 ---
@@ -91,11 +105,14 @@ quit           - 退出
 | C→S | `login` | `username`（第一步）或 `username`+`response`（第二步） |
 | C→S | `list` | - |
 | C→S | `p2pudp` | `target`（对方用户名） |
+| C→S | `p2ptcp` | `target`（对方用户名） |
 | S→C | `challenge` | `challenge`, `salt` |
 | S→C | `login_ok` | - |
 | S→C | `list_result` | `users[{username, ip}]` |
 | S→C | `send_udp_to_server` | `udpport` |
+| S→C | `send_tcp_to_server` | `tcpport` |
 | S→C | `thisisyourpeer_udp` | `name`, `ip`, `port` |
+| S→C | `thisisyourpeer_tcp` | `name`, `ip`, `port`, `my_ip`, `my_port` |
 | S→C | `user_joined` | `username`, `ip` |
 | S→C | `user_left` | `username` |
 | S→C | `error` | `message` |
@@ -114,37 +131,19 @@ quit           - 退出
 
 ---
 
-## udptunnel.py 架构
-
-```
-用法: python3 udptunnel.py <peer_ip> <peer_port> <local_port>
-
-三个线程：
-  主线程（唯一）：select 监听 socket，收 UDP 包
-    - 收到 ping  → 回复 pong
-    - 收到 pong  → 统计，够 3 个连续后启动 tunnel 线程
-    - 收到其他数据 → 进队列（tunnel 未就绪则丢弃）
-
-  heartbeat_sender 线程：每秒发一个 ping
-
-  tunnel_worker 线程：等 ready 后启动
-    - 从 tun 读数据 → 发 UDP
-    - 从队列取数据 → 写 tun
-```
-
----
-
 ## 技术细节
+
+### 端口复用（TCP P2P）
+- 服务器 9999/TCP 同时服务两种连接：
+  - HTTP 请求 → WebSocket handshake → WS 主循环
+  - 直接 JSON（以 `{` 开头）→ P2P 临时注册 → `handle_tcp_p2p_registration()` → close
+- 客户端 P2P TCP 注册流程：connect → 发 `{"username":"xxx"}\n` → close
+  - 连接发完就断，但 NAT 映射已建立，对端 SYN 能进来
 
 ### macOS loopback 注意
 - `bind(('127.0.0.1', port))` 在 macOS 上对 loopback 有效
 - `bind(('0.0.0.0', port))` 在 macOS 上对 loopback **无效**
 - udptunnel 必须绑定 `127.0.0.1`
-
-### 心跳机制
-- ping 间隔：1 秒
-- ready 条件：收到 3 个连续 pong（RTT 相近）
-- 超时：confirmed 后 5s 无 pong 断开；未 confirmed 时 10s 放弃
 
 ### macOS 虚拟网卡限制
 - macOS 没有原生 TAP/TUN

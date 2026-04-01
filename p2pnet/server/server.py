@@ -41,11 +41,17 @@ PORT = 9999
 UDP_PORT = 9999
 DEBUG = False
 
-# P2P 请求: username -> {target, timestamp}
+# P2P UDP 请求: username -> {target, timestamp}
 p2p_requests = {}
+
+# P2P TCP 请求: username -> {target, timestamp}
+p2p_tcp_requests = {}
 
 # 线程安全的 UDP 地址记录: username -> (ip, port, timestamp)
 udp_addrs = {}
+
+# TCP P2P 注册地址: username -> {ip, port, target}（服务器看到对方的公网地址）
+tcp_peer_info = {}  # username -> {'ip': str, 'port': int, 'target': str}
 
 # UDP socket 用于接收 P2P 客户端的注册包
 udp_sock = None
@@ -255,6 +261,8 @@ def handle_message(ws, raw):
         handle_logout(ws)
     elif msg_type == 'p2pudp':
         handle_p2pudp(ws, msg)
+    elif msg_type == 'p2ptcp':
+        handle_p2ptcp(ws, msg)
     else:
         send_error(ws, f"unknown type: {msg_type}")
 
@@ -405,6 +413,41 @@ def handle_p2pudp(ws, msg):
     print(f"[P2P] {username} <-> {target}，已通知双方发 UDP hello 到服务器")
 
 
+def handle_p2ptcp(ws, msg):
+    """处理 p2ptcp 请求：通知两边连 TCP 中继服务器，记录地址后交叉通知"""
+    username = ws.username
+    if not username or username not in online_users:
+        send_error(ws, "not logged in")
+        return
+
+    target = msg.get('target', '').strip()
+    if not target:
+        send_error(ws, "target required")
+        return
+    if target not in online_users:
+        send_error(ws, "user not found")
+        return
+    if target == username:
+        send_error(ws, "cannot connect to yourself")
+        return
+
+    target_info = online_users[target]
+
+    # 记录 TCP P2P 请求
+    p2p_tcp_requests[username] = {'target': target, 'timestamp': time.time()}
+
+    # 同时告诉两边连主服务器的端口（P2P 注册复用 9999，通过 peek 识别）
+    ws_send(ws, json.dumps({
+        'type': 'send_tcp_to_server',
+        'tcpport': PORT,
+    }))
+    ws_send(target_info['ws'], json.dumps({
+        'type': 'send_tcp_to_server',
+        'tcpport': PORT,
+    }))
+    print(f"[P2P-TCP] {username} <-> {target}，已通知双方连 TCP P2P {PORT}")
+
+
 def broadcast(msg, exclude=None):
     data = json.dumps(msg).encode('utf-8')
     for info in online_users.values():
@@ -414,6 +457,12 @@ def broadcast(msg, exclude=None):
 
 def on_disconnect(ws):
     if ws.username and ws.username in online_users:
+        u = ws.username
+        if u in p2p_tcp_requests:
+            del p2p_tcp_requests[u]
+        if u in tcp_peer_info:
+            del tcp_peer_info[u]
+
         del online_users[ws.username]
         print(f"[断开] {ws.username}，当前在线 {len(online_users)} 人")
         broadcast({'type': 'user_left', 'username': ws.username})
@@ -508,6 +557,66 @@ def start_udp_server(port):
     t.start()
 
 
+# ==================== TCP P2P 注册处理（复用 9999 端口） ====================
+
+def handle_tcp_p2p_registration(conn, addr, msg):
+    """
+    处理 P2P 临时打洞注册：复用 9999 端口。
+    当 main loop 收到非 HTTP 的直接 JSON 连接时调用此函数。
+    流程：记录地址 → 查对方是否也注册了 → 发了地址就关闭连接
+    """
+    username = msg.get('username', '').strip()
+    if not username or username not in online_users:
+        print(f"[TCP] {addr} 用户不存在: {username}")
+        conn.close()
+        return
+
+    ip, client_port = addr
+    print(f"[TCP] {username} P2P 注册来自 {ip}:{client_port}")
+
+    my_req = p2p_tcp_requests.get(username, {})
+    target = my_req.get('target', '')
+    tcp_peer_info[username] = {'ip': ip, 'port': client_port, 'target': target}
+    online_users[username]['tcp_port'] = client_port
+
+    if target and target in tcp_peer_info:
+        peer = tcp_peer_info[target]
+        peer_addr = (peer['ip'], peer['port'])
+        peer_req = p2p_tcp_requests.get(target, {})
+        if peer_req.get('target', '') == username:
+            # 通知发起方
+            ws_a = online_users[username]['ws']
+            ws_send(ws_a, json.dumps({
+                'type': 'thisisyourpeer_tcp',
+                'name': target,
+                'ip': peer_addr[0],
+                'port': peer_addr[1],
+                'my_ip': ip,
+                'my_port': client_port,
+            }))
+
+            # 通知目标方
+            ws_b = online_users[target]['ws']
+            ws_send(ws_b, json.dumps({
+                'type': 'thisisyourpeer_tcp',
+                'name': username,
+                'ip': ip,
+                'port': client_port,
+                'my_ip': peer_addr[0],
+                'my_port': peer_addr[1],
+            }))
+
+            print(f"[P2P-TCP] {username} <-> {target} 地址已交换，双方可以开始打洞")
+        else:
+            print(f"[TCP] {username} 的 target={target}，但 {target} 没把 {username} 设为目标，等待中...")
+    else:
+        print(f"[TCP] {username} 等目标 {target or '(未知)'} 连上...")
+
+    conn.close()
+
+
+
+
 # ==================== 主循环 ====================
 
 def main():
@@ -520,7 +629,7 @@ def main():
         os.makedirs('static')
         print("注意: static 目录已创建，需要放入 index.html")
 
-    # 启动 UDP 服务器
+    # 启动 UDP P2P 服务器（与 TCP 共用端口）
     start_udp_server(UDP_PORT)
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -540,7 +649,37 @@ def main():
         for sock in readable:
             if sock is server:
                 client, addr = server.accept()
+
+                # ---- Peek：判断是 P2P 注册还是 HTTP ----
+                client.settimeout(3.0)
+                try:
+                    first = client.recv(1, socket.MSG_PEEK)
+                except:
+                    first = b''
                 client.setblocking(False)
+
+                if first == b'{':
+                    # 直接发 JSON → P2P 临时打洞注册，处理完就关
+                    try:
+                        data = b''
+                        while b'\n' not in data:
+                            chunk = client.recv(4096)
+                            if not chunk:
+                                break
+                            data += chunk
+                        if data:
+                            try:
+                                msg = json.loads(data.decode('utf-8').strip())
+                                handle_tcp_p2p_registration(client, addr, msg)
+                            except:
+                                pass
+                    except:
+                        pass
+                    finally:
+                        client.close()
+                    continue
+
+                # 否则是正常 HTTP/WS 连接，加入主循环
                 connections.append(client)
                 ws_conns[client] = WSConn(client, addr)
                 print(f"[连接] {addr}")

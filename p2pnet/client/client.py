@@ -233,6 +233,7 @@ def print_help():
     log("  login <username> - 登录，随后提示输入密码")
     log("  list             - 发送 list")
     log("  p2pudp <user>   - 请求与对方建立 UDP P2P 连接")
+    log("  p2ptcp <user>   - 请求与对方建立 TCP P2P 连接")
     log("  help             - 显示帮助")
     log("  quit             - 退出")
 
@@ -299,28 +300,63 @@ def handle_server_message(obj):
         peer_name = obj.get('name', '')
         peer_ip = obj.get('ip', '')
         peer_port = obj.get('port', 0)
-        log(f"[P2P] 收到对端 {peer_name} 地址: {peer_ip}:{peer_port}，停止 UDP hello，启动 p2pudp.py...")
+        log(f"[P2P] 收到对端 {peer_name} 地址: {peer_ip}:{peer_port}，停止 UDP hello，启动 udp.py...")
         hello_port = udp_hello_sock.getsockname()[1] if udp_hello_sock else 0
         stop_udp_hello()
         import subprocess
         env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
         try:
             p = subprocess.Popen(
-                [sys.executable, 'remote/udptunnel.py', peer_ip, str(peer_port), str(hello_port)],
+                [sys.executable, 'remote/udp.py', peer_ip, str(peer_port), str(hello_port), '--nettype', 'auto'],
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 env=env,
                 stdout=None,
                 stderr=None,
                 start_new_session=True,
             )
-            log(f"[P2P] p2pudp.py 已启动 PID={p.pid} -> {peer_ip}:{peer_port}")
+            log(f"[P2P] udp.py 已启动 PID={p.pid} -> {peer_ip}:{peer_port}")
         except Exception as e:
-            log(f"[P2P] 启动 p2pudp.py 失败: {e}")
-        except Exception as e:
-            log(f"[P2P] 启动 p2pudp.py 失败: {e}")
+            log(f"[P2P] 启动 udp.py 失败: {e}")
     elif obj.get('type') == 'p2pudp_pending':
         target = obj.get('target', '')
         log(f"P2P UDP 等待 {target} 确认...")
+    elif obj.get('type') == 'send_tcp_to_server':
+        tcpport = obj.get('tcpport', SERVER_PORT)
+        log(f"[P2P] 服务器要求连接 TCP P2P 端口 {tcpport}（打洞用）...")
+        # 停止 UDP hello（如果还在跑）
+        stop_udp_hello()
+        import socket as _socket
+        try:
+            tcp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            tcp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            tcp_sock.connect((SERVER_IP, tcpport))
+            tcp_sock.sendall((json.dumps({'username': logged_in_user}) + '\n').encode())
+            log(f"[P2P] 已发送 TCP 注册到 {SERVER_IP}:{tcpport}，NAT 映射已建立")
+            # 打洞用，发完就关闭，映射留在 NAT 里
+            tcp_sock.close()
+        except Exception as e:
+            log(f"[P2P] 连接 TCP P2P 端口失败: {e}")
+    elif obj.get('type') == 'thisisyourpeer_tcp':
+        peer_name = obj.get('name', '')
+        peer_ip = obj.get('ip', '')
+        peer_port = obj.get('port', 0)
+        my_ip = obj.get('my_ip', '')
+        my_port = obj.get('my_port', 0)
+        log(f"[P2P] 收到对端 {peer_name} TCP 地址: {peer_ip}:{peer_port}，本端: {my_ip}:{my_port}，启动 tcp.py...")
+        import subprocess
+        env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
+        try:
+            p = subprocess.Popen(
+                [sys.executable, 'remote/tcp.py', peer_ip, str(peer_port), str(my_port), peer_name, '--nettype', 'auto'],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                env=env,
+                stdout=None,
+                stderr=None,
+                start_new_session=True,
+            )
+            log(f"[P2P] tcp.py 已启动 PID={p.pid} -> {peer_ip}:{peer_port} (bind {my_port})")
+        except Exception as e:
+            log(f"[P2P] 启动 tcp.py 失败: {e}")
     else:
         log(f"[消息] {json.dumps(obj)}")
 
@@ -355,6 +391,13 @@ def process_input_line(line):
         target = arg.strip()
         ws_send(ws_sock, {"type": "p2pudp", "target": target})
         log(f"P2P UDP 请求已发送给服务器，等待 {target} 确认...")
+    elif cmd == 'p2ptcp':
+        if not arg:
+            log("用法: p2ptcp <对方用户名>")
+            return True
+        target = arg.strip()
+        ws_send(ws_sock, {"type": "p2ptcp", "target": target})
+        log(f"P2P TCP 请求已发送给服务器，等待 {target} 确认...")
     else:
         log(f"未知命令: {cmd}，输入 help")
     return True

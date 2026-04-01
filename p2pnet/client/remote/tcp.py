@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+remote/tcp.py - P2P TCP 隧道（直接打洞，无 relay）
+用法: python3 tcp.py <peer_ip> <peer_port> <local_port> <peer_name> [--nettype tun|tap|auto]
+
+打洞原理：
+  1. bind(local_port) + listen() — 让 NAT 记住这个端口的映射
+  2. 同时 connect(peer_ip, peer_port) — 在 NAT 上产生外向映射
+  3. select(A1=listen, A2=connect) 竞速：accept 或 connect 哪个先完成用哪个
+  4. 直接 P2P 失败则退出（不 relay）
+
+Tunnel：tunnel socket <-> tun interface
+"""
+
+import os
+import sys
+import time
+import socket
+import argparse
+import select
+import threading
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _auto_tun(nettype):
+    """根据 nettype 和平台自动选择 tun 实现"""
+    if nettype == 'fake':
+        from local.fake import FakeTun
+        return FakeTun()
+
+    import platform
+    sysname = platform.system()
+
+    if nettype == 'tun' or nettype == 'auto':
+        try:
+            if sysname == 'Windows':
+                from local.tun_windows import TunWintun
+                return TunWintun()
+            else:
+                from local.tun import Tun
+                return Tun()
+        except Exception as e:
+            if nettype == 'tun':
+                raise RuntimeError(f"TUN 不可用: {e}")
+
+    if nettype == 'tap' or nettype == 'auto':
+        try:
+            if sysname == 'Windows':
+                from local.tap_windows import TapWindows
+                return TapWindows()
+            else:
+                from local.tap import Tap
+                return Tap()
+        except Exception as e:
+            if nettype == 'tap':
+                raise RuntimeError(f"TAP 不可用: {e}")
+
+    if nettype == 'auto':
+        from local.fake import FakeTun
+        print(f"[tcp]  警告: Tun/Tap 均不可用，使用 FakeTun")
+        return FakeTun()
+
+    raise ValueError(f"未知的 nettype: {nettype}")
+
+
+CONNECT_TIMEOUT = 8.0
+ACCEPT_TIMEOUT = 8.0
+
+
+def ts():
+    return time.strftime("%H:%M:%S")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='p2pnet P2P TCP 直接打洞')
+    parser.add_argument('peer_ip', help='对方公网 IP')
+    parser.add_argument('peer_port', type=int, help='对方公网端口')
+    parser.add_argument('local_port', type=int, help='本地绑定端口（与 TCP 中继注册时相同）')
+    parser.add_argument('peer_name', nargs='?', default='', help='对方用户名（仅日志用）')
+    parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake'],
+                        default='auto', help='网络接口类型（auto: tun→tap→fake）')
+    args = parser.parse_args()
+
+    peer_ip = args.peer_ip
+    peer_port = args.peer_port
+    local_port = args.local_port
+    peer_name = args.peer_name
+
+    print(f"[{ts()}][tcp]  启动 -> {peer_ip}:{peer_port} (bind {local_port})")
+
+    tun = _auto_tun(args.nettype)
+
+    # ==================== listen socket：让 NAT 记住 7777 -> 外部端口 的映射 ====================
+    listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    try:
+        listen_sock.bind(('0.0.0.0', local_port))
+    except OSError as e:
+        print(f"[{ts()}][tcp]  bind({local_port}) 失败: {e}，尝试随机端口")
+        listen_sock.bind(('0.0.0.0', 0))
+    listen_sock.listen(5)
+    listen_sock.settimeout(ACCEPT_TIMEOUT)
+    actual_port = listen_sock.getsockname()[1]
+    print(f"[{ts()}][tcp]  listen {actual_port}，等待对端 SYN...")
+
+    # ==================== connect socket：发出 SYN 到对端 ====================
+    connect_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    connect_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    connect_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    connect_sock.setblocking(False)
+
+    connect_pending = True
+    try:
+        connect_sock.connect((peer_ip, peer_port))
+    except BlockingIOError:
+        # 非阻塞 connect 发出 SYN，等待完成
+        print(f"[{ts()}][tcp]  connect -> {peer_ip}:{peer_port}，SYN 已发送（等待 NAT 映射）")
+    except Exception as e:
+        print(f"[{ts()}][tcp]  connect 异常: {e}，继续等待 accept")
+        connect_pending = False
+
+    # ==================== select 竞速：accept 或 connect 哪个先完成用哪个 ====================
+    tunnel_sock = None
+    use_accept = False
+    deadline = time.time() + CONNECT_TIMEOUT
+
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        r, w, e = select.select([listen_sock, connect_sock], [connect_sock], [connect_sock], remaining)
+
+        # --- connect 完成 ---
+        if connect_pending and (connect_sock in w or (not connect_pending and connect_sock in r)):
+            try:
+                # 再调一次 connect 让 socket 状态更新
+                connect_sock.setblocking(False)
+                try:
+                    connect_sock.connect((peer_ip, peer_port))
+                except OSError:
+                    pass
+                tunnel_sock = connect_sock
+                use_accept = False
+                print(f"[{ts()}][tcp]  ✅ connect 完成！用 connect socket 建立隧道")
+                break
+            except Exception as e:
+                print(f"[{ts()}][tcp]  connect 最终确认失败: {e}")
+                connect_pending = False
+
+        # --- accept 到来（对方 SYN 穿过 NAT 到达）---
+        if listen_sock in r:
+            try:
+                accepted, addr = listen_sock.accept()
+                tunnel_sock = accepted
+                use_accept = True
+                print(f"[{ts()}][tcp]  ✅ accept 成功！来自 {addr}，用 accept socket 建立隧道")
+                break
+            except socket.timeout:
+                pass
+
+    # ==================== 清理没用上的 socket ====================
+    if tunnel_sock is not connect_sock:
+        try:
+            connect_sock.close()
+        except:
+            pass
+    if tunnel_sock is not listen_sock:
+        try:
+            listen_sock.close()
+        except:
+            pass
+
+    if tunnel_sock is None:
+        print(f"[{ts()}][tcp]  ⚠️  {CONNECT_TIMEOUT}s 内直接 P2P 未建立，退出（不 relay）")
+        tun.close()
+        return
+
+    tunnel_sock.setblocking(False)
+    print(f"[{ts()}][tcp]  P2P TCP 隧道建立成功，开始 tunnel！")
+
+    # ==================== Tunnel 循环：tunnel socket <-> tun ====================
+    while True:
+        r, _, _ = select.select([tunnel_sock, tun], [], [], 1.0)
+
+        # tun -> tunnel socket
+        if tun in r:
+            try:
+                data = tun.recv(4096)
+                if data:
+                    tunnel_sock.sendall(data)
+                    print(f"[{ts()}][tcp]  tun->tcp {len(data)}B hex:{data[:16].hex()}")
+            except BlockingIOError:
+                pass
+
+        # tunnel socket -> tun
+        if tunnel_sock in r:
+            try:
+                data = tunnel_sock.recv(4096)
+                if not data:
+                    print(f"[{ts()}][tcp]  对端关闭连接，tunnel 结束")
+                    break
+                tun.send(data)
+                print(f"[{ts()}][tcp]  tcp->tun {len(data)}B hex:{data[:16].hex()}")
+            except BlockingIOError:
+                pass
+            except Exception as e:
+                print(f"[{ts()}][tcp]  tunnel recv 错误: {e}")
+                break
+
+    tunnel_sock.close()
+    tun.close()
+    print(f"[{ts()}][tcp]  结束")
+
+
+if __name__ == '__main__':
+    main()

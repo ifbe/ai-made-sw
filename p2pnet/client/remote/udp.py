@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-p2pnet P2P UDP 隧道 (remote/udptunnel.py)
-用法: python3 udptunnel.py <peer_ip> <peer_port> <local_port>
+p2pnet P2P UDP 隧道
+用法: python3 udp.py <peer_ip> <peer_port> <local_port> [--nettype tun|tap|auto]
 
 架构:
   主线程:    select 监听 socket，收 UDP，ping/pong 自己处理，非 ping/pong 推进队列
@@ -20,7 +20,56 @@ import select
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from local.fake import FakeTun
+
+
+def _auto_tun(nettype):
+    """
+    根据 nettype 和平台自动选择 tun 实现。
+    nettype: 'tun' | 'tap' | 'fake' | 'auto'
+    返回一个 TUN-like 实例（send/recv/close 接口）。
+    """
+    if nettype == 'fake':
+        from local.fake import FakeTun
+        return FakeTun()
+
+    import platform
+    sysname = platform.system()
+
+    if nettype == 'tun' or nettype == 'auto':
+        # 试 Tun
+        try:
+            if sysname == 'Windows':
+                from local.tun_windows import TunWintun
+                return TunWintun()
+            else:
+                from local.tun import Tun
+                return Tun()
+        except Exception as e:
+            if nettype == 'tun':
+                raise RuntimeError(f"TUN 不可用: {e}")
+
+    if nettype == 'tap' or nettype == 'auto':
+        # 试 Tap
+        try:
+            if sysname == 'Windows':
+                from local.tap_windows import TapWindows
+                return TapWindows()
+            else:
+                from local.tap import Tap
+                return Tap()
+        except Exception as e:
+            if nettype == 'tap':
+                raise RuntimeError(f"TAP 不可用: {e}")
+
+    if nettype == 'auto':
+        # 最后 fallback fake
+        from local.fake import FakeTun
+        t = FakeTun()
+        print(f"[{ts()}][udptunnel]  警告: Tun/Tap 均不可用，使用 FakeTun")
+        return t
+
+    raise ValueError(f"未知的 nettype: {nettype}")
+
 
 PING_INTERVAL = 1.0
 PING_TIMEOUT = 5.0
@@ -36,6 +85,8 @@ def main():
     parser.add_argument('peer_ip', help='对方 IP')
     parser.add_argument('peer_port', type=int, help='对方端口')
     parser.add_argument('local_port', type=int, help='本地 UDP 端口（与 hello 相同）')
+    parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake'],
+                        default='auto', help='网络接口类型（auto: tun→tap→fake）')
     args = parser.parse_args()
 
     peer_ip = args.peer_ip
@@ -81,8 +132,8 @@ def main():
 
     # ==================== 隧道线程 ====================
     def tunnel_worker():
-        tun = FakeTun()
-        print(f"[{ts()}][udptunnel]  tunnel 启动")
+        tun = _auto_tun(args.nettype)
+        print(f"[{ts()}][udptunnel]  tunnel 启动（{tun}）")
         while not stop_event.is_set():
             # 从 tun 读 -> 发 UDP
             try:
