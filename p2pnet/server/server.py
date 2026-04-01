@@ -53,6 +53,10 @@ udp_addrs = {}
 # TCP P2P 注册地址: username -> {ip, port, target}（服务器看到对方的公网地址）
 tcp_peer_info = {}  # username -> {'ip': str, 'port': int, 'target': str}
 
+# TCP P2P 等待队列: target -> list of (conn, addr, username)
+# 当 target 还没连上时，先存起来
+tcp_pending = {}  # target_username -> [(conn, addr, username), ...]
+
 # UDP socket 用于接收 P2P 客户端的注册包
 udp_sock = None
 udp_sock_port = None
@@ -433,8 +437,9 @@ def handle_p2ptcp(ws, msg):
 
     target_info = online_users[target]
 
-    # 记录 TCP P2P 请求
+    # 记录 TCP P2P 请求（双向都记，这样 TCP 注册时不管谁先连都能查到对方）
     p2p_tcp_requests[username] = {'target': target, 'timestamp': time.time()}
+    p2p_tcp_requests[target] = {'target': username, 'timestamp': time.time()}
 
     # 同时告诉两边连主服务器的端口（P2P 注册复用 9999，通过 peek 识别）
     ws_send(ws, json.dumps({
@@ -561,7 +566,7 @@ def start_udp_server(port):
 
 def handle_tcp_p2p_registration(conn, addr, msg):
     """
-    处理 P2P 临时打洞注册：复用 9999 端口。
+    处理 P2P 临时打洞注册：复用 10000 端口。
     当 main loop 收到非 HTTP 的直接 JSON 连接时调用此函数。
     流程：记录地址 → 查对方是否也注册了 → 发了地址就关闭连接
     """
@@ -576,9 +581,10 @@ def handle_tcp_p2p_registration(conn, addr, msg):
 
     my_req = p2p_tcp_requests.get(username, {})
     target = my_req.get('target', '')
-    tcp_peer_info[username] = {'ip': ip, 'port': client_port, 'target': target}
+    print(f"[TCP] DEBUG p2p_tcp_requests={dict(p2p_tcp_requests)}")
     online_users[username]['tcp_port'] = client_port
 
+    # 先检查对方是否已经先注册了（等我们）
     if target and target in tcp_peer_info:
         peer = tcp_peer_info[target]
         peer_addr = (peer['ip'], peer['port'])
@@ -607,10 +613,42 @@ def handle_tcp_p2p_registration(conn, addr, msg):
             }))
 
             print(f"[P2P-TCP] {username} <-> {target} 地址已交换，双方可以开始打洞")
-        else:
-            print(f"[TCP] {username} 的 target={target}，但 {target} 没把 {username} 设为目标，等待中...")
-    else:
-        print(f"[TCP] {username} 等目标 {target or '(未知)'} 连上...")
+            conn.close()
+            return
+
+    # 对方还没来，先记入 tcp_peer_info 并加入 pending 队列等着
+    tcp_peer_info[username] = {'ip': ip, 'port': client_port, 'target': target}
+
+    # 检查是否有人等这个用户（对方先到了）
+    if username in tcp_pending and tcp_pending[username]:
+        waiter = tcp_pending[username].pop(0)
+        wait_name = waiter['username']
+        wait_ip = waiter['ip']
+        wait_port = waiter['port']
+        print(f"[TCP] {username} 有人等着配对: {wait_name}@{wait_ip}:{wait_port}")
+
+        # 互发对方地址
+        ws_a = online_users[username]['ws']
+        ws_send(ws_a, json.dumps({
+            'type': 'thisisyourpeer_tcp',
+            'name': wait_name,
+            'ip': wait_ip,
+            'port': wait_port,
+            'my_ip': ip,
+            'my_port': client_port,
+        }))
+
+        ws_b_info = online_users.get(wait_name)
+        if ws_b_info:
+            ws_send(ws_b_info['ws'], json.dumps({
+                'type': 'thisisyourpeer_tcp',
+                'name': username,
+                'ip': ip,
+                'port': client_port,
+                'my_ip': wait_ip,
+                'my_port': wait_port,
+            }))
+        print(f"[P2P-TCP] {username} <-> {wait_name} 地址已交换")
 
     conn.close()
 
