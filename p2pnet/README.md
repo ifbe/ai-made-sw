@@ -58,7 +58,7 @@ python3 -u server.py --debug          # 默认 0.0.0.0:10000，--debug 打印所
 
 ```bash
 cd p2pnet/client
-python3 -u client.py --server 127.0.0.1 --port 9999
+python3 -u client.py --server 127.0.0.1 --port 10000
 ```
 
 命令：
@@ -129,7 +129,7 @@ p2ptcp bob → 服务器记录 → 发 send_tcp_to_server(tcpport=<port>)
 2. 服务器 → 客户端: {"type": "challenge", "challenge": "xxx", "salt": "xxx"}
 3. 客户端计算:
    password_hash = SHA256(password + salt)       # 十六进制字符串
-   response = HMAC-SHA256(hex2bin(password_hash), hex2bin(challenge))
+   response = HMAC-SHA256(hex2binary(password_hash), hex2binary(challenge))   # 均先 hex→binary
 4. 客户端 → 服务器: {"type": "login", "username": "alice", "response": "xxx"}
 5. 服务器 → 客户端: {"type": "login_ok"} 或 {"type": "error", "message": "..."}
 ```
@@ -138,8 +138,12 @@ p2ptcp bob → 服务器记录 → 发 send_tcp_to_server(tcpport=<port>)
 
 ## 技术细节
 
+### Web UI 认证依赖
+- `static/index.html` 依赖 [crypto-js CDN](https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js)，用于 SHA256 / HMAC-SHA256 计算
+- Challenge-Response 流程中，key 和 challenge 都以 hex→binary（`Hex.parse`）方式传入 HMAC，与服务器端 `binascii.unhexlify` 等价
+
 ### 端口复用（TCP P2P）
-- 服务器 9999/TCP 同时服务两种连接：
+- 服务器 `<port>/TCP` 同时服务两种连接：
   - HTTP 请求 → WebSocket handshake → WS 主循环
   - 直接 JSON（以 `{` 开头）→ P2P 临时注册 → `handle_tcp_p2p_registration()` → close
 - 客户端 P2P TCP 注册流程：connect → 发 `{"username":"xxx"}\n` → close
