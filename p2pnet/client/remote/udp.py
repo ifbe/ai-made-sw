@@ -22,10 +22,11 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _auto_tun(nettype):
+def _auto_tun(nettype, name=None):
     """
     根据 nettype 和平台自动选择 tun 实现。
     nettype: 'tun' | 'tap' | 'fake' | 'auto'
+    name: 指定设备名（如 utun3、tap0）；tun/tap 模式下为 socketpath 参数；clientsocket 模式下为 socket 路径
     返回一个 TUN-like 实例（send/recv/close 接口）。
     """
     if nettype == 'fake':
@@ -43,7 +44,7 @@ def _auto_tun(nettype):
                 return TunWintun()
             else:
                 from local.tun import Tun
-                return Tun()
+                return Tun(name=name)
         except Exception as e:
             if nettype == 'tun':
                 raise RuntimeError(f"TUN 不可用: {e}")
@@ -56,13 +57,13 @@ def _auto_tun(nettype):
                 return TapWindows()
             else:
                 from local.tap import Tap
-                return Tap()
+                return Tap(name=name)
         except Exception as e:
             if nettype == 'tap':
                 raise RuntimeError(f"TAP 不可用: {e}")
 
     if nettype == 'clientsocket':
-        path = args.socketpath
+        path = name
         if not path:
             raise RuntimeError("--socketpath 未设置（clientsocket 模式由 client.py 启动）")
         from local.clientsocket import ClientSocket
@@ -97,7 +98,7 @@ def main():
     parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
                         default='auto', help='网络接口类型（auto: tun→tap→fake）')
     parser.add_argument('--socketpath', default=None,
-                        help='clientsocket 模式下 Unix socket 路径（client.py 传入）')
+                        help='tun/tap 模式：指定设备名（如 utun3）；clientsocket 模式：Unix socket 路径（client.py 传入）')
     args = parser.parse_args()
 
     peer_ip = args.peeraddr
@@ -107,8 +108,6 @@ def main():
     nettype = args.nettype or 'auto'
     sock_path = args.socketpath or ''
 
-    print(f"[{ts()}][udptunnel]  args: peer={peer_ip}:{peer_port} local={local_addr}:{local_port} nettype={nettype}" + (f" socket={sock_path}" if sock_path else ""))
-
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -117,6 +116,7 @@ def main():
     actual_port = sock.getsockname()[1]
     print(f"[{ts()}][udptunnel]  本端: {local_addr}:{actual_port}")
     print(f"[{ts()}][udptunnel]  目标: {peer_ip}:{peer_port}")
+    print(f"[{ts()}][udptunnel]  nettype={nettype}" + (f" socketpath={sock_path}" if sock_path else ""))
 
     # 状态
     stop_event = threading.Event()
@@ -150,7 +150,7 @@ def main():
 
     # ==================== 隧道线程 ====================
     def tunnel_worker():
-        tun = _auto_tun(args.nettype)
+        tun = _auto_tun(args.nettype, args.socketpath)
         print(f"[{ts()}][udptunnel]  tunnel 启动（{tun}）")
         while not stop_event.is_set():
             # 从 tun 读 -> 发 UDP

@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 remote/tcp.py - P2P TCP 隧道（直接打洞，无 relay）
-用法: python3 tcp.py <peer_ip> <peer_port> <local_port> <peer_name> [--nettype tun|tap|clientsocket|auto]
+用法: python3 tcp.py [--peeraddr IP] [--peerport PORT] [--localport PORT] \
+    [--nettype tun|tap|clientsocket|auto]
 
 打洞原理：
   1. bind(local_port) + listen() — 让 NAT 记住这个端口的映射
@@ -24,8 +25,8 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _auto_tun(nettype):
-    """根据 nettype 和平台自动选择 tun 实现"""
+def _auto_tun(nettype, name=None):
+    """根据 nettype 和平台自动选择 tun 实现。name 指定设备名（tun/tap）或 socket 路径（clientsocket）。"""
     if nettype == 'fake':
         from local.fake import FakeTun
         return FakeTun()
@@ -40,7 +41,7 @@ def _auto_tun(nettype):
                 return TunWintun()
             else:
                 from local.tun import Tun
-                return Tun()
+                return Tun(name=name)
         except Exception as e:
             if nettype == 'tun':
                 raise RuntimeError(f"TUN 不可用: {e}")
@@ -52,13 +53,13 @@ def _auto_tun(nettype):
                 return TapWindows()
             else:
                 from local.tap import Tap
-                return Tap()
+                return Tap(name=name)
         except Exception as e:
             if nettype == 'tap':
                 raise RuntimeError(f"TAP 不可用: {e}")
 
     if nettype == 'clientsocket':
-        path = args.socketpath
+        path = name
         if not path:
             raise RuntimeError("--socketpath 未设置（clientsocket 模式由 client.py 启动）")
         from local.clientsocket import ClientSocket
@@ -87,22 +88,21 @@ def main():
     parser.add_argument('--peerport', type=int, help='对方公网端口')
     parser.add_argument('--localaddr', default='0.0.0.0', help='本地绑定地址（默认 0.0.0.0）')
     parser.add_argument('--localport', type=int, help='本地绑定端口（与 TCP 中继注册时相同）')
-    parser.add_argument('--peername', nargs='?', default='', help='对方用户名（仅日志用）')
     parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
                         default='auto', help='网络接口类型（auto: tun→tap→fake）')
     parser.add_argument('--socketpath', default=None,
-                        help='clientsocket 模式下 Unix socket 路径（client.py 传入）')
+                        help='tun/tap 模式：指定设备名（如 utun3）；clientsocket 模式：Unix socket 路径（client.py 传入）')
     args = parser.parse_args()
 
     peer_ip = args.peeraddr
     peer_port = args.peerport
     local_addr = args.localaddr
     local_port = args.localport
-    peer_name = args.peername
+    print(f"[{ts()}][tcp]  本端: {local_addr}:{local_port}")
+    print(f"[{ts()}][tcp]  目标: {peer_ip}:{peer_port}")
+    print(f"[{ts()}][tcp]  nettype={args.nettype}" + (f" socketpath={args.socketpath}" if args.socketpath else ""))
 
-    print(f"[{ts()}][tcp]  启动 -> {peer_ip}:{peer_port} (bind {local_port})")
-
-    tun = _auto_tun(args.nettype)
+    tun = _auto_tun(args.nettype, args.socketpath)
 
     # ==================== listen socket：让 NAT 记住 7777 -> 外部端口 的映射 ====================
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

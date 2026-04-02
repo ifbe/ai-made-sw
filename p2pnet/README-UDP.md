@@ -62,8 +62,8 @@ python3 udp.py --peeraddr <ip> --peerport <port> --localport <port> [--localaddr
 
 `--nettype` 说明：
 - `auto`（默认）：按平台自动选择：Linux → `tun → tap → fake`，macOS → `tun → fake`
-- `tun`：强制 TUN（IP 层），macOS 用 utun，Linux 用 /dev/net/tun
-- `tap`：强制 TAP（Ethernet 层，Linux 专用）
+- `tun`：强制 TUN（IP 层），macOS 用 utun，Linux 用 /dev/net/tun；`--socketpath` 指定设备名（如 utun3），不指定则自动选
+- `tap`：强制 TAP（Ethernet 层，Linux 专用）；`--socketpath` 指定设备名（如 tap0），不指定则自动选
 - `clientsocket`：连接 client.py 提供的 Unix socket（clientsocket 模式由 client.py 自动传入 `--socketpath`，不手动使用）
 - `fake`：假接口，用于测试
 

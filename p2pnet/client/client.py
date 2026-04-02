@@ -39,6 +39,30 @@ recv_buf = b''
 # 等待 challenge 的登录上下文
 pending_auth = None
 logged_in_user = None
+pending_salt = None
+pending_challenge = None
+pending_pw_hash = None
+session_key = None  # login_ok 后派生，HKDF(pw_hash, info=challenge)
+
+
+def hkdf_sha256(ikm, salt, info=b''):
+    """HKDF-SHA256(IKM, salt, info) -> 32-byte key"""
+    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+    t = b''
+    okm = b''
+    i = 1
+    while len(okm) < 32:
+        t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+        okm += t
+        i += 1
+    return okm[:32]
+
+
+def sign_with_session_key(message=b'ping'):
+    """用 session_key 对消息签名：HMAC-SHA256(session_key, message) -> hex"""
+    if not session_key:
+        return None
+    return hmac.new(session_key, message, hashlib.sha256).hexdigest()
 
 # 服务器地址（主循环设置，handle_server_message 读取）
 SERVER_IP = None
@@ -199,7 +223,14 @@ def start_udp_hello(server_ip, server_udp_port, username, local_port):
 
     while udp_hello_running:
         try:
-            msg = json.dumps({'type': 'p2pudp_hello', 'username': username}).encode()
+            sig = sign_with_session_key(b'ping') if session_key else None
+            payload = {'type': 'p2pudp_hello', 'username': username}
+            if sig:
+                payload['signature'] = sig
+            msg = json.dumps(payload).encode()
+            if DEBUG:
+                sk_hex = binascii.hexlify(session_key).decode() if session_key else 'None'
+                print(f"[DEBUG] UDP hello -> {server_ip}:{server_udp_port}: {payload}")
             sock.sendto(msg, (server_ip, server_udp_port))
         except Exception as e:
             pass
@@ -253,7 +284,7 @@ def print_help():
 # ====== 处理消息 ======
 
 def handle_server_message(obj):
-    global pending_auth, logged_in_user
+    global pending_auth, logged_in_user, session_key
 
     if obj.get('type') == 'challenge':
         if pending_auth is None:
@@ -274,6 +305,11 @@ def handle_server_message(obj):
             binascii.unhexlify(challenge),
             hashlib.sha256
         ).hexdigest()
+        # 存储，供 login_ok 后派生 session_key
+        global pending_salt, pending_challenge, pending_pw_hash
+        pending_salt = salt
+        pending_challenge = challenge
+        pending_pw_hash = pw_hash
         ws_send(ws_sock, {
             "type": "login",
             "username": username,
@@ -283,7 +319,15 @@ def handle_server_message(obj):
 
     elif obj.get('type') == 'login_ok':
         logged_in_user = obj.get('username', '')
-        log(f"登录成功: {logged_in_user}")
+        # session_key = HKDF(pw_hash, info=challenge)，从不在网络传输
+        if pending_pw_hash and pending_challenge:
+            sk_ikm = binascii.unhexlify(pending_pw_hash)
+            session_key = hkdf_sha256(sk_ikm, sk_ikm, binascii.unhexlify(pending_challenge))
+            log(f"登录成功: {logged_in_user}，session_key 已派生: {binascii.hexlify(session_key).decode()}")
+        else:
+            session_key = None
+            log(f"登录成功: {logged_in_user}（无 session_key，请重新登录）")
+        pending_salt = pending_challenge = pending_pw_hash = None
     elif obj.get('type') == 'list_result':
         users = obj.get('users', [])
         if not users:
@@ -298,6 +342,7 @@ def handle_server_message(obj):
         log(f"错误: {obj.get('message','')}")
     elif obj.get('type') == 'kicked':
         logged_in_user = None
+        session_key = None
         stop_udp_hello()
         log(f"被踢: {obj.get('message','')}")
     elif obj.get('type') == 'incoming_p2pudp':
@@ -360,7 +405,14 @@ def handle_server_message(obj):
             tcp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
             tcp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
             tcp_sock.connect((SERVER_IP, tcpport))
-            tcp_sock.sendall((json.dumps({'username': logged_in_user}) + '\n').encode())
+            sig = sign_with_session_key(b'ping') if session_key else None
+            payload = {'username': logged_in_user}
+            if sig:
+                payload['signature'] = sig
+            if DEBUG:
+                sk_hex = binascii.hexlify(session_key).decode() if session_key else 'None'
+                print(f"[DEBUG] TCP registration -> {SERVER_IP}:{tcpport}: {payload}")
+            tcp_sock.sendall((json.dumps(payload) + '\n').encode())
             log(f"[P2P] 已发送 TCP 注册到 {SERVER_IP}:{tcpport}，NAT 映射已建立")
             # 打洞用，发完就关闭，映射留在 NAT 里
             tcp_sock.close()

@@ -19,6 +19,19 @@ import select
 import argparse
 import threading
 
+
+def hkdf_sha256(ikm, salt, info=b''):
+    """HKDF-SHA256(IKM, salt, info) -> 32-byte key"""
+    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+    t = b''
+    okm = b''
+    i = 1
+    while len(okm) < 32:
+        t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+        okm += t
+        i += 1
+    return okm[:32]
+
 # 导入密码管理（复用 secret.py）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from secret import PasswordManager
@@ -240,6 +253,27 @@ def send_error(ws, msg):
     ws_send(ws, json.dumps({'type': 'error', 'message': msg}))
 
 
+def verify_session_signature(username, signature):
+    """
+    验证 session_key 签名：HMAC(session_key, 'ping') == signature
+    session_key 来自 login 时存储的 online_users[username]['session_key']
+    返回 True/False
+    """
+    if username not in online_users:
+        return False
+    sk = online_users[username].get('session_key')
+    if not sk:
+        return False
+    expected = hmac.new(sk, b'ping', hashlib.sha256).hexdigest()
+    if DEBUG:
+        import binascii
+        print(f"[DEBUG] verify_session: user={username}")
+        print(f"[DEBUG]   session_key={binascii.hexlify(sk).decode()}")
+        print(f"[DEBUG]   expected_sig={expected}")
+        print(f"[DEBUG]   got_sig   ={signature}")
+    return hmac.compare_digest(expected, signature)
+
+
 def handle_message(ws, raw):
     """处理 WebSocket 消息"""
     try:
@@ -331,6 +365,12 @@ def handle_login(ws, msg):
 
     # 记录上线
     token = secrets.token_hex(16)
+    # session_key = HKDF(pw_hash, info=challenge)，双方各自在本地算出，从不传输
+    import binascii
+    pw_hash_bytes = binascii.unhexlify(pw_hash)
+    chal_bytes = binascii.unhexlify(chal['challenge'])
+    session_key = hkdf_sha256(pw_hash_bytes, pw_hash_bytes, chal_bytes)
+    print(f"[登录] {username} session_key={binascii.hexlify(session_key).decode()}")
     online_users[username] = {
         'username': username,
         'ws': ws,
@@ -339,6 +379,8 @@ def handle_login(ws, msg):
         'port': ws.port,
         'udp_port': None,
         'login_time': time.time(),
+        'session_key': session_key,
+        'salt': salt,
     }
     ws.username = username
 
@@ -499,12 +541,20 @@ def udp_server_thread(port):
             # 非 JSON 包（可能是打洞包），忽略
             continue
 
+        if DEBUG:
+            print(f"[DEBUG] UDP from {addr}: {msg}")
+
         msg_type = msg.get('type')
 
-        # UDP 包内容: {"type": "p2pudp_hello", "username": "alice"}
+        # UDP 包内容: {"type": "p2pudp_hello", "username": "alice", "signature": "HMAC(...)"}
         if msg_type == 'p2pudp_hello':
             username = msg.get('username', '').strip()
+            signature = msg.get('signature', '')
             if username not in online_users:
+                continue
+            # session_key 签名验证：HMAC(session_key, 'ping') == signature
+            if not verify_session_signature(username, signature):
+                print(f"[UDP] {username} 签名验证失败，忽略")
                 continue
 
             # 记录/更新这个用户的 UDP 公网地址
@@ -514,7 +564,7 @@ def udp_server_thread(port):
                 'timestamp': time.time(),
             }
             online_users[username]['udp_port'] = addr[1]
-            print(f"[UDP] {username} UDP 来自: {addr[0]}:{addr[1]}")
+            print(f"[UDP] {username} UDP 来自: {addr[0]}:{addr[1]} (签名验证通过)")
 
             # 检查是否有待处理的 P2P 请求
             pending = p2p_requests.get(username)
@@ -570,14 +620,24 @@ def handle_tcp_p2p_registration(conn, addr, msg):
     当 main loop 收到非 HTTP 的直接 JSON 连接时调用此函数。
     流程：记录地址 → 查对方是否也注册了 → 发了地址就关闭连接
     """
+    if DEBUG:
+        print(f"[DEBUG] TCP registration from {addr}: {msg}")
     username = msg.get('username', '').strip()
+    signature = msg.get('signature', '')
     if not username or username not in online_users:
         print(f"[TCP] {addr} 用户不存在: {username}")
         conn.close()
         return
+    # session_key 签名验证：HMAC(session_key, 'ping') == signature
+    if not verify_session_signature(username, signature):
+        print(f"[TCP] {username} 签名验证失败")
+        conn.close()
+        return
 
     ip, client_port = addr
-    print(f"[TCP] {username} P2P 注册来自 {ip}:{client_port}")
+    sk = online_users[username].get('session_key', b'')
+    print(f"[TCP] {username} P2P 注册 session_key={binascii.hexlify(sk).decode()}")
+    print(f"[TCP] {username} P2P 注册来自 {ip}:{client_port} (签名验证通过)")
 
     my_req = p2p_tcp_requests.get(username, {})
     target = my_req.get('target', '')
@@ -651,6 +711,7 @@ def handle_tcp_p2p_registration(conn, addr, msg):
         print(f"[P2P-TCP] {username} <-> {wait_name} 地址已交换")
 
     conn.close()
+
 
 
 
