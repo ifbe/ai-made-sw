@@ -175,3 +175,213 @@ Alice（initiator）                          Bob（responder）
 **udp.py / tcp.py 加 Noise IK 加密层**，密钥手动共享（微信把 base64 发给对方）。
 
 信令层和 P2P 注册保持现状，等后续再合入 wss:// + static pubkey 交换。
+
+---
+
+## ICE Peer-Reflexive 支持（无需 relay）
+
+### 当前问题
+
+`thisisyourpeer_udp` 消息里 server 告诉 A：「B 的地址是 X:Port」，这个 X:Port 是 server 从收到的 UDP 包中观察到的 A 的地址。但这个地址**不一定等于 B 实际收到时的来源地址**——对称型 NAT 会对不同目的地分配不同端口。
+
+另外收到 `thisisyourpeer_udp` 后立即 `stop_udp_hello()`，导致：
+1. NAT 映射表项失去 keepalive，可能超时失效
+2. 没有持续的双向发包，B 无法发现 A 的 peer-reflexive 地址
+
+### 目标
+
+在至少有一方是非对称型 NAT 的情况下，实现 peer-reflexive 地址动态发现，提升打洞成功率。
+
+### 三个关键改动
+
+#### 1. udp.py 支持多地址候选 + 同时双向连接性检查
+
+**现状**：udp.py 只往 `--peeraddr` 单播。
+
+**改为**：
+- 收到 `thisisyourpeer_udp` 时同时拿到自己的 observed 地址（server 告诉的 hello 端口对应的公网地址）
+- udp.py 启动后，**同时**向 peer 告知的所有候选地址发连接性探测
+- 收到对方发来的任何 UDP 包，从包头记录实际来源地址 → 这就是 peer-reflexive candidate
+- 后续 tunnel 数据优先走 peer-reflexive 地址
+
+具体在 udp.py 里：
+
+```
+已知候选：
+  - srflx_A：server 告诉 A 的 B 地址（198.51.100.70:7000）
+  - srflx_B：server 告诉 B 的 A 地址（203.0.113.50:6000）
+
+Phase 1（连接性探测）：
+  A 向 srflx_B 发探测包（STUN Binding Request 格式 or 自定义 ping）
+  B 向 srflx_A 发探测包
+  
+Phase 2（动态发现）：
+  B 收到 A 的探测包，从 IP 头记录 src = 203.0.113.50:6001（A 的 peer-reflexive）
+  A 收到 B 的探测包，从 IP 头记录 src = 198.51.100.70:7001（B 的 peer-reflexive）
+  
+Phase 3（隧道切换）：
+  发现 peer-reflexive 后，更新对端地址为新发现的地址
+  停止探测，开始正常隧道传输
+```
+
+#### 2. udp.py 收到非预期来源的包时动态更新 peer 地址
+
+**现状**：udp.py 只往 `--peeraddr` 发，收只从 `sock` 收，不检查来源。
+
+**改为**：
+- `select.select([sock], ...)` 后 `sock.recvfrom()` 拿到 `(data, addr)`
+- 如果 `addr` ≠ 当前记录的 peer 地址，记录为 peer-reflexive candidate，切换隧道目标
+- 探测阶段收到对方 ping，回 `pong` 到包的实际来源（不是 `--peeraddr`）
+
+### 代码改动位置
+
+**remote/udp.py**：
+- 新增候选地址列表：`candidates = [(peer_ip, peer_port), (observed_srflx_A), ...]`
+- 同时向所有候选发探测
+- `recvfrom` 后比较来源地址，发现 peer-reflexive 时切换
+- ping/pong 响应到 `addr`（收到的包的来源），而不是已知候选
+
+### 注意事项
+
+- peer-reflexive 发现后不立即废弃原 srflx，保留作为 fallback
+- 对称型+对称型：本方案无法解决，需要 relay（用户已说不考虑）
+
+---
+
+## 目录结构重构
+
+### 新目录三分类
+
+```
+client/
+├── client.py    # 总管理器：连服务器 + 解析 appmode 命令 + 维护子进程
+├── app/         # 业务层（--appmode）
+│   ├── hub.py      # hub 模式：中心交换，所有子进程连到 hub
+│   ├── tun.py      # IP 隧道
+│   ├── tap.py      # Ethernet 隧道
+│   ├── fake.py     # 测试
+│   ├── audio.py    # 音频流（已实现，双向麦克风+扬声器，ffmpeg RTMP/FLV）
+│   ├── video.py    # 音视频流（RTMP 输入/输出）
+│   ├── media.py    # 注释：RTMP 输入 + RTMP 输出
+│   ├── proxy.py    # 注释：netcat 转发（远程桌面、SSH 等）
+│   └── file.py     # 注释：文件分片传输（断点续传）
+├── remote/      # P2P 传输通道（无任何业务逻辑）
+│   ├── udp.py   # UDP P2P（裸数据收发）
+│   └── tcp.py   # TCP P2P
+└── util/        # 工具层
+    ├── crypto.py  # 密码学（hkdf、ecdh、hmac）
+    └── kcp.py     # KCP 可靠传输封装
+```
+
+**原则：**
+- `remote/` 只管裸数据收发，不写任何业务逻辑
+- `app/` 只管业务呈现，不关心数据怎么到对端
+- `client.py` 始终是总管理器，hub 只是其中一种 `--appmode`
+
+### appmode 命令
+
+```
+appmode              # 显示当前模式
+appmode fake         # 拉起 app/fake.py（测试用）
+appmode tun [dev]    # 拉起 app/tun.py
+appmode tap [dev]    # 拉起 app/tap.py
+appmode voice        # 拉起 app/audio.py（纯音频，ffmpeg RTMP/FLV）
+appmode video        # 拉起 app/video.py（音视频，RTMP 输入/输出）
+appmode hub          # 拉起 app/hub.py（所有子进程连到 hub）
+```
+
+### udp.py 与 app 的交互
+
+**不依赖 hub 时**（单个 app + 单个 udp.py）：
+- `udp.py --mode tun --socketpath /tmp/p2p/alice/bob-tun.sock`
+- `--socketpath` 指向对端 app 监听的 socket
+- udp.py 收到数据写到 socket；app 从 socket 读数据
+
+**走 hub 时**（多个 app + 多个 udp.py）：
+- `udp.py --mode voice --socketpath /tmp/p2p/alice/hub.sock`
+- 所有数据发给 hub，hub 内部路由
+
+**udp.py / tcp.py 参数（新增）：**
+```
+--cipher none|chacha20-poly1305   # 加密方式，默认 none
+--transport none|<mode>           # 分帧/可靠传输，默认 none
+    udp: none=裸UDP, kcp=KCP 可靠传输
+    tcp: none=心跳 JSON 文本行+原始数据, framed=TLV 分帧
+--obfs none|xor|tls              # 混淆方式，默认 none
+    none=不混淆
+    xor=XOR 流混淆（可逆）
+    tls=TLS 指纹混淆（伪装 HTTPS ClientHello）
+--key <base64>                    # 对称密钥，client.py 登录后派生
+```
+
+**udp.py 参数（现有）：**
+```
+--nettype auto|tun|tap|fake|clientsocket   # 网络接口类型
+--socketpath <path>               # Unix socket 路径
+```
+
+| appmode | udp.py --nettype | udp.py --socketpath | 行为 |
+|---------|--------------|---------------------|------|
+| tun | tun | `/tmp/p2p/alice/bob-tun.sock` | socket 指向 tun.py |
+| voice | voice | `/tmp/p2p/alice/bob-voice.sock` | socket 指向 audio.py |
+| hub | voice | `/tmp/p2p/alice/hub.sock` | 所有数据发给 hub，hub 内部路由 |
+| hub | voice | `/tmp/p2p/alice/hub.sock` | 所有数据发给 hub，hub 内部路由 |
+
+### 数据流分层（发送 / 接收）
+
+**发送：**
+```
+app 原始数据（视频帧 / 音频帧 / IP 包）
+  → 加密（逐包独立 nonce/IV，ChaCha20-Poly1305）
+  → KCP（加 seg header：sn 序号、len、data）
+  → UDP 发送
+```
+
+**接收：**
+```
+UDP 收到一个完整段
+  → KCP（按 sn 排序、去重、重传请求）
+  → 解密（逐包独立 nonce/IV）
+  → app 原始数据
+```
+
+**原则：**
+- KCP 处理的是加密后的 opaque bytes，不关心内容
+- 加密在 KCP 之前（发送）/ 之后（接收），两层 seqnum 完全独立
+- 心跳包（ping/pong）不走 KCP，在 KCP 之外单独处理
+
+### util/kcp.py
+
+封装 KCP 提供可靠传输：
+```python
+kcp = KCPChannel(sock)
+kcp.send(ciphertext_bytes)      # KCP 自己加 seg header
+kcp.recv() → ciphertext_bytes  # 排序去重后交付，app 再解密
+```
+
+### appmode voice
+
+**已实现。数据流（双向）：**
+```
+发送方向（Alice）：
+  麦克风/摄像头 → ffmpeg 编码（H.264/AAC）→ ffmpeg FLV 封装
+    → 写入 pipe 或 unix socket
+    → 加密（app 层）→ KCP → UDP
+
+接收方向（Alice）：
+  UDP → KCP → 解密（app 层）
+    → 从 pipe 或 unix socket 读取 FLV
+    → ffmpeg 解码 → 扬声器/屏幕
+```
+
+**app/video.py 的职责（每个 peer 各有一个实例）：**
+- 本地：ffmpeg 捕获 + 编码 + FLV 封装 → 输出到 pipe/socket
+- 远端：UDP 收密文 → KCP → 解密 → ffmpeg 解码播放
+- **ffmpeg 天然处理 FLV 内部音视频时间戳，无需额外 AV sync**
+
+**appmode voice：** 纯音频，用 ffmpeg 捕获 AAC + FLV 封装到 stdout，从 stdin 读取 FLV 播放
+
+### 对称型 NAT + peer-reflexive
+
+（见前文 ICE Peer-Reflexive 章节，已在 udp.py 实现）
+

@@ -19,8 +19,161 @@ import struct
 import secrets
 import errno
 import threading
+import subprocess
 
 IS_WINDOWS = sys.platform == 'win32'
+
+
+def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_exit=False,
+                   peer_name='', peer_ip='', peer_port=0, my_ip='', my_port=0):
+    """
+    启动子进程。
+    new_window=True  且平台支持时：新开终端窗口运行
+    new_window=False：后台直接运行，不开窗口，输出到日志
+    close_on_exit=True：子进程结束时自动关闭窗口（仅 macOS/Windows；Linux 取决于终端）
+    peer_name/ip/port, my_ip/port：记录到 children 列表，供运行时查看。
+    返回存储条目 dict，失败返回 None。
+    """
+    import shlex
+    import platform
+    import time as _time
+    cmd_str = ' '.join(shlex.quote(a) for a in args)
+    cwd = cwd or os.getcwd()
+    env = env or os.environ
+    name = os.path.basename(args[0])  # e.g. 'udp.py'
+    system = platform.system()
+
+    child_entry = {
+        'pid': None, 'name': name,
+        'type': 'window' if new_window else 'bg',
+        'popen': None, 'close_on_exit': close_on_exit,
+        'peer_name': peer_name, 'peer_ip': peer_ip, 'peer_port': peer_port,
+        'my_ip': my_ip, 'my_port': my_port,
+    }
+
+    if not new_window:
+        # 后台直接跑，输出到日志
+        log_file = f'/tmp/p2pnet_{name}_{os.getpid()}.log'
+        p = subprocess.Popen(
+            args, cwd=cwd, env=env,
+            stdout=open(log_file, 'w'),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        child_entry['pid'] = p.pid
+        child_entry['popen'] = p
+        children.append(child_entry)
+        return child_entry
+
+    if system == 'Darwin':
+        # 始终写日志到 /tmp/，方便调试和追溯
+        import time as _time2
+        log_file = f'/tmp/p2pnet_{name}_{os.getpid()}_{_time2.time():.0f}.log'
+        # new_window=True: 在新 Terminal 窗口运行，同时写日志
+        # new_window=False: 后台运行，写日志
+        if new_window:
+            # 新窗口里先显示日志再跑命令，退出时保留窗口（无 exit 后缀）
+            exit_suffix = '; exit' if close_on_exit else ''
+            show_tail = f'; echo "--- log: {log_file} ---"; tail -f {log_file} {exit_suffix}'
+            script = (
+                f'tell application "Terminal"\n'
+                f'  activate\n'
+                f'  do script "cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1) {show_tail}"\n'
+                f'end tell'
+            )
+        else:
+            script = None
+        r = subprocess.run(
+            ['osascript', '-e', script] if script else ['true'],
+            cwd=cwd, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        # osascript 新版可返回窗口 shell 的 PID；尝试解析
+        pid = None
+        if r.returncode == 0 and r.stdout:
+            try:
+                pid = int(r.stdout.strip().split()[-1])
+            except (ValueError, IndexError):
+                pass
+        if pid is None:
+            # fallback：用 pgrep 找（窗口刚弹，python 进程在运行）
+            _time.sleep(0.2)
+            try:
+                r2 = subprocess.run(
+                    ['pgrep', '-f', f'python.*remote/{name}'],
+                    capture_output=True, text=True,
+                )
+                if r2.returncode == 0:
+                    pid = int(r2.stdout.strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+        child_entry['pid'] = pid
+        children.append(child_entry)
+        return child_entry
+
+    elif system == 'Windows':
+        # /c = 结束后关闭窗口，/k = 保持窗口
+        flag = '/c' if close_on_exit else '/k'
+        p = subprocess.Popen(
+            ['cmd', '/c', 'start', 'cmd', flag, f'cd /d {cwd} && {cmd_str}'],
+            cwd=cwd, env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        child_entry['pid'] = p.pid
+        child_entry['popen'] = p
+        children.append(child_entry)
+        return child_entry
+
+    else:
+        # Linux
+        # 始终写日志到 /tmp/
+        import time as _time2
+        log_file = f'/tmp/p2pnet_{name}_{os.getpid()}_{_time2.time():.0f}.log'
+        close_flag = ''
+        for term in ['gnome-terminal', 'konsole', 'xfce4-terminal']:
+            if subprocess.call(['which', term], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                if term == 'gnome-terminal':
+                    close_flag = ' --close-session' if close_on_exit else ''
+                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1)'
+                    p = subprocess.Popen(
+                        [term + close_flag, '--', 'bash', '-c', cmd_shell],
+                        cwd=cwd, env=env,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                elif term == 'konsole':
+                    close_flag = ' --close' if close_on_exit else ''
+                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1)'
+                    p = subprocess.Popen(
+                        [term + close_flag, '-e', 'bash', '-c', cmd_shell],
+                        cwd=cwd, env=env,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                elif term == 'xfce4-terminal':
+                    close_flag = ' -H' if close_on_exit else ''
+                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1)'
+                    p = subprocess.Popen(
+                        [term + close_flag, '-e', cmd_shell],
+                        cwd=cwd, env=env,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                child_entry['pid'] = p.pid
+                child_entry['popen'] = p
+                children.append(child_entry)
+                return child_entry
+            # next term
+        # fallback: 找不到终端，后台跑（本身就是写日志）
+        p = subprocess.Popen(
+            args, cwd=cwd, env=env,
+            stdout=open(log_file, 'w'),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        child_entry['pid'] = p.pid
+        child_entry['popen'] = p
+        children.append(child_entry)
+        return child_entry
+
 
 # 后台 UDP hello 线程
 udp_hello_running = False
@@ -35,6 +188,14 @@ DEBUG = False
 connected = False
 ws_sock = None
 recv_buf = b''
+
+# 子进程/子窗口列表，每个元素 {pid, name, type, popen, close_on_exit}
+children = []
+# 运行参数（由 argparse 设置）
+NEW_WINDOW = False  # 默认当前窗口（后台运行写日志）；--new-window 开启新窗口
+CLOSE_WINDOW = False  # 默认窗口保留（子进程结束后不自动关窗口）
+ARGS_USER = None  # --user 自动登录
+ARGS_PASS = None  # --pass 密码
 
 # 等待 challenge 的登录上下文
 pending_auth = None
@@ -210,6 +371,7 @@ def start_udp_hello(server_ip, server_udp_port, username, local_port):
     global udp_hello_running, udp_hello_sock
     import time
 
+    # 保持 IPv4（服务器是 IPv4 0.0.0.0），避免 IPv6 socket 发到 IPv4 服务器失败
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.bind(('0.0.0.0', local_port))
@@ -272,19 +434,21 @@ def print_help():
     log("  list             - 发送 list")
     log("  p2pudp <user>   - 请求与对方建立 UDP P2P 连接")
     log("  p2ptcp <user>   - 请求与对方建立 TCP P2P 连接")
-    log("  local            - 显示当前模式")
-    log("  local fake       - 模式: fake（子进程独立 tun，不汇入 client.py）")
-    log("  local tun [dev] - 模式: clientsocket（子进程汇入 client.py）")
-    log("  local tap [dev] - 模式: clientsocket（子进程汇入 client.py）")
-    log("  local auto      - 模式: auto（tun→tap→fake）")
-    log("  help            - 显示帮助")
+    log("  appmode            - 显示当前模式")
+    log("  appmode fake       - 模式: fake（子进程独立 tun，不汇入 client.py）")
+    log("  appmode tun [dev] - 模式: clientsocket（子进程汇入 client.py）")
+    log("  appmode tap [dev] - 模式: clientsocket（子进程汇入 client.py）")
+    log("  appmode auto      - 模式: auto（tun→tap→fake）")
+    log("  help              - 显示帮助")
     log("  quit             - 退出")
+    log("  children           - 列出所有子进程/子窗口")
+    log("  kill <pid>         - 杀掉指定 PID 的子进程/子窗口")
 
 
 # ====== 处理消息 ======
 
 def handle_server_message(obj):
-    global pending_auth, logged_in_user, session_key
+    global pending_auth, logged_in_user, session_key, ARGS_USER, ARGS_PASS
 
     if obj.get('type') == 'challenge':
         if pending_auth is None:
@@ -293,7 +457,13 @@ def handle_server_message(obj):
         username, = pending_auth  # pending_auth 现在是 (username,)
         challenge = obj.get('challenge', '')
         salt = obj.get('salt', '')
-        password = input("密码: ").strip()
+        if ARGS_PASS:
+            password = ARGS_PASS
+            # 一次性，用完即清
+            ARGS_USER = None
+            ARGS_PASS = None
+        else:
+            password = input("密码: ").strip()
         if not password:
             pending_auth = None
             log("取消登录")
@@ -360,7 +530,6 @@ def handle_server_message(obj):
         log(f"[P2P] 收到对端 {peer_name} 地址: {peer_ip}:{peer_port}，停止 UDP hello，启动 udp.py...")
         hello_port = udp_hello_sock.getsockname()[1] if udp_hello_sock else 0
         stop_udp_hello()
-        import subprocess
         env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
 
         # 根据 LOCAL_MODE 决定 nettype
@@ -381,15 +550,17 @@ def handle_server_message(obj):
                            '--localport', str(hello_port), '--nettype', 'auto']
 
         try:
-            p = subprocess.Popen(
+            entry = launch_in_new_terminal(
                 remote_args,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 env=env,
-                stdout=None,
-                stderr=None,
-                start_new_session=True,
+                new_window=NEW_WINDOW,
+                close_on_exit=CLOSE_WINDOW,
+                peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
+                my_ip='0.0.0.0', my_port=hello_port,
             )
-            log(f"[P2P] udp.py 已启动 PID={p.pid} -> {peer_ip}:{peer_port}")
+            winfo = '(独立窗口)' if entry else '(后台)'
+            log(f"[P2P] udp.py 已启动 {winfo} -> {peer_ip}:{peer_port} (本地 hello 端口 {hello_port})")
         except Exception as e:
             log(f"[P2P] 启动 udp.py 失败: {e}")
     elif obj.get('type') == 'p2pudp_pending':
@@ -402,9 +573,11 @@ def handle_server_message(obj):
         stop_udp_hello()
         import socket as _socket
         try:
-            tcp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            server_info = _socket.getaddrinfo(SERVER_IP, tcpport, _socket.AF_UNSPEC, _socket.SOCK_STREAM)
+            family, socktype, proto, _, sockaddr = server_info[0]
+            tcp_sock = _socket.socket(family, socktype, proto)
             tcp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-            tcp_sock.connect((SERVER_IP, tcpport))
+            tcp_sock.connect(sockaddr)
             sig = sign_with_session_key(b'ping') if session_key else None
             payload = {'username': logged_in_user}
             if sig:
@@ -425,7 +598,6 @@ def handle_server_message(obj):
         my_ip = obj.get('my_ip', '')
         my_port = obj.get('my_port', 0)
         log(f"[P2P] 收到对端 {peer_name} TCP 地址: {peer_ip}:{peer_port}，本端: {my_ip}:{my_port}，启动 tcp.py...")
-        import subprocess
         env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
 
         # 根据 LOCAL_MODE 决定 nettype
@@ -448,15 +620,17 @@ def handle_server_message(obj):
                            '--nettype', 'auto']
 
         try:
-            p = subprocess.Popen(
+            entry = launch_in_new_terminal(
                 remote_args,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 env=env,
-                stdout=None,
-                stderr=None,
-                start_new_session=True,
+                new_window=NEW_WINDOW,
+                close_on_exit=CLOSE_WINDOW,
+                peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
+                my_ip=my_ip, my_port=my_port,
             )
-            log(f"[P2P] tcp.py 已启动 PID={p.pid} -> {peer_ip}:{peer_port} (bind {my_port})")
+            winfo = '(独立窗口)' if entry else '(后台)'
+            log(f"[P2P] tcp.py 已启动 {winfo} -> {peer_ip}:{peer_port} (本端 {my_ip}:{my_port})")
         except Exception as e:
             log(f"[P2P] 启动 tcp.py 失败: {e}")
     else:
@@ -486,7 +660,7 @@ def process_input_line(line):
         log(f"等待服务器验证...")
     elif cmd == 'list':
         ws_send(ws_sock, {"type": "list"})
-    elif cmd == 'local':
+    elif cmd == 'appmode':
         global LOCAL_MODE, LOCAL_DEVICE
         if not arg:
             mode = LOCAL_MODE if LOCAL_MODE else 'fake'
@@ -509,7 +683,7 @@ def process_input_line(line):
             LOCAL_DEVICE = None
             log("模式: auto（tun→tap→fake，自动选择）")
         else:
-            log(f"未知 local 模式: {sub}，可用: fake / tun [设备名] / tap [设备名] / auto")
+            log(f"未知 appmode: {sub}，可用: fake / tun [设备名] / tap [设备名] / auto")
         return True
     elif cmd == 'p2pudp':
         if not arg:
@@ -525,6 +699,61 @@ def process_input_line(line):
         target = arg.strip()
         ws_send(ws_sock, {"type": "p2ptcp", "target": target})
         log(f"P2P TCP 请求已发送给服务器，等待 {target} 确认...")
+    elif cmd == 'children':
+        if not children:
+            log("没有运行的子进程")
+        else:
+            for i, c in enumerate(children):
+                winfo = ''
+                if c['type'] == 'window':
+                    winfo = '  [窗口]' if c['close_on_exit'] else '  [窗口·保留]'
+                else:
+                    winfo = '  [后台]'
+                pn = c['peer_name']
+                pi = c['peer_ip']
+                pp = c['peer_port']
+                mi = c['my_ip']
+                mp = c['my_port']
+                log(f"  [{i}] pid={c['pid']}  name={c['name']}{winfo}")
+                log(f"       对端: {pn}  {pi}:{pp}  本端: {mi}:{mp}")
+        return True
+    elif cmd == 'kill':
+        if not arg:
+            log("用法: kill <pid>")
+            return True
+        try:
+            target_pid = int(arg.strip())
+        except ValueError:
+            log(f"无效 PID: {arg}")
+            return True
+        killed = False
+        for c in children:
+            if c['pid'] == target_pid:
+                try:
+                    p = c.get('popen')
+                    if p is not None:
+                        p.terminate()
+                        log(f"已 terminate pid={target_pid} ({c['name']})")
+                    else:
+                        import signal as _sig
+                        if IS_WINDOWS:
+                            os.kill(target_pid, _sig.CTRL_C_EVENT)
+                        else:
+                            os.kill(target_pid, _sig.SIGINT)
+                        log(f"已发送 SIGINT 到 pid={target_pid} ({c['name']})")
+                except (ProcessLookupError, OSError):
+                    log(f"进程已不存在: pid={target_pid}")
+                except PermissionError:
+                    log(f"权限不足，无法 kill pid={target_pid}")
+                try:
+                    children.remove(c)
+                except ValueError:
+                    pass
+                killed = True
+                break
+        if not killed:
+            log(f"未找到 pid={target_pid} 的子进程")
+        return True
     else:
         log(f"未知命令: {cmd}，输入 help")
     return True
@@ -536,24 +765,35 @@ def main():
     global connected, ws_sock, recv_buf, pending_auth, DEBUG, SERVER_IP, SERVER_PORT
 
     parser = argparse.ArgumentParser(description='p2pnet 命令行客户端')
-    parser.add_argument('--server', default='127.0.0.1', help='服务器地址')
+    parser.add_argument('--server', default='127.0.0.1', help='服务器地址（IPv4/IPv6/域名，自动识别）')
     parser.add_argument('--port', type=int, default=10000, help='服务器端口')
     parser.add_argument('--debug', action='store_true', help='打印所有消息')
+    parser.add_argument('--new-window', dest='new_window', action='store_true', default=False, help='在新窗口运行子进程（默认当前窗口后台）')
+    parser.add_argument('--close-window', dest='close_window', action='store_true', default=False, help='子进程结束时自动关闭新窗口（默认不关闭）')
+    parser.add_argument('--user', dest='user', default=None, help='登录用户名（需配合 --pass 使用）')
+    parser.add_argument('--pass', dest='pass_', default=None, help='登录密码（需配合 --user 使用，连上服务器后自动登录）')
     args = parser.parse_args()
     SERVER_IP = args.server
     SERVER_PORT = args.port
     DEBUG = args.debug
+    NEW_WINDOW = args.new_window
+    CLOSE_WINDOW = args.close_window
+    global ARGS_USER, ARGS_PASS
+    ARGS_USER = args.user
+    ARGS_PASS = args.pass_
 
-    # 建立 TCP 连接
-    ws_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # 自动判断 IPv4/IPv6，同时支持域名解析
+    server_info = socket.getaddrinfo(args.server, args.port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    family, socktype, proto, _, sockaddr = server_info[0]
+    ws_sock = socket.socket(family, socktype, proto)
     ws_sock.settimeout(10)
     try:
-        ws_sock.connect((args.server, args.port))
+        ws_sock.connect(sockaddr)
     except Exception as e:
         log(f"连接失败: {e}")
         sys.exit(1)
 
-    # WebSocket 握手
+    # WebSocket 握手（host 传原始域名，sockaddr 已解析）
     if not ws_handshake(ws_sock, args.server, args.port):
         log("WebSocket 握手失败")
         ws_sock.close()
@@ -562,6 +802,12 @@ def main():
     ws_sock.setblocking(False)
     connected = True
     log(f"已连接至 {args.server}:{args.port}（输入 help 查看命令）")
+
+    # --user --pass 自动登录
+    if ARGS_USER:
+        pending_auth = (ARGS_USER,)
+        ws_send(ws_sock, {"type": "login", "username": ARGS_USER})
+        log(f"自动登录: {ARGS_USER}（等待 challenge...）")
 
     # Windows 启动输入线程
     input_t = None
@@ -636,6 +882,29 @@ def main():
                 break
 
     connected = False
+    # 清理所有子进程
+    for c in list(children):
+        p = c.get('popen')
+        pid = c.get('pid')
+        if p is not None:
+            try:
+                p.terminate()
+            except (ProcessLookupError, OSError):
+                pass
+        elif pid is not None:
+            try:
+                import signal as _sig
+                if IS_WINDOWS:
+                    os.kill(pid, _sig.CTRL_C_EVENT)
+                else:
+                    os.kill(pid, _sig.SIGINT)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            children.remove(c)
+        except ValueError:
+            pass
+    children.clear()
     try:
         ws_sock.close()
     except:

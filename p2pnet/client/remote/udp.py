@@ -91,14 +91,22 @@ def ts():
 
 def main():
     parser = argparse.ArgumentParser(description='p2pnet P2P UDP')
-    parser.add_argument('--peeraddr', required=True, help='对方 IP')
+    parser.add_argument('--peeraddr', required=True, help='对方 IP（IPv4/IPv6/域名，自动识别）')
     parser.add_argument('--peerport', type=int, required=True, help='对方端口')
     parser.add_argument('--localaddr', default='0.0.0.0', help='本地监听地址（默认 0.0.0.0）')
     parser.add_argument('--localport', type=int, required=True, help='本地 UDP 端口')
+    parser.add_argument('--cipher', choices=['none', 'chacha20-poly1305'],
+                        default='none', help='加密方式：none=不加密（默认），chacha20-poly1305=ChaCha20-Poly1305 AEAD')
+    parser.add_argument('--transport', choices=['none', 'kcp'],
+                        default='none', help='可靠传输方式：none=不封装（默认），kcp=KCP 可靠传输')
+    parser.add_argument('--obfs', choices=['none', 'xor', 'tls'],
+                        default='none', help='混淆方式：none=不混淆（默认），xor=XOR 流混淆，tls=TLS 指纹混淆（伪装 HTTPS ClientHello）')
     parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
                         default='auto', help='网络接口类型（auto: tun→tap→fake）')
     parser.add_argument('--socketpath', default=None,
                         help='tun/tap 模式：指定设备名（如 utun3）；clientsocket 模式：Unix socket 路径（client.py 传入）')
+    parser.add_argument('--key', default=None,
+                        help='对称密钥（base64），与 --cipher 配合使用，client.py 登录后派生')
     args = parser.parse_args()
 
     peer_ip = args.peeraddr
@@ -108,13 +116,17 @@ def main():
     nettype = args.nettype or 'auto'
     sock_path = args.socketpath or ''
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # 自动判断 IPv4/IPv6
+    local_res = socket.getaddrinfo(local_addr, local_port, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+    family, socktype, proto, _, sockaddr = local_res[0]
+    sock = socket.socket(family, socktype, proto)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    sock.bind((local_addr, local_port))
+    sock.bind(sockaddr)
     sock.setblocking(False)
     actual_port = sock.getsockname()[1]
-    print(f"[{ts()}][udptunnel]  本端: {local_addr}:{actual_port}")
+    local_family = 'IPv6' if family == socket.AF_INET6 else 'IPv4'
+    print(f"[{ts()}][udptunnel]  本端: {local_addr}:{actual_port} ({local_family})")
     print(f"[{ts()}][udptunnel]  目标: {peer_ip}:{peer_port}")
     print(f"[{ts()}][udptunnel]  nettype={nettype}" + (f" socketpath={sock_path}" if sock_path else ""))
 
@@ -133,19 +145,44 @@ def main():
     seq = 0
     sent_pings = {}
 
-    # ==================== 发送线程：每秒发一个 ping ====================
+    # 可变的目标地址（发现 peer-reflexive 后更新）
+    active_peer = {'ip': peer_ip, 'port': peer_port}
+    # 所有已知候选（server 提供的 + 动态发现的）
+    candidates = [{'ip': peer_ip, 'port': peer_port}]
+
+    def update_peer(addr_tuple):
+        """收到来自新地址的包时，更新 active_peer 和 candidates"""
+        ip, port = addr_tuple
+        if ip == active_peer['ip'] and port == active_peer['port']:
+            return  # 没变
+        # 检查是否已在 candidates 里
+        for c in candidates:
+            if c['ip'] == ip and c['port'] == port:
+                active_peer['ip'] = ip
+                active_peer['port'] = port
+                print(f"[{ts()}][udptunnel]  🔄 active_peer 切换到已知候选 {ip}:{port}")
+                return
+        # 新候选，加入并切换
+        candidates.append({'ip': ip, 'port': port})
+        old_ip, old_port = active_peer['ip'], active_peer['port']
+        active_peer['ip'] = ip
+        active_peer['port'] = port
+        print(f"[{ts()}][udptunnel]  🆕 发现 peer-reflexive 地址 {ip}:{port}（原 {old_ip}:{old_port} 已加入候选）")
+
+    # ==================== 发送线程：每秒发一个 ping，探测所有候选 ====================
     def heartbeat_sender():
         nonlocal seq
         while not stop_event.is_set():
             now = time.time()
             msg = json.dumps({'type': 'ping', 'seq': seq, 'ts': now})
-            print(f"[{ts()}][udptunnel]  send {msg}")
-            try:
-                sock.sendto(msg.encode(), (peer_ip, peer_port))
-                sent_pings[seq] = now
-                seq += 1
-            except Exception as e:
-                print(f"[{ts()}][udptunnel]  发送失败: {e}")
+            for c in candidates:
+                print(f"[{ts()}][udptunnel]  send {msg} -> {c['ip']}:{c['port']}")
+                try:
+                    sock.sendto(msg.encode(), (c['ip'], c['port']))
+                except Exception as e:
+                    print(f"[{ts()}][udptunnel]  发送失败 {c['ip']}:{c['port']}: {e}")
+            sent_pings[seq] = now
+            seq += 1
             time.sleep(PING_INTERVAL)
 
     # ==================== 隧道线程 ====================
@@ -153,12 +190,12 @@ def main():
         tun = _auto_tun(args.nettype, args.socketpath)
         print(f"[{ts()}][udptunnel]  tunnel 启动（{tun}）")
         while not stop_event.is_set():
-            # 从 tun 读 -> 发 UDP
+            # 从 tun 读 -> 发 UDP（发到 active_peer）
             try:
                 data = tun.recv(4096)
                 if data:
-                    sock.sendto(data, (peer_ip, peer_port))
-                    print(f"[{ts()}][udptunnel]  UDP-> {len(data)}B hex:{data[:16].hex()}")
+                    sock.sendto(data, (active_peer['ip'], active_peer['port']))
+                    print(f"[{ts()}][udptunnel]  UDP-> {len(data)}B hex:{data[:16].hex()} -> {active_peer['ip']}:{active_peer['port']}")
             except BlockingIOError:
                 pass
 
@@ -169,7 +206,12 @@ def main():
                 if stop_event.is_set():
                     break
                 if data_queue:
-                    data = data_queue.pop(0)
+                    item = data_queue.pop(0)
+                    # 兼容旧格式（data）或新格式（data, addr）
+                    if isinstance(item, tuple):
+                        data, _ = item
+                    else:
+                        data = item
             tun.send(data)
             print(f"[{ts()}][udptunnel]  tun<- {len(data)}B hex:{data[:16].hex()}")
 
@@ -210,14 +252,18 @@ def main():
             print(f"[{ts()}][udptunnel]  recv {msg}")
 
             if t == 'ping':
+                # 发现 peer-reflexive：ping 来自新地址
+                update_peer(addr)
                 pong = json.dumps({'type': 'pong', 'seq': s, 'ts': msg.get('ts')})
-                print(f"[{ts()}][udptunnel]  send {pong}")
+                print(f"[{ts()}][udptunnel]  send {pong} -> {addr}")
                 sock.sendto(pong.encode(), addr)
 
             elif t == 'pong':
                 rtt = (time.time() - sent_pings.get(s, time.time())) * 1000
                 last_pong_time = time.time()
-                print(f"[{ts()}][udptunnel]    pong #{s} RTT={rtt:.0f}ms  streak={pong_streak+1}")
+                # pong 来自新地址 → 发现 peer-reflexive
+                update_peer(addr)
+                print(f"[{ts()}][udptunnel]    pong #{s} RTT={rtt:.0f}ms  streak={pong_streak+1}  from {addr}")
                 if s == seq - 1:
                     pong_streak += 1
                 else:
@@ -231,10 +277,12 @@ def main():
         else:
             # 非 JSON：隧道数据
             hex16 = data[:16].hex()
-            print(f"[{ts()}][udptunnel]  recv {len(data)}B hex:{hex16}")
+            # 隧道数据来自新地址 → 发现 peer-reflexive
+            update_peer(addr)
+            print(f"[{ts()}][udptunnel]  recv {len(data)}B hex:{hex16} from {addr}")
             if tunnel_ready.is_set():
                 with queue_not_empty:
-                    data_queue.append(data)
+                    data_queue.append((data, addr))
                     queue_not_empty.notify()
             else:
                 print(f"[{ts()}][udptunnel]    tunnel 未就绪，丢弃")

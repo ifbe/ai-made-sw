@@ -2,6 +2,9 @@
 
 P2P 隧道工具，支持链路层/网络层虚拟网卡，P2P 直连/打洞穿透。
 
+**IPv4 / IPv6 双栈自动识别**，地址支持 `192.168.x.x`、`1.2.3.4`、
+`2001:db8::1` 等所有格式。
+
 **当前状态：v2 开发中（signaling server + P2P UDP tunnel + P2P TCP tunnel）**
 
 ---
@@ -17,15 +20,24 @@ p2pnet/
 │       └── index.html     # Web 管理界面
 └── client/
     ├── client.py           # CLI 客户端
-    ├── remote/
-    │   ├── udp.py        # P2P UDP 隧道
-    │   └── tcp.py        # P2P TCP 隧道
-    └── local/
-        ├── fake.py        # 假 tun/tap（测试用）
-        ├── tun.py         # TUN 设备（Linux / macOS utun）
-        ├── tap.py         # TAP 设备（Linux 专用）
-        ├── tun_windows.py # TUN 设备（Windows Wintun）
-        └── tap_windows.py  # TAP 设备（Windows tap-windows）
+    ├── app/                # 业务层（--appmode）
+    │   ├── hub.py          # hub 中心交换（多路分流/汇聚）
+    │   ├── tun.py          # TUN 设备（Linux / macOS utun）
+    │   ├── tap.py          # TAP 设备（Linux 专用）
+    │   ├── tun_windows.py  # TUN 设备（Windows Wintun）
+    │   ├── tap_windows.py  # TAP 设备（Windows tap-windows）
+    │   ├── fake.py         # 假 tun/tap（测试用）
+    │   ├── audio.py        # 双向音频（ffmpeg RTMP/FLV）
+    │   ├── video.py       # 音视频（RTMP 输入/输出）
+    │   ├── media.py       # 注释：RTMP 输入 + RTMP 输出
+    │   ├── proxy.py       # 注释：netcat 转发
+    │   └── file.py        # 注释：文件分片传输
+    ├── remote/             # P2P 传输通道
+    │   ├── udp.py         # P2P UDP 隧道
+    │   └── tcp.py         # P2P TCP 隧道
+    └── util/              # 工具层
+        ├── crypto.py       # 密码学（HKDF / ECDH / ChaCha20-Poly1305）
+        └── kcp.py         # KCP 可靠传输封装
 ```
 
 详细文档：
@@ -67,13 +79,18 @@ login <user>    - 登录（两步：输入用户名 → 输入密码 → challen
 list            - 查看在线用户
 p2pudp <user>  - 向用户发起 P2P UDP 连接
 p2ptcp <user>  - 向用户发起 P2P TCP 连接
-local            - 显示当前模式
-local fake      - 模式: fake（默认，子进程独立 tun，不汇入 client.py）
-local tun [dev] - 模式: clientsocket（子进程汇入 client.py）
-local tap [dev] - 模式: clientsocket（子进程汇入 client.py）
-local auto      - 模式: auto（tun→tap→fake，自动选择）
+appmode          - 显示当前模式
+appmode fake    - 模式: fake（默认，子进程独立 tun，不汇入 client.py）
+appmode tun [dev] - 模式: clientsocket（子进程汇入 client.py）
+appmode tap [dev] - 模式: clientsocket（子进程汇入 client.py）
+appmode auto    - 模式: auto（tun→tap→fake，自动选择）
+appmode voice   - 模式: 双向音频（ffmpeg RTMP/FLV）
+appmode video   - 模式: 音视频（RTMP 输入/输出）
+appmode hub     - 模式: hub（所有子进程连到 hub）
 help            - 显示帮助
 quit            - 退出
+children        - 列出所有子进程/子窗口
+kill <pid>      - 杀掉指定 PID 的子进程/子窗口
 ```
 
 ---

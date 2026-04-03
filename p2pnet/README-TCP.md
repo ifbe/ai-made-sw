@@ -70,10 +70,21 @@ bob:    收到后启动 tcp.py 1.2.3.4 40001 my_port
 ## tcp.py 参数
 
 ```
-python3 tcp.py --peeraddr <ip> --peerport <port> --localport <port> [--localaddr <addr>] [--nettype tun|tap|clientsocket|auto] [--socketpath PATH]
+python3 tcp.py --peeraddr <ip> --peerport <port> --localport <port>
+    [--localaddr <addr>]
+    [--cipher none|chacha20-poly1305]   # 加密方式，默认 none
+    [--transport none|framed]          # 分帧方式，默认 none
+        none   = 心跳 JSON 文本行（\n 分隔）+ 原始数据 bytes
+        framed = TLV 分帧：type=0 心跳明文 / type=1 数据密文（--cipher 时加密）
+    [--obfs none|xor|tls]              # 混淆方式，默认 none
+    [--nettype tun|tap|fake|clientsocket|auto]
+    [--socketpath PATH]
+    [--key <base64>]   # 对称密钥，client.py 登录后派生传入
 ```
 
 收到 `thisisyourpeer_tcp` 后由 client.py 自动 spawn。
+
+**IPv4 / IPv6 自动识别**：`--peeraddr` 支持任意格式 IP 地址，内部通过 `getaddrinfo(AF_UNSPEC)` 自动选择合适协议栈。
 
 `--nettype` 说明：
 - `auto`（默认）：按平台自动选择：Linux → `tun → tap → fake`，macOS → `tun → fake`
@@ -99,6 +110,22 @@ python3 tcp.py --peeraddr <ip> --peerport <port> --localport <port> [--localaddr
     tun -> tunnel_socket
     tunnel_socket -> tun
 ```
+
+TCP 是流式协议，操作系统保证可靠传输，无需 KCP。
+
+数据流：
+  发送：数据 → 加密（--cipher）→ 混淆（--obfs）→ TLV 分帧 → tunnel_socket
+  接收：tunnel_socket → TLV 解析 → 解混淆 → 解密 → 数据
+
+混淆（--obfs）：
+  xor：XOR 流混淆（可逆，接收方再次 XOR 还原）
+  tls：TLS 指纹混淆，伪装成 HTTPS ClientHello
+
+TLV 分帧（--transport framed）：
+  type=0（心跳）：0x00 + len[4] + 明文 JSON（如 `{"seq":1,"ts":...}`）
+  type=1（数据）：0x01 + len[4] + 原始 bytes（或加密 bytes，取决于 --cipher）
+
+黏包处理：长度字段解决（type[1] + len[4] 保证完整消息边界）。
 
 ---
 
