@@ -389,20 +389,26 @@ def start_udp_hello(server_ip, server_udp_port, username, local_port):
     udp_hello_running = True
     log(f"[UDP hello] 开始，往 {server_ip}:{server_udp_port} 发送 hello (本地端口 {local_bound_port})")
 
+    def _send_hello():
+        sig = sign_with_session_key(b'ping') if session_key else None
+        payload = {'type': 'p2pudp_hello', 'username': username}
+        if sig:
+            payload['signature'] = sig
+        msg = json.dumps(payload).encode()
+        if DEBUG:
+            print(f"[DEBUG] UDP hello -> {server_ip}:{server_udp_port}: {payload}")
+        sock.sendto(msg, (server_ip, server_udp_port))
+
     while udp_hello_running:
         try:
-            sig = sign_with_session_key(b'ping') if session_key else None
-            payload = {'type': 'p2pudp_hello', 'username': username}
-            if sig:
-                payload['signature'] = sig
-            msg = json.dumps(payload).encode()
-            if DEBUG:
-                sk_hex = binascii.hexlify(session_key).decode() if session_key else 'None'
-                print(f"[DEBUG] UDP hello -> {server_ip}:{server_udp_port}: {payload}")
-            sock.sendto(msg, (server_ip, server_udp_port))
+            # 启动时发 burst 建立 NAT 映射（15个，30ms间隔，0.45s 发完）
+            for _ in range(15):
+                _send_hello()
+                time.sleep(0.03)
+            # 之后每秒发 1 个维持映射
+            time.sleep(1)
         except Exception as e:
             pass
-        time.sleep(1)
 
     sock.close()
     log("[UDP hello] 已停止")
