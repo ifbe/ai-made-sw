@@ -196,6 +196,25 @@ recv_buf = b''
 
 # 子进程/子窗口列表，每个元素 {pid, name, type, popen, close_on_exit}
 children = []
+
+# WireGuard 共享进程（单实例）
+WG_ADMIN_PATH = None  # wireguard.py 的 admin socket 路径
+WG_PROC = None        # wireguard.py 进程
+
+# Switch 共享进程（单实例）
+SWITCH_PROC = None    # switch.py 进程
+SWITCH_SOCK_PATH = None  # switch 的 Unix socket 路径（供 udp.py/tcp.py 连接）
+WG_NATIVE_MODE = False  # True = 使用原生 WireGuard（wghelp），不用 wireguard.py
+WG_NATIVE_MY_KEY = ''   # wghelp 命令时存储我的私钥
+WG_NATIVE_MY_IP = ''    # wghelp 命令时存储我的 mesh IP
+FFMPEG_MODE = False     # True = 收到 thisisyourpeer_udp 时拉起 ffmpeg.sh（不用 udp.py）
+STARTUP_FFMPEG = []     # 启动时自动 ffmpeg 视频连接（每个元素: peer_name）
+# 启动命令（login 成功后自动执行）
+STARTUP_APPMODE = None
+STARTUP_UDP = []
+STARTUP_TCP = []
+STARTUP_WG = []
+STARTUP_WGHELP = []  # 每个元素: (user, key, mesh_ip)
 # 运行参数（由 argparse 设置）
 NEW_WINDOW = False  # 默认当前窗口（后台运行写日志）；--new-window 开启新窗口
 CLOSE_WINDOW = False  # 默认窗口保留（子进程结束后不自动关窗口）
@@ -238,7 +257,6 @@ SERVER_PORT = None
 # 本地模式：
 #   None        -> fake（默认）
 #   'auto'      -> auto（tun→tap→fake）
-#   'tun' / 'tap' -> clientsocket（子进程连 client.py 的 Unix socket）
 LOCAL_MODE = None  # 初始为 fake
 LOCAL_DEVICE = None  # 设备名，如 '/dev/utun3'（仅展示用）
 
@@ -441,20 +459,101 @@ def start_udp_hello_thread(server_ip, server_udp_port, username):
 
 def print_help():
     log("=== p2pnet 客户端 ===")
+    log("  help              - 显示帮助")
+    log("  quit             - 退出")
+
     log("  login            - 交互式登录（提示输入用户名和密码）")
     log("  login <username> - 登录，随后提示输入密码")
     log("  list             - 发送 list")
-    log("  p2pudp <user>   - 请求与对方建立 UDP P2P 连接")
-    log("  p2ptcp <user>   - 请求与对方建立 TCP P2P 连接")
+
     log("  appmode            - 显示当前模式")
-    log("  appmode fake       - 模式: fake（子进程独立 tun，不汇入 client.py）")
-    log("  appmode tun [dev] - 模式: clientsocket（子进程汇入 client.py）")
-    log("  appmode tap [dev] - 模式: clientsocket（子进程汇入 client.py）")
-    log("  appmode auto      - 模式: auto（tun→tap→fake）")
-    log("  help              - 显示帮助")
-    log("  quit             - 退出")
+    log("  appmode fake       - 模式: fake（测试用，无网络）")
+    log("  appmode tun [dev] - 模式: tun（tun 设备汇入 p2p 网络）")
+    log("  appmode tap [dev] - 模式: tap（tap 设备汇入 p2p 网络）")
+    log("  appmode auto      - 模式: auto（tun→tap→fake，自动选择）")
+    log("  appmode switch   - 模式: switch（拉起 switch.py 做 P2P 交换中心）")
+    log("  appmode video    - 模式: video（拉起 video.py 做 P2P 视频通话，TODO）")
+    log("  appmode file     - 模式: file（拉起 file.py 做 P2P 文件传输，TODO）")
+
     log("  children           - 列出所有子进程/子窗口")
     log("  kill <pid>         - 杀掉指定 PID 的子进程/子窗口")
+    log("  udp <user>   - 请求与对方建立 UDP P2P 连接")
+    log("  tcp <user>   - 请求与对方建立 TCP P2P 连接")
+    log("  wg  <user>   - 请求与对方建立 WireGuard P2P 连接（单进程多 peer）")
+    log("  wghelp <user> <私钥> <mesh_ip>  - WireGuard NAT 穿透（原生 WG）")
+    log("  ffmpeg <user> - P2P 视频通话（打完洞后拉起 ffmpeg）")
+
+# ====== Switch 进程管理 ======
+
+def _do_start_switch():
+    """拉起 switch.py 作为子进程，stdin/stdout 做控制通道"""
+    global SWITCH_PROC, SWITCH_SOCK_PATH, LOCAL_MODE
+    if SWITCH_PROC is not None:
+        log("switch 已在运行")
+        return
+    import time as _t
+    sock_path = f'/tmp/p2pnet/switch-{os.getpid()}.sock'
+    SWITCH_SOCK_PATH = sock_path
+    # 清理旧 socket 文件
+    if os.path.exists(sock_path):
+        os.remove(sock_path)
+    switch_args = [sys.executable, 'app/switch.py',
+                   '--type', 'unixsocket',
+                   '--socketpath', sock_path]
+    try:
+        entry = launch_in_new_terminal(
+            switch_args,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+            new_window=False,  # 后台运行，stdout 给 client.py 读
+            name='switch',
+        )
+        SWITCH_PROC = entry
+        # 等 switch 启动并开始接受连接
+        _t.sleep(0.5)
+        log(f"switch.py 已启动（{sock_path}），peer 连接请用 --udp/--tcp/--wg")
+        LOCAL_MODE = 'switch'
+    except Exception as e:
+        log(f"switch.py 启动失败: {e}")
+
+
+# ====== 启动时自动执行的命令 ======
+
+def _do_startup_commands():
+    """登录成功后自动执行启动命令（--appmode/--udp/--tcp/--wg/--wghelp）"""
+    global STARTUP_APPMODE, STARTUP_UDP, STARTUP_TCP, STARTUP_WG, STARTUP_WGHELP, STARTUP_FFMPEG
+    global WG_NATIVE_MODE, WG_NATIVE_MY_KEY, WG_NATIVE_MY_IP
+
+    if STARTUP_APPMODE:
+        log(f"[启动] 设置 appmode = {STARTUP_APPMODE}")
+        process_input_line(f'appmode {STARTUP_APPMODE}')
+
+    for target in STARTUP_UDP:
+        log(f"[启动] UDP 连接 {target}...")
+        process_input_line(f'udp {target}')
+
+    for target in STARTUP_TCP:
+        log(f"[启动] TCP 连接 {target}...")
+        process_input_line(f'tcp {target}')
+
+    for target in STARTUP_WG:
+        log(f"[启动] WireGuard 连接 {target}...")
+        process_input_line(f'wg {target}')
+
+    for user, key, mesh_ip in STARTUP_WGHELP:
+        log(f"[启动] WireGuard NAT穿透连接 {user}...")
+        WG_NATIVE_MODE = True
+        WG_NATIVE_MY_KEY = key
+        WG_NATIVE_MY_IP = mesh_ip
+        process_input_line(f'wg {user}')  # 发 p2pwg 握手
+
+    for target in STARTUP_FFMPEG:
+        log(f"[启动] ffmpeg 视频连接 {target}...")
+        process_input_line(f'ffmpeg {target}')
+
+    STARTUP_UDP = STARTUP_TCP = STARTUP_WG = []
+    STARTUP_WGHELP = []
+    STARTUP_FFMPEG = []
 
 
 # ====== 处理消息 ======
@@ -510,6 +609,9 @@ def handle_server_message(obj):
             session_key = None
             log(f"登录成功: {logged_in_user}（无 session_key，请重新登录）")
         pending_salt = pending_challenge = pending_pw_hash = None
+
+        # 登录成功后自动执行启动命令
+        _do_startup_commands()
     elif obj.get('type') == 'list_result':
         users = obj.get('users', [])
         if not users:
@@ -529,7 +631,7 @@ def handle_server_message(obj):
         log(f"被踢: {obj.get('message','')}")
     elif obj.get('type') == 'incoming_p2pudp':
         from_user = obj.get('from_username', '')
-        log(f"⚠️  {from_user} 请求和你建立 UDP P2P 连接，输入 p2pudp {from_user} 回应")
+        log(f"⚠️  {from_user} 请求和你建立 UDP P2P 连接，输入 udp {from_user} 回应")
     elif obj.get('type') == 'send_udp_to_server':
         udpport = obj.get('udpport', 9999)
         log(f"[P2P] 服务器要求往 UDP {udpport} 发包，开始 UDP hello...")
@@ -539,16 +641,41 @@ def handle_server_message(obj):
         peer_name = obj.get('name', '')
         peer_ip = obj.get('ip', '')
         peer_port = obj.get('port', 0)
-        log(f"[P2P] 收到对端 {peer_name} 地址: {peer_ip}:{peer_port}，停止 UDP hello，启动 udp.py...")
+        log(f"[P2P] 收到对端 {peer_name} 地址: {peer_ip}:{peer_port}，停止 UDP hello...")
         hello_port = udp_hello_sock.getsockname()[1] if udp_hello_sock else 0
         stop_udp_hello()
+
+        # FFMPEG_MODE：拉起 ffmpeg.sh 做 P2P 视频，不走 udp.py
+        global FFMPEG_MODE
+        if FFMPEG_MODE:
+            FFMPEG_MODE = False
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg.sh')
+            # 对方接收端口 = 对方 hello_port（打洞时的本地端口）
+            peer_recv_port = obj.get('peer_hello_port', peer_port)
+            my_ip_addr = obj.get('my_ip', '0.0.0.0')
+            log(f"[P2P] ffmpeg 双向通话: 本机端口={hello_port} -> 对方端口={peer_recv_port}")
+            try:
+                call_args = ['bash', script_path,
+                             my_ip_addr, str(hello_port),
+                             peer_ip, str(peer_recv_port)]
+                entry = launch_in_new_terminal(
+                    call_args,
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    new_window=True, close_on_exit=False,
+                    peer_name=peer_name, name='ffmpeg',
+                )
+                children.append(entry)
+                log(f"[P2P] ffmpeg 已启动（新窗口），持续 1 小时")
+            except Exception as e:
+                log(f"[P2P] ffmpeg 启动失败: {e}")
+            return True
+
         env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
 
-        # clientsocket 需传 socketpath；其他模式不传 --appmode（默认 fake）
         _log = REMOTELOG
         if _log:
             import time as _t
-            _log_file = f"/tmp/p2pnet_udp_{logged_in_user}_{peer_name}_{int(_t.time())}.log"
+            _log_file = f"/tmp/p2pnet/udp-{logged_in_user}_{peer_name}_{int(_t.time())}.log"
         else:
             _log_file = None
 
@@ -556,10 +683,13 @@ def handle_server_message(obj):
                        '--peeraddr', peer_ip,
                        '--peerport', str(peer_port),
                        '--localport', str(hello_port)]
-        if LOCAL_MODE == 'clientsocket':
+        if LOCAL_MODE in ('tun', 'tap'):
             sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
             remote_args += ['--socketpath', sock_path]
-            log(f"[P2P] clientsocket 模式，socket={sock_path}")
+            log(f"[P2P] {LOCAL_MODE} 模式，socket={sock_path}")
+        elif LOCAL_MODE == 'switch' and SWITCH_SOCK_PATH:
+            remote_args += ['--socketpath', SWITCH_SOCK_PATH]
+            log(f"[P2P] switch 模式，socket={SWITCH_SOCK_PATH}")
         if _log_file:
             remote_args += ['--remotelog', _log_file]
 
@@ -614,21 +744,23 @@ def handle_server_message(obj):
         log(f"[P2P] 收到对端 {peer_name} TCP 地址: {peer_ip}:{peer_port}，本端: {my_ip}:{my_port}，启动 tcp.py...")
         env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
 
-        # clientsocket 需传 socketpath；其他模式不传 --appmode（默认 fake）
         _log = REMOTELOG
         if _log:
             import time as _t
-            _log_file = f"/tmp/p2pnet_tcp_{logged_in_user}_{peer_name}_{int(_t.time())}.log"
+            _log_file = f"/tmp/p2pnet/tcp-{logged_in_user}_{peer_name}_{int(_t.time())}.log"
         else:
             _log_file = None
 
         remote_args = [sys.executable, 'remote/tcp.py',
                        '--peeraddr', peer_ip, '--peerport', str(peer_port),
                        '--localport', str(my_port), '--peername', peer_name]
-        if LOCAL_MODE == 'clientsocket':
+        if LOCAL_MODE in ('tun', 'tap'):
             sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
             remote_args += ['--socketpath', sock_path]
-            log(f"[P2P] clientsocket 模式，socket={sock_path}")
+            log(f"[P2P] {LOCAL_MODE} 模式，socket={sock_path}")
+        elif LOCAL_MODE == 'switch' and SWITCH_SOCK_PATH:
+            remote_args += ['--socketpath', SWITCH_SOCK_PATH]
+            log(f"[P2P] switch 模式，socket={SWITCH_SOCK_PATH}")
         if _log_file:
             remote_args += ['--remotelog', _log_file]
 
@@ -646,12 +778,131 @@ def handle_server_message(obj):
             )
         except Exception as e:
             log(f"[P2P] 启动 tcp.py 失败: {e}")
+    elif obj.get('type') == 'incoming_p2pwg':
+        from_user = obj.get('from_username', '')
+        log(f"⚠️  {from_user} 请求和你建立 WireGuard P2P 连接，输入 wg {from_user} 回应")
+    elif obj.get('type') == 'thisisyourpeer_wg':
+        global WG_ADMIN_PATH, WG_PROC, WG_NATIVE_MODE, WG_NATIVE_MY_KEY, WG_NATIVE_MY_IP
+        peer_name = obj.get('name', '')
+        peer_ip = obj.get('ip', '')       # peer's mesh IP (e.g. 192.168.250.3)
+        peer_port = obj.get('port', 0)     # peer's WireGuard ListenPort
+        peer_pubkey = obj.get('peer_pubkey', '')
+        peer_public_addr = obj.get('peer_public_addr', '')  # peer's public ip:port (hole-punched)
+        import time as _t
+
+        # -------- wghelp 模式：拉起 wghelp.sh 配置原生 WireGuard --------
+        if WG_NATIVE_MODE:
+            my_privkey = WG_NATIVE_MY_KEY
+            my_ip = WG_NATIVE_MY_IP
+            # peer_public_addr 优先，否则 fallback 到 peer_ip:peer_port
+            if peer_public_addr:
+                endpoint = peer_public_addr
+            else:
+                endpoint = f"{peer_ip}:{peer_port}"
+            log(f"[P2P] wghelp: 配置原生 WireGuard...")
+            log(f"  我的 mesh IP: {my_ip}")
+            log(f"  对方 mesh IP: {peer_ip}")
+            log(f"  对方公钥: {peer_pubkey[:16]}...")
+            log(f"  对方 Endpoint: {endpoint}")
+
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wghelp.sh')
+            if not os.path.exists(script_path):
+                log(f"[P2P] 错误: wghelp.sh 不在当前目录: {script_path}")
+                WG_NATIVE_MODE = False
+                return True
+
+            # wghelp.sh: <私钥> <我meshIP> <对方公钥> <对方meshIP> <对方公网地址:端口>
+            wg_args = ['sudo', 'bash', script_path, my_privkey, my_ip, peer_pubkey, peer_ip, endpoint]
+            try:
+                entry = launch_in_new_terminal(
+                    wg_args,
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    new_window=True,
+                    close_on_exit=False,
+                    peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
+                    name='wghelp',
+                )
+                if entry:
+                    children.append(entry)
+                log(f"[P2P] wghelp.sh 已在新窗口启动（可能需要输入 sudo 密码）")
+                log(f"[P2P] 运行后检查: ping {peer_ip} && wg show")
+            except Exception as e:
+                log(f"[P2P] wghelp.sh 启动失败: {e}")
+            WG_NATIVE_MODE = False
+            return True
+
+        def _do_add_peer():
+            """通过 admin socket 添加 peer（闭包捕获 peer_name 等）"""
+            if not WG_ADMIN_PATH or not os.path.exists(WG_ADMIN_PATH):
+                log(f"[P2P] wireguard.py 未运行，无法添加 peer {peer_name}")
+                return False
+            import json as _json
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                sock.connect(WG_ADMIN_PATH)
+                cmd = _json.dumps({'cmd': 'add_peer', 'name': peer_name,
+                                   'ip': peer_ip, 'port': peer_port,
+                                   'pubkey': peer_pubkey})
+                sock.sendall((cmd + '\n').encode())
+                data = b''
+                while b'\n' not in data:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                sock.close()
+                if data:
+                    resp = _json.loads(data.decode('utf-8').strip())
+                    if resp.get('ok'):
+                        log(f"[P2P] peer {peer_name} 已添加，公钥: {resp.get('pubkey', '')[:16]}...")
+                        return True
+                    else:
+                        log(f"[P2P] 添加 peer 失败: {resp.get('error')}")
+                return False
+            except Exception as e:
+                log(f"[P2P] admin socket 错误: {e}")
+                return False
+
+        if WG_ADMIN_PATH and os.path.exists(WG_ADMIN_PATH):
+            log(f"[P2P] wireguard.py 已运行，添加 peer {peer_name}...")
+            _do_add_peer()
+        else:
+            log(f"[P2P] 启动 wireguard.py（第一个 peer: {peer_name}）...")
+            env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
+            admin_path = f'/tmp/p2pnet/wg-admin-{os.getpid()}.sock'
+            _log = REMOTELOG
+            _log_file = f"/tmp/p2pnet/wg-{logged_in_user}_main_{int(_t.time())}.log" if _log else None
+
+            remote_args = [sys.executable, 'remote/wireguard.py',
+                           '--socketpath', SWITCH_SOCK_PATH or f'/tmp/p2pnet/switch-{os.getpid()}.sock',
+                           '--adminpath', admin_path]
+            if _log_file:
+                remote_args += ['--log', _log_file]
+
+            try:
+                entry = launch_in_new_terminal(
+                    remote_args,
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    env=env,
+                    new_window=NEW_WINDOW,
+                    close_on_exit=CLOSE_WINDOW,
+                    peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
+                    name='wg',
+                    _log_file=_log_file,
+                )
+                WG_ADMIN_PATH = admin_path
+                WG_PROC = entry
+                _t.sleep(0.5)  # 等 wireguard.py 启动
+                _do_add_peer()
+            except Exception as e:
+                log(f"[P2P] 启动 wireguard.py 失败: {e}")
     else:
         log(f"[消息] {json.dumps(obj)}")
 
 
 def process_input_line(line):
-    global pending_auth
+    global pending_auth, WG_NATIVE_MODE, WG_NATIVE_MY_KEY, WG_NATIVE_MY_IP
     parts = line.split(maxsplit=1)
     cmd = parts[0]
     arg = parts[1].strip() if len(parts) > 1 else ''
@@ -686,32 +937,80 @@ def process_input_line(line):
         if sub == 'fake':
             LOCAL_MODE = 'fake'
             LOCAL_DEVICE = None
-            log("模式: fake（子进程独立 tun，不走 client.py 汇聚）")
+            log("模式: fake（测试用，无网络）")
         elif sub in ('tun', 'tap'):
-            LOCAL_MODE = 'clientsocket'
+            LOCAL_MODE = sub
             LOCAL_DEVICE = dev
-            log(f"模式: clientsocket（子进程汇入 client.py，设备: {dev or '(无)'})")
+            log(f"模式: {sub}（tun 设备汇入 p2p 网络，设备: {dev or '(无)'}）")
         elif sub == 'auto':
             LOCAL_MODE = 'auto'
             LOCAL_DEVICE = None
             log("模式: auto（tun→tap→fake，自动选择）")
+        elif sub == 'switch':
+            _do_start_switch()
+        elif sub == 'video':
+            LOCAL_MODE = 'video'
+            LOCAL_DEVICE = None
+            log("模式: video（拉起 video.py 做 P2P 视频通话，TODO）")
+        elif sub == 'file':
+            LOCAL_MODE = 'file'
+            LOCAL_DEVICE = None
+            log("模式: file（拉起 file.py 做 P2P 文件传输，TODO）")
         else:
-            log(f"未知 appmode: {sub}，可用: fake / tun [设备名] / tap [设备名] / auto")
+            log(f"未知 appmode: {sub}，可用: fake / tun [设备名] / tap [设备名] / auto / switch / video / file")
         return True
-    elif cmd == 'p2pudp':
+    elif cmd == 'udp':
         if not arg:
-            log("用法: p2pudp <对方用户名>")
+            log("用法: udp <对方用户名>")
             return True
         target = arg.strip()
         ws_send(ws_sock, {"type": "p2pudp", "target": target})
         log(f"P2P UDP 请求已发送给服务器，等待 {target} 确认...")
-    elif cmd == 'p2ptcp':
+    elif cmd == 'tcp':
         if not arg:
-            log("用法: p2ptcp <对方用户名>")
+            log("用法: tcp <对方用户名>")
             return True
         target = arg.strip()
         ws_send(ws_sock, {"type": "p2ptcp", "target": target})
         log(f"P2P TCP 请求已发送给服务器，等待 {target} 确认...")
+    elif cmd == 'wg':
+        if not arg:
+            log("用法: wg <对方用户名>")
+            return True
+        target = arg.strip()
+        WG_NATIVE_MODE = False
+        ws_send(ws_sock, {"type": "p2pwg", "target": target})
+        log(f"P2P WireGuard 请求已发送给服务器，等待 {target} 确认...")
+    elif cmd == 'wghelp':
+        # wghelp: 前半段同 wg，后半段拉起 wghelp.sh 配置原生 WireGuard
+        if not arg:
+            log("用法: wghelp <对方用户名> <我的私钥> <我的mesh IP>")
+            log("  例: wghelp bob YGzbJJ8... 192.168.250.2")
+            log("  注意: 私钥会传入 wghelp.sh（当前目录），不要在共享环境使用")
+            return True
+        parts = arg.strip().split()
+        if len(parts) < 3:
+            log("用法: wghelp <对方用户名> <我的私钥> <我的mesh IP>")
+            return True
+        target = parts[0]
+        my_privkey = parts[1]
+        my_ip = parts[2]
+        WG_NATIVE_MODE = True
+        WG_NATIVE_MY_KEY = my_privkey
+        WG_NATIVE_MY_IP = my_ip
+        ws_send(ws_sock, {"type": "p2pwg", "target": target})
+        log(f"P2P WireGuard NAT穿透请求已发送，等待 {target} 确认...")
+    elif cmd == 'ffmpeg':
+        # ffmpeg: 前半段同 udp（p2pudp 握手），后半段拉起 ffmpeg.sh 做视频流
+        if not arg:
+            log("用法: ffmpeg <对方用户名>")
+            log("  打洞成功后自动拉起 ffplay/ffmpeg 进行 P2P 视频通话")
+            return True
+        target = arg.strip()
+        global FFMPEG_MODE
+        FFMPEG_MODE = True
+        ws_send(ws_sock, {"type": "p2pudp", "target": target})
+        log(f"P2P ffmpeg 视频请求已发送，等待 {target} 确认...")
     elif cmd == 'children':
         if not children:
             log("没有运行的子进程")
@@ -786,7 +1085,19 @@ def main():
     parser.add_argument('--user', dest='user', default=None, help='登录用户名（需配合 --pass 使用）')
     parser.add_argument('--pass', dest='pass_', default=None, help='登录密码（需配合 --user 使用，连上服务器后自动登录）')
     parser.add_argument('--remotelog', dest='remotelog', nargs='?', const=True, default=False,
-                        help='子进程日志：默认 False（stdout），True 时写入 /tmp/p2pnet_{udp|tcp}_{user}_{peer}_{time}.log）')
+                        help='子进程日志：默认 False（stdout），True 时写入 /tmp/p2pnet/{udp|tcp}-{user}_{peer}_{time}.log）')
+    parser.add_argument('--appmode', dest='appmode', default=None,
+                        help='启动后自动设置的 appmode（fake/tun/tap/auto）')
+    parser.add_argument('--udp', dest='udp_targets', action='append', default=[],
+                        help='启动后自动连接的 UDP 用户（可多次指定）')
+    parser.add_argument('--tcp', dest='tcp_targets', action='append', default=[],
+                        help='启动后自动连接的 TCP 用户（可多次指定）')
+    parser.add_argument('--wg', dest='wg_targets', action='append', default=[],
+                        help='启动后自动连接的 WireGuard 用户（可多次指定）')
+    parser.add_argument('--wghelp', dest='wghelp_targets', action='append', default=[],
+                        help='启动后自动连接的 WireGuard 用户（原生 WG），格式: "user key=xxx mesh_ip=yyy"（可多次指定）')
+    parser.add_argument('--ffmpeg', dest='ffmpeg_targets', action='append', default=[],
+                        help='启动后自动视频连接的用户（可多次指定）')
     args = parser.parse_args()
     SERVER_IP = args.server
     SERVER_PORT = args.port
@@ -797,6 +1108,27 @@ def main():
     ARGS_USER = args.user
     ARGS_PASS = args.pass_
     REMOTELOG = args.remotelog
+    global STARTUP_UDP, STARTUP_TCP, STARTUP_WG, STARTUP_WGHELP, STARTUP_APPMODE, STARTUP_FFMPEG
+    STARTUP_APPMODE = args.appmode
+    STARTUP_UDP = args.udp_targets
+    STARTUP_TCP = args.tcp_targets
+    STARTUP_WG = args.wg_targets
+    STARTUP_WGHELP = []
+    for wg_arg in (args.wghelp_targets or []):
+        # 格式: "user key=xxx mesh_ip=yyy"
+        parts = wg_arg.split()
+        if not parts:
+            continue
+        user = parts[0]
+        key = ''
+        mesh_ip = ''
+        for p in parts[1:]:
+            if p.startswith('key='):
+                key = p[4:]
+            elif p.startswith('mesh_ip='):
+                mesh_ip = p[8:]
+        STARTUP_WGHELP.append((user, key, mesh_ip))
+    STARTUP_FFMPEG = args.ffmpeg_targets
 
     # 自动判断 IPv4/IPv6，同时支持域名解析
     server_info = socket.getaddrinfo(args.server, args.port, socket.AF_UNSPEC, socket.SOCK_STREAM)

@@ -1,16 +1,46 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-local/fake.py - 假 tun/tap 接口（用于测试）
+app/fake.py - 假 tun/tap 接口（用于测试 / fake 模式）
 send() 永远返回成功
-recv() 永远抛出 BlockingIOError（不阻塞）
+recv() 非阻塞，没包抛 BlockingIOError
+后台线程每 3 秒发一个 32bit 时间戳
 """
+
+import os
+import sys
+import time
+import errno
+import select
+import struct
+import threading
+
+
+def ts():
+    return time.strftime("%H:%M:%S")
 
 
 class FakeTun:
     def __init__(self):
         import os
         self._rfd, self._wfd = os.pipe()
+        self._closed = False
+        self._lock = threading.Lock()
+        print(f"[{ts()}][fake]  启动 (pipe r={self._rfd} w={self._wfd})")
+
+        # 后台线程：每 3 秒发一个 32bit 时间戳到 pipe
+        def _sender():
+            while not self._closed:
+                ts_bytes = struct.pack('>I', int(time.time()))  # big-endian 32bit timestamp
+                try:
+                    os.write(self._wfd, ts_bytes)
+                    hex_str = ' '.join(f'{b:02x}' for b in ts_bytes)
+                    print(f"[{ts()}][fake]  send {len(ts_bytes)}B ts={int(time.time())} hex: {hex_str}")
+                except (OSError, IOError):
+                    break
+                time.sleep(3)
+        self._thread = threading.Thread(target=_sender, daemon=True)
+        self._thread.start()
 
     def fileno(self):
         """返回只读端的 fd，select 需要"""
@@ -21,14 +51,27 @@ class FakeTun:
         return len(data)
 
     def recv(self, size=4096):
-        """接收数据包，非阻塞，没包就抛 BlockingIOError"""
+        """接收数据包，非阻塞，没包抛 BlockingIOError"""
         import errno
-        raise BlockingIOError(errno.EAGAIN, "no data")
+        try:
+            d = os.read(self._rfd, size)
+        except (OSError, IOError) as e:
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise BlockingIOError(errno.EAGAIN, "no data")
+            raise
+        if d:
+            hex_str = ' '.join(f'{b:02x}' for b in d[:32])
+            print(f"[{ts()}][fake]  recv {len(d)}B hex: {hex_str}")
+        return d
 
     def close(self):
-        import os
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
         try:
             os.close(self._rfd)
             os.close(self._wfd)
-        except:
+        except OSError:
             pass
+        print(f"[{ts()}][fake]  销毁")

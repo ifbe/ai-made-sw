@@ -19,6 +19,19 @@ import threading
 import socket
 import time
 
+_log_fp = None
+
+
+def log(*a, **kw):
+    """日志输出到文件（默认 stderr）"""
+    msg = ' '.join(str(x) for x in a)
+    line = f"[{time.strftime('%H:%M:%S')}][audio]  {msg}"
+    if _log_fp:
+        _log_fp.write(line + '\n')
+        _log_fp.flush()
+    else:
+        print(line, file=sys.stderr, flush=True)
+
 try:
     import pyaudio
     HAS_PYAUDIO = True
@@ -128,9 +141,9 @@ class AudioSession:
         self.running = True
         self.in_stream.start_stream()
 
-        print(f"[audio] 启动成功", file=sys.stderr)
-        print(f"[audio] 麦克风：设备 {self.input_idx}  {self.in_channels}ch {self.in_rate}Hz", file=sys.stderr)
-        print(f"[audio] 喇叭：  设备 {self.output_idx}  {self.out_channels}ch {self.out_rate}Hz", file=sys.stderr)
+        log("启动成功")
+        log(f"麦克风：设备 {self.input_idx}  {self.in_channels}ch {self.in_rate}Hz")
+        log(f"喇叭：  设备 {self.output_idx}  {self.out_channels}ch {self.out_rate}Hz")
 
         # 用线程读输入流，避免阻塞
         self.in_thread = threading.Thread(target=self._read_loop, daemon=True)
@@ -148,7 +161,7 @@ class AudioSession:
                 if data and self.send_cb:
                     self.send_cb(data)
             except Exception as e:
-                print(f"[audio] 读取麦克风错误: {e}", file=sys.stderr)
+                log(f"读取麦克风错误: {e}")
                 break
 
     def write(self, data: bytes):
@@ -158,7 +171,7 @@ class AudioSession:
         try:
             self.out_stream.write(data)
         except Exception as e:
-            print(f"[audio] 播放错误: {e}", file=sys.stderr)
+            log(f"播放错误: {e}")
 
     def stop(self):
         self.running = False
@@ -170,10 +183,12 @@ class AudioSession:
             self.out_stream.close()
         if self.p:
             self.p.terminate()
-        print("[audio] 已停止", file=sys.stderr)
+        log("已停止")
 
 
 def main():
+    global _log_fp
+
     parser = argparse.ArgumentParser(description='p2pnet 音频业务')
     parser.add_argument('--input-device', default='-1',
                         help='麦克风设备 index 或名字（默认：系统默认）')
@@ -183,13 +198,19 @@ def main():
                         help='声道数（不指定则用设备推荐值）')
     parser.add_argument('--rate', type=int, default=None,
                         help='采样率 Hz（不指定则用设备推荐值）')
+    parser.add_argument('--log', default=None,
+                        help=f'日志文件路径（默认 /tmp/p2pnet/audio-<pid>.log）')
     parser.add_argument('--list-devices', action='store_true',
                         help='列出所有音频设备并退出')
     args = parser.parse_args()
 
+    if args.log:
+        os.makedirs(os.path.dirname(args.log), exist_ok=True)
+        _log_fp = open(args.log, 'a', encoding='utf-8')
+
     if not HAS_PYAUDIO:
-        print("错误：pyaudio 未安装", file=sys.stderr)
-        print("  pip install pyaudio", file=sys.stderr)
+        log("错误：pyaudio 未安装")
+        log("  pip install pyaudio")
         sys.exit(1)
 
     p = pyaudio.PyAudio()
@@ -245,7 +266,7 @@ def main():
                     break
                 recv_cb(data)
             except Exception as e:
-                print(f"[audio] stdin 错误: {e}", file=sys.stderr)
+                log(f"stdin 错误: {e}")
                 break
 
     session = AudioSession(
