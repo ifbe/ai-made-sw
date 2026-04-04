@@ -3,7 +3,7 @@
 """
 remote/tcp.py - P2P TCP 隧道（直接打洞，无 relay）
 用法: python3 tcp.py [--peeraddr IP] [--peerport PORT] [--localport PORT] \
-    [--nettype tun|tap|clientsocket|auto]
+    [--appmode tun|tap|clientsocket|auto]
 
 打洞原理：
   1. bind(local_port) + listen() — 让 NAT 记住这个端口的映射
@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def _auto_tun(nettype, name=None):
     """根据 nettype 和平台自动选择 tun 实现。name 指定设备名（tun/tap）或 socket 路径（clientsocket）。"""
     if nettype == 'fake':
-        from local.fake import FakeTun
+        from app.fake import FakeTun
         return FakeTun()
 
     import platform
@@ -37,10 +37,10 @@ def _auto_tun(nettype, name=None):
     if nettype == 'tun' or nettype == 'auto':
         try:
             if sysname == 'Windows':
-                from local.tun_windows import TunWintun
+                from app.tun_windows import TunWintun
                 return TunWintun()
             else:
-                from local.tun import Tun
+                from app.tun import Tun
                 return Tun(name=name)
         except Exception as e:
             if nettype == 'tun':
@@ -49,10 +49,10 @@ def _auto_tun(nettype, name=None):
     if nettype == 'tap' or nettype == 'auto':
         try:
             if sysname == 'Windows':
-                from local.tap_windows import TapWindows
+                from app.tap_windows import TapWindows
                 return TapWindows()
             else:
-                from local.tap import Tap
+                from app.tap import Tap
                 return Tap(name=name)
         except Exception as e:
             if nettype == 'tap':
@@ -62,12 +62,12 @@ def _auto_tun(nettype, name=None):
         path = name
         if not path:
             raise RuntimeError("--socketpath 未设置（clientsocket 模式由 client.py 启动）")
-        from local.clientsocket import ClientSocket
+        from app.clientsocket import ClientSocket
         print(f"[tcp]  clientsocket 连接 {path}")
         return ClientSocket(path)
 
     if nettype == 'auto':
-        from local.fake import FakeTun
+        from app.fake import FakeTun
         print(f"[tcp]  警告: Tun/Tap 均不可用，使用 FakeTun")
         return FakeTun()
 
@@ -88,29 +88,53 @@ def main():
     parser.add_argument('--peerport', type=int, help='对方公网端口')
     parser.add_argument('--localaddr', default='0.0.0.0', help='本地绑定地址（默认 0.0.0.0）')
     parser.add_argument('--localport', type=int, help='本地绑定端口（与 TCP 中继注册时相同）')
-    parser.add_argument('--nettype', choices=['auto', 'tun', 'tap', 'fake', 'clientsocket'],
-                        default='auto', help='网络接口类型（auto: tun→tap→fake）')
+    parser.add_argument('--appmode', default='fake',
+                        help='appmode 模式（fake/tun/tap/clientsocket/auto）')
     parser.add_argument('--socketpath', default=None,
-                        help='tun/tap 模式：指定设备名（如 utun3）；clientsocket 模式：Unix socket 路径（client.py 传入）')
+                        help='clientsocket 模式：Unix socket 路径（client.py 传入）')
     parser.add_argument('--cipher', choices=['none', 'chacha20-poly1305'],
                         default='none', help='加密方式：none=不加密（默认），chacha20-poly1305=ChaCha20-Poly1305 AEAD')
-    parser.add_argument('--transport', choices=['none', 'framed'],
-                        default='none', help='分帧方式：none=心跳 JSON 文本行+原始数据（默认），framed=TLV 分帧（type=0 心跳明文 / type=1 数据密文）')
     parser.add_argument('--obfs', choices=['none', 'xor', 'tls'],
                         default='none', help='混淆方式：none=不混淆（默认），xor=XOR 流混淆，tls=TLS 指纹混淆（伪装 HTTPS ClientHello）')
+    parser.add_argument('--transport', choices=['none', 'framed'],
+                        default='none', help='分帧方式：none=心跳 JSON 文本行+原始数据（默认），framed=TLV 分帧（type=0 心跳明文 / type=1 数据密文）')
     parser.add_argument('--key', default=None,
                         help='对称密钥（base64），与 --cipher 配合使用，client.py 登录后派生')
+    parser.add_argument('--remotelog', default=None,
+                        help='日志文件路径（默认 stdout）')
     args = parser.parse_args()
 
     peer_ip = args.peeraddr
     peer_port = args.peerport
     local_addr = args.localaddr
     local_port = args.localport
-    print(f"[{ts()}][tcp]  本端: {local_addr}:{local_port}")
-    print(f"[{ts()}][tcp]  目标: {peer_ip}:{peer_port}")
-    print(f"[{ts()}][tcp]  nettype={args.nettype}" + (f" socketpath={args.socketpath}" if args.socketpath else ""))
+    _log_file = args.remotelog
 
-    tun = _auto_tun(args.nettype, args.socketpath)
+    # 日志：_log_file 有值则写文件，否则写 stdout
+    _log_fp = None
+    if _log_file:
+        _log_fp = open(_log_file, 'a', encoding='utf-8')
+
+    def log(*a, **kw):
+        msg = ' '.join(str(x) for x in a)
+        ts_str = time.strftime("%H:%M:%S")
+        line = f"[{ts_str}][tcp]  {msg}"
+        if _log_fp:
+            _log_fp.write(line + '\n')
+            _log_fp.flush()
+        else:
+            print(line)
+
+    # 启动参数打印
+    appmode = args.appmode
+    log(f"本端: {local_addr}:{local_port}")
+    log(f"目标: {peer_ip}:{peer_port}")
+    log(f"appmode={appmode}  socketpath={args.socketpath or ''}")
+    log(f"cipher={args.cipher}  obfs={args.obfs}  transport={args.transport}")
+    log(f"key={args.key or ''}")
+    log(f"remotelog={_log_file or ''}")
+
+    tun = _auto_tun(args.appmode, args.socketpath)
 
     # ==================== listen socket：让 NAT 记住 7777 -> 外部端口 的映射 ====================
     # 自动判断 IPv4/IPv6（listen 端）
@@ -122,13 +146,13 @@ def main():
     try:
         listen_sock.bind(sockaddr)
     except OSError as e:
-        print(f"[{ts()}][tcp]  bind({local_port}) 失败: {e}，尝试随机端口")
+        log(f"bind({local_port}) 失败: {e}，尝试随机端口")
         listen_sock.bind(('::', 0))
     listen_sock.listen(5)
     listen_sock.settimeout(ACCEPT_TIMEOUT)
     actual_port = listen_sock.getsockname()[1]
     local_family = 'IPv6' if family == socket.AF_INET6 else 'IPv4'
-    print(f"[{ts()}][tcp]  listen {actual_port} ({local_family})，等待对端 SYN...")
+    log(f"listen {actual_port} ({local_family})，等待对端 SYN...")
 
     # ==================== connect socket：发出 SYN 到对端 ====================
     # 自动判断 IPv4/IPv6（connect 端）
@@ -144,9 +168,9 @@ def main():
         connect_sock.connect((peer_ip, peer_port))
     except BlockingIOError:
         # 非阻塞 connect 发出 SYN，等待完成
-        print(f"[{ts()}][tcp]  connect -> {peer_ip}:{peer_port}，SYN 已发送（等待 NAT 映射）")
+        log(f"connect -> {peer_ip}:{peer_port}，SYN 已发送（等待 NAT 映射）")
     except Exception as e:
-        print(f"[{ts()}][tcp]  connect 异常: {e}，继续等待 accept")
+        log(f"connect 异常: {e}，继续等待 accept")
         connect_pending = False
 
     # ==================== select 竞速：accept 或 connect 哪个先完成用哪个 ====================
@@ -171,10 +195,10 @@ def main():
                     pass
                 tunnel_sock = connect_sock
                 use_accept = False
-                print(f"[{ts()}][tcp]  ✅ connect 完成！用 connect socket 建立隧道")
+                log(f"✅ connect 完成！用 connect socket 建立隧道")
                 break
             except Exception as e:
-                print(f"[{ts()}][tcp]  connect 最终确认失败: {e}")
+                log(f"connect 最终确认失败: {e}")
                 connect_pending = False
 
         # --- accept 到来（对方 SYN 穿过 NAT 到达）---
@@ -183,7 +207,7 @@ def main():
                 accepted, addr = listen_sock.accept()
                 tunnel_sock = accepted
                 use_accept = True
-                print(f"[{ts()}][tcp]  ✅ accept 成功！来自 {addr}，用 accept socket 建立隧道")
+                log(f"✅ accept 成功！来自 {addr}，用 accept socket 建立隧道")
                 break
             except socket.timeout:
                 pass
@@ -201,12 +225,12 @@ def main():
             pass
 
     if tunnel_sock is None:
-        print(f"[{ts()}][tcp]  ⚠️  {CONNECT_TIMEOUT}s 内直接 P2P 未建立，退出（不 relay）")
+        log(f"⚠️  {CONNECT_TIMEOUT}s 内直接 P2P 未建立，退出（不 relay）")
         tun.close()
         return
 
     tunnel_sock.setblocking(False)
-    print(f"[{ts()}][tcp]  P2P TCP 隧道建立成功，开始 tunnel！")
+    log(f"P2P TCP 隧道建立成功，开始 tunnel！")
 
     # ==================== Tunnel 循环：tunnel socket <-> tun ====================
     while True:
@@ -218,7 +242,7 @@ def main():
                 data = tun.recv(4096)
                 if data:
                     tunnel_sock.sendall(data)
-                    print(f"[{ts()}][tcp]  tun->tcp {len(data)}B hex:{data[:16].hex()}")
+                    log(f"tun->tcp {len(data)}B hex:{data[:16].hex()}")
             except BlockingIOError:
                 pass
 
@@ -227,19 +251,19 @@ def main():
             try:
                 data = tunnel_sock.recv(4096)
                 if not data:
-                    print(f"[{ts()}][tcp]  对端关闭连接，tunnel 结束")
+                    log(f"对端关闭连接，tunnel 结束")
                     break
                 tun.send(data)
-                print(f"[{ts()}][tcp]  tcp->tun {len(data)}B hex:{data[:16].hex()}")
+                log(f"tcp->tun {len(data)}B hex:{data[:16].hex()}")
             except BlockingIOError:
                 pass
             except Exception as e:
-                print(f"[{ts()}][tcp]  tunnel recv 错误: {e}")
+                log(f"tunnel recv 错误: {e}")
                 break
 
     tunnel_sock.close()
     tun.close()
-    print(f"[{ts()}][tcp]  结束")
+    log(f"结束")
 
 
 if __name__ == '__main__':

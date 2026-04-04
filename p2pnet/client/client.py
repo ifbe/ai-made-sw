@@ -25,7 +25,8 @@ IS_WINDOWS = sys.platform == 'win32'
 
 
 def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_exit=False,
-                   peer_name='', peer_ip='', peer_port=0, my_ip='', my_port=0):
+                   peer_name='', peer_ip='', peer_port=0, my_ip='', my_port=0, name=None,
+                   _log_file=None):
     """
     启动子进程。
     new_window=True  且平台支持时：新开终端窗口运行
@@ -40,11 +41,11 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
     cmd_str = ' '.join(shlex.quote(a) for a in args)
     cwd = cwd or os.getcwd()
     env = env or os.environ
-    name = os.path.basename(args[0])  # e.g. 'udp.py'
+    _name = name if name else os.path.basename(args[0])  # e.g. 'udp' or 'python3'
     system = platform.system()
 
     child_entry = {
-        'pid': None, 'name': name,
+        'pid': None, 'name': _name,
         'type': 'window' if new_window else 'bg',
         'popen': None, 'close_on_exit': close_on_exit,
         'peer_name': peer_name, 'peer_ip': peer_ip, 'peer_port': peer_port,
@@ -52,11 +53,14 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
     }
 
     if not new_window:
-        # 后台直接跑，输出到日志
-        log_file = f'/tmp/p2pnet_{name}_{os.getpid()}.log'
+        # 后台直接跑
+        if _log_file:
+            stdout_redirect = open(_log_file, 'a')
+        else:
+            stdout_redirect = None
         p = subprocess.Popen(
             args, cwd=cwd, env=env,
-            stdout=open(log_file, 'w'),
+            stdout=stdout_redirect,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
@@ -66,21 +70,25 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
         return child_entry
 
     if system == 'Darwin':
-        # 始终写日志到 /tmp/，方便调试和追溯
-        import time as _time2
-        log_file = f'/tmp/p2pnet_{name}_{os.getpid()}_{_time2.time():.0f}.log'
-        # new_window=True: 在新 Terminal 窗口运行，同时写日志
-        # new_window=False: 后台运行，写日志
         if new_window:
-            # 新窗口里先显示日志再跑命令，退出时保留窗口（无 exit 后缀）
             exit_suffix = '; exit' if close_on_exit else ''
-            show_tail = f'; echo "--- log: {log_file} ---"; tail -f {log_file} {exit_suffix}'
-            script = (
-                f'tell application "Terminal"\n'
-                f'  activate\n'
-                f'  do script "cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1) {show_tail}"\n'
-                f'end tell'
-            )
+            if _log_file:
+                # 写日志文件，并在窗口显示 tail
+                show_tail = f'; echo "--- log: {_log_file} ---"; tail -f {_log_file} {exit_suffix}'
+                script = (
+                    f'tell application "Terminal"\n'
+                    f'  activate\n'
+                    f'  do script "cd {shlex.quote(cwd)} && ({cmd_str} >> {_log_file} 2>&1) {show_tail}"\n'
+                    f'end tell'
+                )
+            else:
+                # 无日志文件，stdout 继承终端
+                script = (
+                    f'tell application "Terminal"\n'
+                    f'  activate\n'
+                    f'  do script "cd {shlex.quote(cwd)} && {cmd_str}{exit_suffix}"\n'
+                    f'end tell'
+                )
         else:
             script = None
         r = subprocess.run(
@@ -100,7 +108,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
             _time.sleep(0.2)
             try:
                 r2 = subprocess.run(
-                    ['pgrep', '-f', f'python.*remote/{name}'],
+                    ['pgrep', '-f', f'python.*remote/{_name}'],
                     capture_output=True, text=True,
                 )
                 if r2.returncode == 0:
@@ -127,15 +135,12 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
 
     else:
         # Linux
-        # 始终写日志到 /tmp/
-        import time as _time2
-        log_file = f'/tmp/p2pnet_{name}_{os.getpid()}_{_time2.time():.0f}.log'
         close_flag = ''
         for term in ['gnome-terminal', 'konsole', 'xfce4-terminal']:
             if subprocess.call(['which', term], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
                 if term == 'gnome-terminal':
                     close_flag = ' --close-session' if close_on_exit else ''
-                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1)'
+                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str}' + (f' >> {_log_file} 2>&1)' if _log_file else ')')
                     p = subprocess.Popen(
                         [term + close_flag, '--', 'bash', '-c', cmd_shell],
                         cwd=cwd, env=env,
@@ -143,7 +148,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
                     )
                 elif term == 'konsole':
                     close_flag = ' --close' if close_on_exit else ''
-                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1)'
+                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str}' + (f' >> {_log_file} 2>&1)' if _log_file else ')')
                     p = subprocess.Popen(
                         [term + close_flag, '-e', 'bash', '-c', cmd_shell],
                         cwd=cwd, env=env,
@@ -151,7 +156,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
                     )
                 elif term == 'xfce4-terminal':
                     close_flag = ' -H' if close_on_exit else ''
-                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str} >> {log_file} 2>&1)'
+                    cmd_shell = f'cd {shlex.quote(cwd)} && ({cmd_str}' + (f' >> {_log_file} 2>&1)' if _log_file else ')')
                     p = subprocess.Popen(
                         [term + close_flag, '-e', cmd_shell],
                         cwd=cwd, env=env,
@@ -162,10 +167,10 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
                 children.append(child_entry)
                 return child_entry
             # next term
-        # fallback: 找不到终端，后台跑（本身就是写日志）
+        # fallback: 找不到终端，后台跑
         p = subprocess.Popen(
             args, cwd=cwd, env=env,
-            stdout=open(log_file, 'w'),
+            stdout=stdout_redirect,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
@@ -196,6 +201,7 @@ NEW_WINDOW = False  # 默认当前窗口（后台运行写日志）；--new-wind
 CLOSE_WINDOW = False  # 默认窗口保留（子进程结束后不自动关窗口）
 ARGS_USER = None  # --user 自动登录
 ARGS_PASS = None  # --pass 密码
+REMOTELOG = False  # --remotelog
 
 # 等待 challenge 的登录上下文
 pending_auth = None
@@ -532,22 +538,24 @@ def handle_server_message(obj):
         stop_udp_hello()
         env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
 
-        # 根据 LOCAL_MODE 决定 nettype
-        if LOCAL_MODE == 'fake':
-            remote_args = [sys.executable, 'remote/udp.py',
-                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
-                           '--localport', str(hello_port), '--nettype', 'fake']
-        elif LOCAL_MODE == 'clientsocket':
+        # clientsocket 需传 socketpath；其他模式不传 --appmode（默认 fake）
+        _log = REMOTELOG
+        if _log:
+            import time as _t
+            _log_file = f"/tmp/p2pnet_udp_{logged_in_user}_{peer_name}_{int(_t.time())}.log"
+        else:
+            _log_file = None
+
+        remote_args = [sys.executable, 'remote/udp.py',
+                       '--peeraddr', peer_ip,
+                       '--peerport', str(peer_port),
+                       '--localport', str(hello_port)]
+        if LOCAL_MODE == 'clientsocket':
             sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
-            remote_args = [sys.executable, 'remote/udp.py',
-                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
-                           '--localport', str(hello_port),
-                           '--nettype', 'clientsocket', '--socketpath', sock_path]
+            remote_args += ['--socketpath', sock_path]
             log(f"[P2P] clientsocket 模式，socket={sock_path}")
-        else:  # 'auto' or None(default)
-            remote_args = [sys.executable, 'remote/udp.py',
-                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
-                           '--localport', str(hello_port), '--nettype', 'auto']
+        if _log_file:
+            remote_args += ['--remotelog', _log_file]
 
         try:
             entry = launch_in_new_terminal(
@@ -558,9 +566,9 @@ def handle_server_message(obj):
                 close_on_exit=CLOSE_WINDOW,
                 peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
                 my_ip='0.0.0.0', my_port=hello_port,
+                name='udp',
+                _log_file=_log_file,
             )
-            winfo = '(独立窗口)' if entry else '(后台)'
-            log(f"[P2P] udp.py 已启动 {winfo} -> {peer_ip}:{peer_port} (本地 hello 端口 {hello_port})")
         except Exception as e:
             log(f"[P2P] 启动 udp.py 失败: {e}")
     elif obj.get('type') == 'p2pudp_pending':
@@ -600,24 +608,23 @@ def handle_server_message(obj):
         log(f"[P2P] 收到对端 {peer_name} TCP 地址: {peer_ip}:{peer_port}，本端: {my_ip}:{my_port}，启动 tcp.py...")
         env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
 
-        # 根据 LOCAL_MODE 决定 nettype
-        if LOCAL_MODE == 'fake':
-            remote_args = [sys.executable, 'remote/tcp.py',
-                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
-                           '--localport', str(my_port), '--peername', peer_name,
-                           '--nettype', 'fake']
-        elif LOCAL_MODE == 'clientsocket':
+        # clientsocket 需传 socketpath；其他模式不传 --appmode（默认 fake）
+        _log = REMOTELOG
+        if _log:
+            import time as _t
+            _log_file = f"/tmp/p2pnet_tcp_{logged_in_user}_{peer_name}_{int(_t.time())}.log"
+        else:
+            _log_file = None
+
+        remote_args = [sys.executable, 'remote/tcp.py',
+                       '--peeraddr', peer_ip, '--peerport', str(peer_port),
+                       '--localport', str(my_port), '--peername', peer_name]
+        if LOCAL_MODE == 'clientsocket':
             sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
-            remote_args = [sys.executable, 'remote/tcp.py',
-                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
-                           '--localport', str(my_port), '--peername', peer_name,
-                           '--nettype', 'clientsocket', '--socketpath', sock_path]
+            remote_args += ['--socketpath', sock_path]
             log(f"[P2P] clientsocket 模式，socket={sock_path}")
-        else:  # 'auto' or None(default)
-            remote_args = [sys.executable, 'remote/tcp.py',
-                           '--peeraddr', peer_ip, '--peerport', str(peer_port),
-                           '--localport', str(my_port), '--peername', peer_name,
-                           '--nettype', 'auto']
+        if _log_file:
+            remote_args += ['--remotelog', _log_file]
 
         try:
             entry = launch_in_new_terminal(
@@ -628,9 +635,9 @@ def handle_server_message(obj):
                 close_on_exit=CLOSE_WINDOW,
                 peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
                 my_ip=my_ip, my_port=my_port,
+                name='tcp',
+                _log_file=_log_file,
             )
-            winfo = '(独立窗口)' if entry else '(后台)'
-            log(f"[P2P] tcp.py 已启动 {winfo} -> {peer_ip}:{peer_port} (本端 {my_ip}:{my_port})")
         except Exception as e:
             log(f"[P2P] 启动 tcp.py 失败: {e}")
     else:
@@ -772,15 +779,18 @@ def main():
     parser.add_argument('--close-window', dest='close_window', action='store_true', default=False, help='子进程结束时自动关闭新窗口（默认不关闭）')
     parser.add_argument('--user', dest='user', default=None, help='登录用户名（需配合 --pass 使用）')
     parser.add_argument('--pass', dest='pass_', default=None, help='登录密码（需配合 --user 使用，连上服务器后自动登录）')
+    parser.add_argument('--remotelog', dest='remotelog', nargs='?', const=True, default=False,
+                        help='子进程日志：默认 False（stdout），True 时写入 /tmp/p2pnet_{udp|tcp}_{user}_{peer}_{time}.log）')
     args = parser.parse_args()
     SERVER_IP = args.server
     SERVER_PORT = args.port
     DEBUG = args.debug
     NEW_WINDOW = args.new_window
     CLOSE_WINDOW = args.close_window
-    global ARGS_USER, ARGS_PASS
+    global ARGS_USER, ARGS_PASS, REMOTELOG
     ARGS_USER = args.user
     ARGS_PASS = args.pass_
+    REMOTELOG = args.remotelog
 
     # 自动判断 IPv4/IPv6，同时支持域名解析
     server_info = socket.getaddrinfo(args.server, args.port, socket.AF_UNSPEC, socket.SOCK_STREAM)
