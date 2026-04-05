@@ -32,7 +32,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
     new_window=True  且平台支持时：新开终端窗口运行
     new_window=False：后台直接运行，不开窗口，输出到日志
     close_on_exit=True：子进程结束时自动关闭窗口（仅 macOS/Windows；Linux 取决于终端）
-    peer_name/ip/port, my_ip/port：记录到 children 列表，供运行时查看。
+    peer_name/ip/port, my_ip/port：记录到 peers 列表，供运行时查看。
     返回存储条目 dict，失败返回 None。
     """
     import shlex
@@ -66,7 +66,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
         )
         child_entry['pid'] = p.pid
         child_entry['popen'] = p
-        children.append(child_entry)
+        peers.append(child_entry)
         return child_entry
 
     if system == 'Darwin':
@@ -116,7 +116,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
             except (ValueError, IndexError):
                 pass
         child_entry['pid'] = pid
-        children.append(child_entry)
+        peers.append(child_entry)
         return child_entry
 
     elif system == 'Windows':
@@ -130,7 +130,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
         )
         child_entry['pid'] = p.pid
         child_entry['popen'] = p
-        children.append(child_entry)
+        peers.append(child_entry)
         return child_entry
 
     else:
@@ -164,7 +164,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
                     )
                 child_entry['pid'] = p.pid
                 child_entry['popen'] = p
-                children.append(child_entry)
+                peers.append(child_entry)
                 return child_entry
             # next term
         # fallback: 找不到终端，后台跑
@@ -176,7 +176,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
         )
         child_entry['pid'] = p.pid
         child_entry['popen'] = p
-        children.append(child_entry)
+        peers.append(child_entry)
         return child_entry
 
 
@@ -195,7 +195,7 @@ ws_sock = None
 recv_buf = b''
 
 # 子进程/子窗口列表，每个元素 {pid, name, type, popen, close_on_exit}
-children = []
+peers = []
 
 # WireGuard 共享进程（单实例）
 WG_ADMIN_PATH = None  # wireguard.py 的 admin socket 路径
@@ -426,6 +426,9 @@ def start_udp_hello(server_ip, server_udp_port, username, local_port):
             # 之后每秒发 1 个维持映射
             time.sleep(1)
         except Exception as e:
+            # socket 被 stop_udp_hello() 关闭了，线程应该退出
+            if not udp_hello_running:
+                break
             pass
 
     sock.close()
@@ -475,8 +478,8 @@ def print_help():
     log("  appmode video    - 模式: video（拉起 video.py 做 P2P 视频通话，TODO）")
     log("  appmode file     - 模式: file（拉起 file.py 做 P2P 文件传输，TODO）")
 
-    log("  children           - 列出所有子进程/子窗口")
-    log("  kill <pid>         - 杀掉指定 PID 的子进程/子窗口")
+    log("  peer              - 列出所有 P2P 连接")
+    log("  kill <pid>|all  - 杀掉指定 PID 的 peer，或 kill all 杀掉全部")
     log("  udp <user>   - 请求与对方建立 UDP P2P 连接")
     log("  tcp <user>   - 请求与对方建立 TCP P2P 连接")
     log("  wg  <user>   - 请求与对方建立 WireGuard P2P 连接（单进程多 peer）")
@@ -664,7 +667,7 @@ def handle_server_message(obj):
                     new_window=True, close_on_exit=False,
                     peer_name=peer_name, name='ffmpeg',
                 )
-                children.append(entry)
+                peers.append(entry)
                 log(f"[P2P] ffmpeg 已启动（新窗口），持续 1 小时")
             except Exception as e:
                 log(f"[P2P] ffmpeg 启动失败: {e}")
@@ -823,7 +826,7 @@ def handle_server_message(obj):
                     name='wghelp',
                 )
                 if entry:
-                    children.append(entry)
+                    peers.append(entry)
                 log(f"[P2P] wghelp.sh 已在新窗口启动（可能需要输入 sudo 密码）")
                 log(f"[P2P] 运行后检查: ping {peer_ip} && wg show")
             except Exception as e:
@@ -1011,8 +1014,8 @@ def process_input_line(line):
         FFMPEG_MODE = True
         ws_send(ws_sock, {"type": "p2pudp", "target": target})
         log(f"P2P ffmpeg 视频请求已发送，等待 {target} 确认...")
-    elif cmd == 'children':
-        if not children:
+    elif cmd == 'peer':
+        if not peers:
             log("没有运行的子进程")
         else:
             for i, c in enumerate(children):
@@ -1030,16 +1033,39 @@ def process_input_line(line):
                 log(f"       对端: {pn}  {pi}:{pp}  本端: {mi}:{mp}")
         return True
     elif cmd == 'kill':
-        if not arg:
-            log("用法: kill <pid>")
+        if not arg or arg.strip() == 'all':
+            # kill all peers
+            if not peers:
+                log("没有运行的 peer")
+            else:
+                for c in list(peers):
+                    p = c.get('popen')
+                    pid = c.get('pid')
+                    if p is not None:
+                        p.terminate()
+                        log(f"已 terminate pid={pid} ({c['name']})")
+                    elif pid is not None:
+                        try:
+                            import signal as _sig
+                            if IS_WINDOWS:
+                                os.kill(pid, _sig.CTRL_C_EVENT)
+                            else:
+                                os.kill(pid, _sig.SIGINT)
+                            log(f"已发送 SIGINT pid={pid} ({c['name']})")
+                        except (ProcessLookupError, OSError):
+                            log(f"进程已不存在: pid={pid}")
+                        except PermissionError:
+                            log(f"权限不足: pid={pid}")
+                    peers.remove(c)
             return True
+
         try:
             target_pid = int(arg.strip())
         except ValueError:
             log(f"无效 PID: {arg}")
             return True
         killed = False
-        for c in children:
+        for c in peers:
             if c['pid'] == target_pid:
                 try:
                     p = c.get('popen')
@@ -1052,13 +1078,13 @@ def process_input_line(line):
                             os.kill(target_pid, _sig.CTRL_C_EVENT)
                         else:
                             os.kill(target_pid, _sig.SIGINT)
-                        log(f"已发送 SIGINT 到 pid={target_pid} ({c['name']})")
+                        log(f"已发送 SIGINT pid={target_pid} ({c['name']})")
                 except (ProcessLookupError, OSError):
                     log(f"进程已不存在: pid={target_pid}")
                 except PermissionError:
-                    log(f"权限不足，无法 kill pid={target_pid}")
+                    log(f"权限不足: pid={target_pid}")
                 try:
-                    children.remove(c)
+                    peers.remove(c)
                 except ValueError:
                     pass
                 killed = True
@@ -1231,7 +1257,7 @@ def main():
 
     connected = False
     # 清理所有子进程
-    for c in list(children):
+    for c in list(peers):
         p = c.get('popen')
         pid = c.get('pid')
         if p is not None:
@@ -1249,10 +1275,10 @@ def main():
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         try:
-            children.remove(c)
+            peers.remove(c)
         except ValueError:
             pass
-    children.clear()
+    peers.clear()
     try:
         ws_sock.close()
     except:

@@ -34,8 +34,6 @@ class FakeTun:
                 ts_bytes = struct.pack('>I', int(time.time()))  # big-endian 32bit timestamp
                 try:
                     os.write(self._wfd, ts_bytes)
-                    hex_str = ' '.join(f'{b:02x}' for b in ts_bytes)
-                    print(f"[{ts()}][fake]  send {len(ts_bytes)}B ts={int(time.time())} hex: {hex_str}")
                 except (OSError, IOError):
                     break
                 time.sleep(3)
@@ -47,7 +45,7 @@ class FakeTun:
         return self._rfd
 
     def send(self, data):
-        """发送数据包，永远成功"""
+        """发送数据包，永远成功（直接丢弃，不写 pipe）"""
         return len(data)
 
     def recv(self, size=4096):
