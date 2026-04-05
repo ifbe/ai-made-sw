@@ -182,6 +182,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
 
 # 后台 UDP hello 线程
 udp_hello_running = False
+_hello_stop_event = threading.Event()  # 信号线程退出（替代 _udp_hello_running 轮询）
 udp_hello_thread = None
 udp_hello_sock = None
 if IS_WINDOWS:
@@ -405,6 +406,7 @@ def start_udp_hello(server_ip, server_udp_port, username, local_port):
     local_bound_port = sock.getsockname()[1]
     udp_hello_sock = sock
     udp_hello_running = True
+    _hello_stop_event.clear()  # 重置事件，表示线程正在运行
     log(f"[UDP hello] 开始，往 {server_ip}:{server_udp_port} 发送 hello (本地端口 {local_bound_port})")
 
     def _send_hello():
@@ -421,42 +423,87 @@ def start_udp_hello(server_ip, server_udp_port, username, local_port):
         try:
             # 启动时发 burst 建立 NAT 映射（15个，30ms间隔，0.45s 发完）
             for _ in range(15):
+                if _hello_stop_event.is_set():
+                    break
                 _send_hello()
                 time.sleep(0.03)
             # 之后每秒发 1 个维持映射
-            time.sleep(1)
+            while udp_hello_running:
+                # 每 1 秒醒一次，配合 stop event 快速退出
+                if _hello_stop_event.wait(timeout=1):
+                    break  # 收到停止信号
+                if udp_hello_running:
+                    _send_hello()
         except Exception as e:
-            # socket 被 stop_udp_hello() 关闭了，线程应该退出
-            if not udp_hello_running:
-                break
-            pass
+            # socket 已被关闭，不用再关，直接 break 退出
+            break
 
     sock.close()
+    _hello_stop_event.set()  # 通知 stop_udp_hello() 线程已完全退出
+    log("[UDP hello] 已停止")
+
+    def _send_hello():
+        sig = sign_with_session_key(b'ping') if session_key else None
+        payload = {'type': 'p2pudp_hello', 'username': username}
+        if sig:
+            payload['signature'] = sig
+        msg = json.dumps(payload).encode()
+        if DEBUG:
+            print(f"[DEBUG] UDP hello -> {server_ip}:{server_udp_port}: {payload}")
+        sock.sendto(msg, (server_ip, server_udp_port))
+
+    while udp_hello_running:
+        try:
+            # 启动时发 burst 建立 NAT 映射（15个，30ms间隔，0.45s 发完）
+            for _ in range(15):
+                if not udp_hello_running:
+                    break
+                _send_hello()
+                time.sleep(0.03)
+            # 之后每秒发 1 个维持映射
+            while udp_hello_running:
+                time.sleep(1)
+                if udp_hello_running:
+                    _send_hello()
+        except Exception as e:
+            # socket 被 stop_udp_hello() 关闭了，线程应该退出
+            break
+
+    sock.close()
+    _hello_stop_event.set()  # 通知 stop_udp_hello() 线程已完全退出
     log("[UDP hello] 已停止")
 
 
 def stop_udp_hello():
+    """发送停止信号给 hello 线程，不阻塞"""
     global udp_hello_running, udp_hello_sock, udp_hello_thread
     udp_hello_running = False
-    if udp_hello_thread:
-        udp_hello_thread.join(timeout=2)
-        udp_hello_thread = None
+    _hello_stop_event.set()  # 通知线程退出
     if udp_hello_sock:
         try:
             udp_hello_sock.close()
         except:
             pass
         udp_hello_sock = None
+    if udp_hello_thread:
+        # 最多等 0.5 秒让线程自然退出（failsafe）
+        try:
+            udp_hello_thread.join(timeout=0.5)
+        except Exception:
+            pass
+        udp_hello_thread = None
 
 
 def start_udp_hello_thread(server_ip, server_udp_port, username):
     """启动 UDP hello 线程，使用随机可用端口"""
-    import threading
+    global udp_hello_running, udp_hello_thread
+    # 防止重复启动：如果线程已经在运行，不启动新的
+    if udp_hello_running and udp_hello_thread and udp_hello_thread.is_alive():
+        return
     import random
     local_port = random.randint(50000, 65000)
     t = threading.Thread(target=start_udp_hello, args=(server_ip, server_udp_port, username, local_port), daemon=True)
     t.start()
-    global udp_hello_thread
     udp_hello_thread = t
     return t
 

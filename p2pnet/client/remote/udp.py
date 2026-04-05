@@ -17,6 +17,7 @@ import socket
 import argparse
 import select
 import threading
+import signal
 
 # ---- Inline ClientSocket（连接 switch Unix socket，自动加/剥 eth 头）----
 FAKE_SRC_MAC = b'\x00\x00\x00\x00\x00\x00'
@@ -25,6 +26,12 @@ ETH_TYPE_IP = b'\x08\x00'
 
 def _make_eth_header():
     return FAKE_BROADCAST_MAC + FAKE_SRC_MAC + ETH_TYPE_IP
+
+
+# ---- 全局变量 ----
+_log_fp = None  # 日志文件句柄（main() 里赋值）
+datasent = 0  # 发送的非心跳数据次数
+datarecv = 0  # 收到的非心跳数据次数
 
 class ClientSocket:
     def __init__(self, path):
@@ -121,15 +128,23 @@ def _auto_app(nettype, name=None):
     raise ValueError(f"未知的 nettype: {nettype}")
 
 
+def _log_prefix(func_name):
+    return f"[{ts()}][udp.py {func_name}]"
+
 def ts():
     return time.strftime("%H:%M:%S")
 
 
-def log(*a, **kw):
+def log(func_name, *a, **kw):
     """模块级 log，main() 里会覆盖 _log_fp 来重定向日志"""
     msg = ' '.join(str(x) for x in a)
     ts_str = time.strftime("%H:%M:%S")
-    print(f"[{ts_str}][udptunnel]  {msg}")
+    line = f"[{ts_str}][udp.py {func_name}]  {msg}"
+    if _log_fp:
+        _log_fp.write(line + '\n')
+        _log_fp.flush()
+    else:
+        print(line)
 
 
 def handle_outgoing(data, args, sock, active_peer):
@@ -137,9 +152,11 @@ def handle_outgoing(data, args, sock, active_peer):
     处理 app 发来的数据。
     TODO: 加密 → 混淆 → sock.sendto() 发出
     """
+    global datasent
     ip, port = active_peer['ip'], active_peer['port']
     hex_str = ' '.join(f'{b:02x}' for b in data[:32])
-    log(f"app->UDP {len(data)}B hex: {hex_str} -> {ip}:{port}")
+    datasent += 1
+    log("handle_outgoing", f"send data: len={len(data)}, hex={hex_str}")
     sock.sendto(data, (ip, port))
 
 
@@ -149,7 +166,7 @@ READY_PONGS = 3
 
 
 def main():
-    global pong_streak, confirmed, last_pong_time, seq, sent_pings, sock
+    global pong_streak, confirmed, last_pong_time, seq, sent_pings, sock, _log_fp, datasent, datarecv
 
     parser = argparse.ArgumentParser(description='p2pnet P2P UDP')
     parser.add_argument('--peeraddr', required=True, help='对方 IP（IPv4/IPv6/域名，自动识别）')
@@ -183,10 +200,10 @@ def main():
     if _log_file:
         _log_fp = open(_log_file, 'a', encoding='utf-8')
 
-    def log(*a, **kw):
+    def log(func_name, *a, **kw):
         msg = ' '.join(str(x) for x in a)
         ts_str = time.strftime("%H:%M:%S")
-        line = f"[{ts_str}][udptunnel]  {msg}"
+        line = f"[{ts_str}][udp.py {func_name}]  {msg}"
         if _log_fp:
             _log_fp.write(line + '\n')
             _log_fp.flush()
@@ -199,16 +216,16 @@ def main():
     sock = socket.socket(family, socktype, proto)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    sock.settimeout(0.5)  # 设置超时以便优雅退出
     sock.bind(sockaddr)
-    sock.setblocking(False)
     actual_port = sock.getsockname()[1]
     local_family = 'IPv6' if family == socket.AF_INET6 else 'IPv4'
-    log(f"本端: {local_addr}:{actual_port} ({local_family})")
-    log(f"目标: {peer_ip}:{peer_port}")
-    log(f"appmode={nettype}  socketpath={args.socketpath or ''}")
-    log(f"cipher={args.cipher}  obfs={args.obfs}  transport={args.transport}")
-    log(f"key={args.key or ''}")
-    log(f"remotelog={_log_file or ''}")
+    log("main", f"本端: {local_addr}:{actual_port} ({local_family})")
+    log("main", f"目标: {peer_ip}:{peer_port}")
+    log("main", f"appmode={nettype}  socketpath={args.socketpath or ''}")
+    log("main", f"cipher={args.cipher}  obfs={args.obfs}  transport={args.transport}")
+    log("main", f"key={args.key or ''}")
+    log("main", f"remotelog={_log_file or ''}")
 
     # ========== 共享状态 ==========
     stop_event = threading.Event()
@@ -217,6 +234,11 @@ def main():
     last_pong_time = time.time()
     seq = 0
     sent_pings = {}
+    sent_pings_order = []  # 有序记录发送顺序，用于清理旧条目
+    pingsent = 0  # 发送的 ping 总数
+    pongrecv = 0  # 收到的有效 pong 总数
+    datasent = 0  # 发送的非心跳数据次数（模块级）
+    datarecv = 0  # 收到的非心跳数据次数
 
     peer_lock = threading.Lock()
     active_peer = {'ip': peer_ip, 'port': peer_port}
@@ -231,13 +253,13 @@ def main():
                 if c['ip'] == ip and c['port'] == port:
                     active_peer['ip'] = ip
                     active_peer['port'] = port
-                    log(f"🔄 active_peer → {ip}:{port}")
+                    log("update_peer", f"🔄 active_peer → {ip}:{port}")
                     return
             candidates.append({'ip': ip, 'port': port})
             old_ip, old_port = active_peer['ip'], active_peer['port']
             active_peer['ip'] = ip
             active_peer['port'] = port
-            log(f"🆕 peer-reflexive {ip}:{port}（原 {old_ip}:{old_port} 加入候选）")
+            log("update_peer", f"🆕 peer-reflexive {ip}:{port}（原 {old_ip}:{old_port} 加入候选）")
 
     def get_active():
         with peer_lock:
@@ -250,6 +272,8 @@ def main():
     # ========== handle_incoming: 处理收到的 UDP 包（嵌套函数，访问闭包变量）==========
     def handle_incoming(data, addr, args, app):
         global pong_streak, confirmed, last_pong_time, seq, sent_pings
+        global datarecv
+        nonlocal pingsent, pongrecv
         # 尝试解析 JSON 心跳
         try:
             msg = json.loads(data.decode('utf-8'))
@@ -258,38 +282,46 @@ def main():
             if t == 'ping':
                 update_peer(addr)
                 pong = json.dumps({'type': 'pong', 'seq': s, 'ts': msg.get('ts')})
-                log(f"recv ping seq={s} -> pong {addr}")
+                log("handle_incoming", f"recv beat: {pong}")
+                log("handle_incoming", f"send beat: {pong}")
                 sock.sendto(pong.encode(), addr)
                 return
             elif t == 'pong':
-                rtt = (time.time() - sent_pings.get(s, time.time())) * 1000
                 last_pong_time = time.time()
                 update_peer(addr)
-                if s == seq - 1:
+
+                # 有效 pong：是我们发出去的且还没收到过 pong 的
+                if s in sent_pings:
+                    rtt = (time.time() - sent_pings[s]) * 1000
                     pong_streak += 1
+                    pongrecv += 1
+                    del sent_pings[s]  # 标记已收到 pong
                 else:
-                    pong_streak = 1
-                log(f"recv pong seq={s} RTT={rtt:.0f}ms streak={pong_streak} from {addr}")
+                    rtt = 0  # 已收到过或不在窗口内
+
+                log("handle_incoming", f"recv beat: {data.decode('utf-8')}")
+                log("handle_incoming", f"  RTT={rtt:.0f}ms streak={pong_streak} ping={pingsent} pong={pongrecv} datasent={datasent} datarecv={datarecv}")
                 if not confirmed and pong_streak >= READY_PONGS:
                     confirmed = True
-                    log(f"✅ P2P 就绪！")
+                    log("handle_incoming", f"✅ P2P 就绪！")
                 return
         except (ValueError, UnicodeDecodeError):
             pass
         if not confirmed:
-            log(f"recv {len(data)}B（tunnel not ready，丢弃）")
+            log("handle_incoming", f"recv {len(data)}B（tunnel not ready，丢弃）")
             return
         hex_str = ' '.join(f'{b:02x}' for b in data[:32])
-        log(f"recv {len(data)}B hex: {hex_str} from {addr}")
+        datarecv += 1
+        log("handle_incoming", f"recv data: len={len(data)}, hex={hex_str} from {addr}")
         app.send(data)
 
     # ========== 初始化 app ==========
     app = _auto_app(nettype, args.socketpath)
-    log(f"app 启动（{app}）")
+    log("main", f"app 启动（{app}）")
 
     # ========== app_listener: 监听 app，收到数据发出 ==========
     def app_listener():
-        log(f"app_listener 启动")
+        log("app_listener", "启动")
         while not stop_event.is_set():
             r, _, _ = select.select([app], [], [], 0.5)
             if not r:
@@ -301,54 +333,79 @@ def main():
             if not data:
                 continue
             handle_outgoing(data, args, sock, get_active())
-        log(f"app_listener 结束")
+        log("app_listener", "结束")
 
     # ========== udp_listener: 监听 UDP，收包处理 ==========
     def udp_listener():
-        log(f"udp_listener 启动")
+        log("udp_listener", "启动")
         while not stop_event.is_set():
             r, _, _ = select.select([sock], [], [], 0.5)
             if not r:
                 elapsed = time.time() - last_pong_time
                 if confirmed and elapsed > PING_TIMEOUT:
-                    log(f"⚠️  {elapsed:.1f}s 无 pong，断开")
+                    log("udp_listener", f"⚠️  {elapsed:.1f}s 无 pong，断开")
                     break
                 if not confirmed and elapsed > PING_TIMEOUT * 2:
-                    log(f"⚠️  {PING_TIMEOUT*2:.1f}s 未就绪，放弃")
+                    log("udp_listener", f"⚠️  {PING_TIMEOUT*2:.1f}s 未就绪，放弃")
                     break
                 continue
 
-            data, addr = sock.recvfrom(4096)
+            try:
+                data, addr = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
             handle_incoming(data, addr, args, app)
 
         stop_event.set()
-        log(f"udp_listener 结束")
+        log("udp_listener", "结束")
 
     t_app = threading.Thread(target=app_listener, daemon=True, name='app_listener')
     t_udp = threading.Thread(target=udp_listener, daemon=True, name='udp_listener')
     t_app.start()
     t_udp.start()
 
+    # ========== 信号处理：优雅退出 ==========
+    def _signal_handler(signum, frame):
+        log("main", f"收到信号 {signum}，准备退出...")
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
     # ========== main thread: 心跳发送 ==========
-    log(f"主循环开始，等待 P2P 就绪...")
+    log("main", f"主循环开始，等待 P2P 就绪...")
     while not stop_event.is_set():
         now = time.time()
         msg = json.dumps({'type': 'ping', 'seq': seq, 'ts': now})
+        log("main", f"send beat: {msg}")
         for c in get_candidates():
-            log(f"send ping seq={seq} -> {c['ip']}:{c['port']}")
             try:
                 sock.sendto(msg.encode(), (c['ip'], c['port']))
             except Exception as e:
-                log(f"发送失败 {c['ip']}:{c['port']}: {e}")
+                log("main", f"发送失败 {c['ip']}:{c['port']}: {e}")
         sent_pings[seq] = now
+        sent_pings_order.append(seq)
+        pingsent += 1
+
+        # 限制 sent_pings 大小，超时的直接删（计数器不动）
+        while len(sent_pings_order) > 100:
+            old_seq = sent_pings_order.pop(0)
+            sent_pings.pop(old_seq, None)
+
         seq += 1
         time.sleep(PING_INTERVAL)
 
     # ========== 清理 ==========
+    log("main", "开始清理...")
     stop_event.set()
+
+    # 等待子线程结束（非 daemon 方式）
+    for t in [t_app, t_udp]:
+        t.join(timeout=2.0)
+
     app.close()
     sock.close()
-    log(f"app 结束，进程退出")
+    log("main", f"app 结束，进程退出")
 
 
 if __name__ == '__main__':

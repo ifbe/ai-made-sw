@@ -60,6 +60,9 @@ p2p_requests = {}
 # P2P TCP 请求: username -> {target, timestamp}
 p2p_tcp_requests = {}
 
+# P2P 请求超时（秒），超时后自动清理
+P2P_REQUEST_TIMEOUT = 30  # 30 秒
+
 # 线程安全的 UDP 地址记录: username -> (ip, port, timestamp)
 udp_addrs = {}
 
@@ -444,8 +447,9 @@ def handle_p2pudp(ws, msg):
 
     target_info = online_users[target]
 
-    # 记录 P2P 请求（UDP 线程靠这个知道谁在等谁的 hello）
+    # 记录 P2P 请求（双向都记，这样任意一方发 hello 时都能查到对方的待处理请求）
     p2p_requests[username] = {'target': target, 'timestamp': time.time()}
+    p2p_requests[target] = {'target': username, 'timestamp': time.time()}
 
     # 同时告诉两边往服务器 UDP 端口发 hello
     ws_send(ws, json.dumps({
@@ -569,6 +573,11 @@ def udp_server_thread(port):
             # 检查是否有待处理的 P2P 请求
             pending = p2p_requests.get(username)
             if not pending:
+                continue
+
+            # 超时清理
+            if time.time() - pending.get('timestamp', 0) > P2P_REQUEST_TIMEOUT:
+                del p2p_requests[username]
                 continue
 
             target = pending.get('target', '')

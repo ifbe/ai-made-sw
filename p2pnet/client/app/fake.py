@@ -8,13 +8,15 @@ recv() 非阻塞，没包抛 BlockingIOError
 """
 
 import os
-import sys
 import time
 import errno
-import select
 import struct
+import random
 import threading
 
+
+def _log_prefix(func_name):
+    return f"[{ts()}][fake.py {func_name}]"
 
 def ts():
     return time.strftime("%H:%M:%S")
@@ -26,14 +28,15 @@ class FakeTun:
         self._rfd, self._wfd = os.pipe()
         self._closed = False
         self._lock = threading.Lock()
-        print(f"[{ts()}][fake]  启动 (pipe r={self._rfd} w={self._wfd})")
+        print(f"[{ts()}][fake.py __init__]  启动 (pipe r={self._rfd} w={self._wfd})")
 
         # 后台线程：每 3 秒发一个 32bit 时间戳到 pipe
         def _sender():
             while not self._closed:
                 ts_bytes = struct.pack('>I', int(time.time()))  # big-endian 32bit timestamp
+                pad_bytes = os.urandom(random.randint(0, 12))  # 随机 0~12 字节填充
                 try:
-                    os.write(self._wfd, ts_bytes)
+                    os.write(self._wfd, ts_bytes + pad_bytes)
                 except (OSError, IOError):
                     break
                 time.sleep(3)
@@ -46,6 +49,8 @@ class FakeTun:
 
     def send(self, data):
         """发送数据包，永远成功（直接丢弃，不写 pipe）"""
+        hex_str = ' '.join(f'{b:02x}' for b in data[:32])
+        print(f"[{ts()}][fake.py send]  len={len(data)} hex={hex_str}")
         return len(data)
 
     def recv(self, size=4096):
@@ -59,7 +64,7 @@ class FakeTun:
             raise
         if d:
             hex_str = ' '.join(f'{b:02x}' for b in d[:32])
-            print(f"[{ts()}][fake]  recv {len(d)}B hex: {hex_str}")
+            print(f"[{ts()}][fake.py recv]  len={len(d)} hex={hex_str}")
         return d
 
     def close(self):
@@ -72,4 +77,4 @@ class FakeTun:
             os.close(self._wfd)
         except OSError:
             pass
-        print(f"[{ts()}][fake]  销毁")
+        print(f"[{ts()}][fake.py close]  销毁")
