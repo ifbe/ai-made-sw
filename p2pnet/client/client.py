@@ -422,11 +422,13 @@ def start_udp_hello(server_ip, server_udp_port, username, local_port):
     while udp_hello_running:
         try:
             # 启动时发 burst 建立 NAT 映射（15个，30ms间隔，0.45s 发完）
+            # burst 期间不响应 stop，必须发满 15 个
             for _ in range(15):
-                if _hello_stop_event.is_set():
-                    break
                 _send_hello()
                 time.sleep(0.03)
+            # burst 发完了，再检查是否要退出
+            if not udp_hello_running:
+                break
             # 之后每秒发 1 个维持映射
             while udp_hello_running:
                 # 每 1 秒醒一次，配合 stop event 快速退出
@@ -479,19 +481,21 @@ def stop_udp_hello():
     global udp_hello_running, udp_hello_sock, udp_hello_thread
     udp_hello_running = False
     _hello_stop_event.set()  # 通知线程退出
+    # 不关闭 socket，让 burst 发完再自然退出
+    if udp_hello_thread:
+        # 最多等 2 秒让线程自然退出（burst 最多 0.45s）
+        try:
+            udp_hello_thread.join(timeout=2)
+        except Exception:
+            pass
+        udp_hello_thread = None
+    # 清理 socket
     if udp_hello_sock:
         try:
             udp_hello_sock.close()
         except:
             pass
         udp_hello_sock = None
-    if udp_hello_thread:
-        # 最多等 0.5 秒让线程自然退出（failsafe）
-        try:
-            udp_hello_thread.join(timeout=0.5)
-        except Exception:
-            pass
-        udp_hello_thread = None
 
 
 def start_udp_hello_thread(server_ip, server_udp_port, username):

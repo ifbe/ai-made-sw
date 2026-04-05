@@ -35,8 +35,11 @@ class FakeTun:
             while not self._closed:
                 ts_bytes = struct.pack('>I', int(time.time()))  # big-endian 32bit timestamp
                 pad_bytes = os.urandom(random.randint(0, 12))  # 随机 0~12 字节填充
+                packet = ts_bytes + pad_bytes
+                hex_str = ' '.join(f'{b:02x}' for b in packet[:32])
+                print(f"[{ts()}][fake.py send]  len={len(packet)} hex={hex_str}")
                 try:
-                    os.write(self._wfd, ts_bytes + pad_bytes)
+                    os.write(self._wfd, packet)
                 except (OSError, IOError):
                     break
                 time.sleep(3)
@@ -47,14 +50,14 @@ class FakeTun:
         """返回只读端的 fd，select 需要"""
         return self._rfd
 
-    def send(self, data):
-        """发送数据包，永远成功（直接丢弃，不写 pipe）"""
+    def on_write(self, data):
+        """收到来自 udp.py 的数据（网络发来的）"""
         hex_str = ' '.join(f'{b:02x}' for b in data[:32])
-        print(f"[{ts()}][fake.py send]  len={len(data)} hex={hex_str}")
+        print(f"[{ts()}][fake.py recv]  len={len(data)} hex={hex_str}")
         return len(data)
 
-    def recv(self, size=4096):
-        """接收数据包，非阻塞，没包抛 BlockingIOError"""
+    def on_read(self, size=4096):
+        """返回 fake 主动发的数据，供 udp.py 拿走"""
         import errno
         try:
             d = os.read(self._rfd, size)
@@ -62,10 +65,11 @@ class FakeTun:
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                 raise BlockingIOError(errno.EAGAIN, "no data")
             raise
-        if d:
-            hex_str = ' '.join(f'{b:02x}' for b in d[:32])
-            print(f"[{ts()}][fake.py recv]  len={len(d)} hex={hex_str}")
         return d
+
+    # 兼容旧调用
+    send = on_write
+    recv = on_read
 
     def close(self):
         with self._lock:
