@@ -448,6 +448,11 @@ def handle_p2pudp(ws, msg):
     target_info = online_users[target]
 
     # 记录 P2P 请求（双向都记，这样任意一方发 hello 时都能查到对方的待处理请求）
+    # 清空双方已记录的 UDP 地址，确保只用本轮 burst 的地址
+    if username in udp_addrs:
+        del udp_addrs[username]
+    if target in udp_addrs:
+        del udp_addrs[target]
     p2p_requests[username] = {'target': target, 'timestamp': time.time()}
     p2p_requests[target] = {'target': username, 'timestamp': time.time()}
 
@@ -556,6 +561,13 @@ def udp_server_thread(port):
             signature = msg.get('signature', '')
             if username not in online_users:
                 continue
+
+            # 无 target 直接丢弃，不用 verify
+            pending = p2p_requests.get(username)
+            if not pending:
+                # 没有待处理的 P2P 请求，丢弃（可能是上一轮的残留包）
+                continue
+
             # session_key 签名验证：HMAC(session_key, 'ping') == signature
             if not verify_session_signature(username, signature):
                 print(f"[UDP] {username} 签名验证失败，忽略")
@@ -570,11 +582,6 @@ def udp_server_thread(port):
             online_users[username]['udp_port'] = addr[1]
             print(f"[UDP] {username} UDP 来自: {addr[0]}:{addr[1]} (签名验证通过)")
 
-            # 检查是否有待处理的 P2P 请求
-            pending = p2p_requests.get(username)
-            if not pending:
-                continue
-
             # 超时清理
             if time.time() - pending.get('timestamp', 0) > P2P_REQUEST_TIMEOUT:
                 del p2p_requests[username]
@@ -585,17 +592,22 @@ def udp_server_thread(port):
                 # 对方还没发 UDP 包
                 continue
 
-            # 双方 UDP 地址都已就绪
-            my_addr = udp_addrs[username]
-            peer_addr = udp_addrs[target]
+            # 双方 UDP 地址都已就绪，立即删除双方的 target，防止后续 burst 再次触发
+            del p2p_requests[username]
+            if target in p2p_requests:
+                del p2p_requests[target]
 
             # 发给发起方
+            my_addr = udp_addrs[username]
+            peer_addr = udp_addrs[target]
             ws_a = online_users[username]['ws']
             ws_send(ws_a, json.dumps({
                 'type': 'thisisyourpeer_udp',
                 'name': target,
                 'ip': peer_addr['ip'],
                 'port': peer_addr['port'],
+                'my_ip': my_addr['ip'],
+                'my_port': my_addr['port'],
             }))
 
             # 发给目标方
@@ -605,13 +617,9 @@ def udp_server_thread(port):
                 'name': username,
                 'ip': my_addr['ip'],
                 'port': my_addr['port'],
+                'my_ip': peer_addr['ip'],
+                'my_port': peer_addr['port'],
             }))
-
-            # 清除请求记录
-            if username in p2p_requests:
-                del p2p_requests[username]
-            if target in p2p_requests:
-                del p2p_requests[target]
 
             print(f"[P2P] {username} <-> {target} 双向请求就绪，已通知双方打洞")
 
