@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,9 +22,12 @@ fun UdpTestPage(page: Page.UdpTest, viewModel: LoginViewModel) {
     val messages by viewModel.udpSockMessages.collectAsState()
     val listState = rememberLazyListState()
 
-    // 自动滚动到底部
+    // 自动滚动到底部（仅当用户已在底部时才滚动，否则保持当前位置）
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
+        if (messages.isEmpty()) return@LaunchedEffect
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+        val atBottom = lastVisible != null && lastVisible.index >= messages.size - 1
+        if (atBottom) {
             listState.animateScrollToItem(messages.size - 1)
         }
     }
@@ -31,79 +35,97 @@ fun UdpTestPage(page: Page.UdpTest, viewModel: LoginViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text("UDP - ${page.targetUsername}", style = MaterialTheme.typography.titleMedium)
-        HorizontalDivider()
-
-        // 头部：3 行地址信息
-        Text(
-            text = "mylocaladdr  ${page.myLocalIp}:${page.myLocalPort}",
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace
-        )
-        Text(
-            text = "mypublicaddr ${page.myIp}:${page.myPublicPort}",
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace
-        )
-        Text(
-            text = "peerpublicaddr ${page.peerIp}:${page.peerPort}",
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace
-        )
-
-        HorizontalDivider()
-
-        Row(
+        // ── 地址块 ──
+        Card(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            shape = RoundedCornerShape(12.dp)
         ) {
-            Text(
-                "消息历史",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            val clipboardManager = LocalClipboardManager.current
-            var snackbarVisible by remember { mutableStateOf(false) }
-            TextButton(
-                onClick = {
-                    val text = messages.joinToString("\n")
-                    clipboardManager.setText(AnnotatedString(text))
-                    snackbarVisible = true
-                },
-                modifier = Modifier.height(28.dp)
-            ) {
-                Text("📋复制", fontSize = 10.sp)
-            }
-            if (snackbarVisible) {
-                LaunchedEffect(Unit) {
-                    kotlinx.coroutines.delay(1500)
-                    snackbarVisible = false
-                }
+            Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = "已复制",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 4.dp)
+                    text = "UDP - ${page.targetUsername}",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                Text(
+                    text = "mylocaladdr  ${page.myLocalIp}:${page.myLocalPort}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = "mypublicaddr ${page.myIp}:${page.myPublicPort}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = "peerpublicaddr ${page.peerIp}:${page.peerPort}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
                 )
             }
         }
 
-        SelectionContainer {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxWidth().weight(1f)
-            ) {
-                itemsIndexed(messages, key = { index, _ -> index }) { _, msg ->
+        // ── 日志块 ──
+        Card(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        text = msg,
-                        fontSize = 8.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "消息历史",
+                        style = MaterialTheme.typography.titleSmall
                     )
+                    val clipboardManager = LocalClipboardManager.current
+                    var snackbarVisible by remember { mutableStateOf(false) }
+                    TextButton(
+                        onClick = {
+                            val text = messages.joinToString("\n")
+                            clipboardManager.setText(AnnotatedString(text))
+                            snackbarVisible = true
+                        },
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("📋复制", fontSize = 10.sp)
+                    }
+                    if (snackbarVisible) {
+                        LaunchedEffect(Unit) {
+                            kotlinx.coroutines.delay(1500)
+                            snackbarVisible = false
+                        }
+                        Text(
+                            text = "已复制",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+
+                SelectionContainer {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        itemsIndexed(messages, key = { index, _ -> index }) { _, msg ->
+                            Text(
+                                text = msg,
+                                fontSize = 7.sp,
+                                lineHeight = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
         }

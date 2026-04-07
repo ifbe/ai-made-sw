@@ -227,26 +227,29 @@ class LoginViewModel(
     private val _udpSockMessages = MutableStateFlow<List<String>>(emptyList())
     val udpSockMessages = _udpSockMessages
 
+    // RTT 计算：跟踪每个 ping 的本地发送时刻，收到 pong 时查表算 RTT
+    private val sentPings = mutableMapOf<Int, Long>()
+
     fun startUdpPeerSocket(page: Page.UdpTest, inheritedSock: DatagramSocket? = null) {
         try { udpSock?.close() } catch (_: Exception) {}
         udpSock = null
         udpSockRunning = false
 
         if (inheritedSock == null) {
-            _udpSockMessages.value = _udpSockMessages.value + "android: 无可用 socket，无法建立 P2P 连接\n"
+            _udpSockMessages.value = _udpSockMessages.value + "android: 无可用 socket，无法建立 P2P 连接"
             return
         }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 udpSock = inheritedSock
-                _udpSockMessages.value = _udpSockMessages.value + "android: 继承 hello socket 本地端口=${inheritedSock.localPort} 对方=${page.peerIp}:${page.peerPort}\n"
+                _udpSockMessages.value = _udpSockMessages.value + "android: 继承 hello socket 本地端口=${inheritedSock.localPort} 对方=${page.peerIp}:${page.peerPort}"
 
                 // 延迟到后台线程再更新 UI tab 信息
                 val localIp = udpSock!!.localAddress.hostAddress ?: ""
                 val localPort = udpSock!!.localPort
-                _udpSockMessages.value = _udpSockMessages.value + "android: P2P socket 启动 本机=$localIp:$localPort\n"
-                _udpSockMessages.value = _udpSockMessages.value + "android: P2P socket 启动 对方=${page.peerIp}:${page.peerPort}\n"
+                _udpSockMessages.value = _udpSockMessages.value + "android: P2P socket 启动 本机=$localIp:$localPort"
+                _udpSockMessages.value = _udpSockMessages.value + "android: P2P socket 启动 对方=${page.peerIp}:${page.peerPort}"
                 // 更新 tab 上的地址信息（在 coroutine 内做）
                 updateUdpPageLocalAddr(localIp, localPort)
 
@@ -263,10 +266,14 @@ class LoginViewModel(
                         put("seq", seq)
                         put("ts", System.currentTimeMillis())
                     }
+                    sentPings[seq] = System.currentTimeMillis()
+                    if (sentPings.size > 100) {
+                        sentPings.keys.minOrNull()?.let { sentPings.remove(it) }
+                    }
                     val bytes = ping.toString().toByteArray()
                     val pkt = DatagramPacket(bytes, bytes.size, addr, page.peerPort)
                     sock.send(pkt)
-                    _udpSockMessages.value = _udpSockMessages.value + "send: → ${addr.hostAddress}:${page.peerPort} $ping\n"
+                    _udpSockMessages.value = _udpSockMessages.value + "send: ${addr.hostAddress}:${page.peerPort} $ping"
 
                     // ---- 接收：等待对方回包或 ping ----
                     val buf = ByteArray(2048)
@@ -281,8 +288,9 @@ class LoginViewModel(
                             val msg = JSONObject(String(data, Charsets.UTF_8))
                             when (msg.optString("type")) {
                                 "pong" -> {
-                                    val rtt = System.currentTimeMillis() - msg.optLong("ts", 0)
-                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ← ${recvPkt.address.hostAddress}:${recvPkt.port} $msg RTT=${rtt}ms\n"
+                                    val pongSeq = msg.optInt("seq")
+                                    val rtt = System.currentTimeMillis() - (sentPings.remove(pongSeq) ?: 0L)
+                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} $msg RTT=${rtt}ms"
                                 }
                                 "ping" -> {
                                     // 回复 pong（和 udp.py 一致）
@@ -294,16 +302,16 @@ class LoginViewModel(
                                     val pongBytes = pong.toString().toByteArray()
                                     val pongPkt = DatagramPacket(pongBytes, pongBytes.size, recvPkt.address, recvPkt.port)
                                     sock.send(pongPkt)
-                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ← ${recvPkt.address.hostAddress}:${recvPkt.port} $msg\n"
-                                    _udpSockMessages.value = _udpSockMessages.value + "send: → ${recvPkt.address.hostAddress}:${recvPkt.port} $pong\n"
+                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} $msg"
+                                    _udpSockMessages.value = _udpSockMessages.value + "send: ${recvPkt.address.hostAddress}:${recvPkt.port} $pong"
                                 }
                                 else -> {
-                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ← ${recvPkt.address.hostAddress}:${recvPkt.port} $msg\n"
+                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} $msg"
                                 }
                             }
                         } catch (_: Exception) {
                             // 非 JSON 包，直接记录原始数据
-                            _udpSockMessages.value = _udpSockMessages.value + "recv: ← ${recvPkt.address.hostAddress}:${recvPkt.port} [${data.size} bytes]\n"
+                            _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} [${data.size} bytes]"
                         }
                     } catch (_: Exception) {
                         // 每秒超时一次（正常）
@@ -314,11 +322,12 @@ class LoginViewModel(
                 }
             } catch (e: Exception) {
                 val trace = e.stackTrace.take(3).joinToString("\n") { "  ${it}" }
-                _udpSockMessages.value = _udpSockMessages.value + "android: error: ${e.javaClass.simpleName}: ${e.message}\n${trace}\n"
+                _udpSockMessages.value = _udpSockMessages.value + "android: error: ${e.javaClass.simpleName}: ${e.message}\n${trace}"
             } finally {
                 try { udpSock?.close() } catch (_: Exception) {}
                 udpSock = null
                 udpSockRunning = false
+                sentPings.clear()
             }
         }
     }
@@ -327,6 +336,7 @@ class LoginViewModel(
         udpSockRunning = false
         try { udpSock?.close() } catch (_: Exception) {}
         udpSock = null
+        sentPings.clear()
     }
 
     /** 在主线程更新 UdpTest page 的本地地址 */

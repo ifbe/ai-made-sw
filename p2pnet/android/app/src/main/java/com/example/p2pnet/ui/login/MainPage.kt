@@ -32,8 +32,8 @@ fun MainPage(viewModel: LoginViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         // ── Block 1: connection ──
         Card(
@@ -320,7 +320,8 @@ fun MainPage(viewModel: LoginViewModel) {
                                         Direction.UDP_SEND -> "→ "
                                         Direction.UDP_RECV -> "← "
                                     },
-                                    fontSize = 8.sp,
+                                    fontSize = 7.sp,
+                                    lineHeight = 8.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = when (item.direction) {
                                         Direction.CLIENT -> MaterialTheme.colorScheme.primary
@@ -329,16 +330,16 @@ fun MainPage(viewModel: LoginViewModel) {
                                         Direction.UDP_SEND -> MaterialTheme.colorScheme.primary
                                         Direction.UDP_RECV -> MaterialTheme.colorScheme.tertiary
                                     },
-                                    modifier = Modifier.width(64.dp)
+                                    modifier = Modifier.wrapContentWidth()
                                 )
                                 Text(
                                     text = item.content,
-                                    fontSize = 8.sp,
+                                    fontSize = 7.sp,
+                                    lineHeight = 8.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Spacer(modifier = Modifier.height(1.dp))
                         }
                     }
                 }
