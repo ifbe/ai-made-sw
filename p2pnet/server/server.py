@@ -304,6 +304,8 @@ def handle_message(ws, raw):
         handle_p2pudp(ws, msg)
     elif msg_type == 'p2ptcp':
         handle_p2ptcp(ws, msg)
+    elif msg_type == 'wghelp':
+        handle_wghelp(ws, msg)
     else:
         send_error(ws, f"unknown type: {msg_type}")
 
@@ -466,6 +468,12 @@ def handle_p2pudp(ws, msg):
         'udpport': UDP_PORT,
     }))
     print(f"[P2P] {username} <-> {target}，已通知双方发 UDP hello 到服务器")
+
+
+def handle_wghelp(ws, msg):
+    """处理 wghelp 请求：同 p2pudp，通知双方发 UDP hello 到服务器"""
+    # wghelp 和 p2pudp 使用相同的 UDP hole punching 流程
+    handle_p2pudp(ws, msg)
 
 
 def handle_p2ptcp(ws, msg):

@@ -83,29 +83,41 @@ fun UdpTestPage(page: Page.UdpTest, viewModel: LoginViewModel) {
                         "消息历史",
                         style = MaterialTheme.typography.titleSmall
                     )
-                    val clipboardManager = LocalClipboardManager.current
-                    var snackbarVisible by remember { mutableStateOf(false) }
-                    TextButton(
-                        onClick = {
-                            val text = messages.joinToString("\n")
-                            clipboardManager.setText(AnnotatedString(text))
-                            snackbarVisible = true
-                        },
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text("📋复制", fontSize = 10.sp)
-                    }
-                    if (snackbarVisible) {
-                        LaunchedEffect(Unit) {
-                            kotlinx.coroutines.delay(1500)
-                            snackbarVisible = false
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (messages.isNotEmpty()) {
+                            TextButton(
+                                onClick = { viewModel.clearUdpSockMessages() },
+                                modifier = Modifier.height(28.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                            ) {
+                                Text("清空", fontSize = 10.sp)
+                            }
                         }
-                        Text(
-                            text = "已复制",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(start = 4.dp)
-                        )
+                        val clipboardManager = LocalClipboardManager.current
+                        var snackbarVisible by remember { mutableStateOf(false) }
+                        TextButton(
+                            onClick = {
+                                val text = messages.joinToString("\n")
+                                clipboardManager.setText(AnnotatedString(text))
+                                snackbarVisible = true
+                            },
+                            modifier = Modifier.height(28.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                        ) {
+                            Text("📋复制", fontSize = 10.sp)
+                        }
+                        if (snackbarVisible) {
+                            LaunchedEffect(Unit) {
+                                kotlinx.coroutines.delay(1500)
+                                snackbarVisible = false
+                            }
+                            Text(
+                                text = "已复制",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
                     }
                 }
 

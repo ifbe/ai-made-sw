@@ -26,7 +26,7 @@ class WsClient(
         fun onError(message: String)
         fun onUdpSend(text: String)
         fun onUdpRecv(text: String)
-        fun onHelloDone(info: PeerInfo?, sock: DatagramSocket?, peerIp: String, peerPort: Int)
+        fun onHelloDone(info: PeerInfo?, sock: DatagramSocket?, peerIp: String, peerPort: Int, mode: String)
     }
 
     data class PeerInfo(
@@ -59,6 +59,8 @@ class WsClient(
 
     // UDP hello 共享状态（主线程创建socket，hello线程写，主线程读）
     private var _pendingPeerInfo: PeerInfo? = null
+    // "udp" or "wg"：标识当前 hello 线程是为 UDP tab 还是 WireGuard tab
+    private var _helloMode: String = "udp"
     private var _helloPeerIp: String = ""
     private var _helloPeerPort: Int = 0
     // 中断标志：服务器发 thisisyourpeer 时置 true，hello 线程检查到这个标志就立即停止发包并退出
@@ -147,7 +149,9 @@ class WsClient(
     }
 
     private fun startUdpHello() {
-        listener?.onUdpSend("startUdpHello ENTRY serverIp=$serverIp serverUdpPort=$serverUdpPort")
+        // 捕获当前 mode（sendP2pUdp 或 sendWghelp 设置的），hello 线程结束时用它决定路由
+        val mode = _helloMode
+        listener?.onUdpSend("startUdpHello ENTRY serverIp=$serverIp serverUdpPort=$serverUdpPort mode=$mode")
         if (serverIp.isEmpty() && serverHost.isNotEmpty()) {
             try {
                 serverIp = InetAddress.getByName(serverHost).hostAddress ?: ""
@@ -185,11 +189,11 @@ class WsClient(
                     Handler(Looper.getMainLooper()).post {
                         if (info != null) {
                             listener?.onUdpSend("hello 线程结束，收到 peer info，拉起新 tab")
-                            listener?.onHelloDone(info, sock, _helloPeerIp, _helloPeerPort)
+                            listener?.onHelloDone(info, sock, _helloPeerIp, _helloPeerPort, mode)
                         } else {
                             listener?.onUdpSend("hello 线程结束，未收到 peer info，关闭 socket")
                             try { sock.close() } catch (_: Exception) {}
-                            listener?.onHelloDone(null, null, "", 0)
+                            listener?.onHelloDone(null, null, "", 0, mode)
                         }
                     }
                 }
@@ -268,6 +272,7 @@ class WsClient(
     }
 
     fun sendP2pUdp(target: String) {
+        _helloMode = "udp"
         sendJson(JSONObject().put("type", "p2pudp").put("target", target))
     }
 
@@ -275,8 +280,9 @@ class WsClient(
         sendJson(JSONObject().put("type", "p2ptcp").put("target", target))
     }
 
-    fun sendWghelp() {
-        sendJson(JSONObject().put("type", "wghelp"))
+    fun sendWghelp(target: String) {
+        _helloMode = "wg"
+        sendJson(JSONObject().put("type", "wghelp").put("target", target))
     }
 
     fun sendList() {

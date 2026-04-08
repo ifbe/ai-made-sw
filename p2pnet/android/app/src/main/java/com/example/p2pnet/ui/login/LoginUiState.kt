@@ -16,7 +16,7 @@ data class LoginUiState(
     val loggedInUsername: String = "",
     val error: String? = null,
     val messages: List<MessageItem> = emptyList(),
-    val tabs: List<TabItem> = listOf(TabItem.main()),
+    val tabs: List<TabItem> = listOf(TabItem.main(), TabItem.wireGuard()),
     val currentTabIndex: Int = 0,
     val currentPage: Page = Page.Main
 )

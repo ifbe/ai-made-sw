@@ -16,6 +16,13 @@ sealed class Page {
     ) : Page()
     data class VideoCall(val targetUsername: String) : Page()
     data class Chat(val targetUsername: String) : Page()
+    data class WireGuard(
+        val targetUsername: String = "",
+        val myIp: String = "",
+        val myPort: Int = 0,
+        val peerIp: String = "",
+        val peerPort: Int = 0
+    ) : Page()
 }
 
 /** Tab 项 */
@@ -25,6 +32,7 @@ data class TabItem(
 ) {
     companion object {
         fun main() = TabItem(Page.Main, "主页")
+        fun wireGuard() = TabItem(Page.WireGuard(), "WireGuard")
     }
 }
 

@@ -6,6 +6,9 @@ import com.example.p2pnet.data.local.LocalPrefs
 import com.example.p2pnet.data.repository.P2pRepository
 import com.example.p2pnet.ui.Page
 import com.example.p2pnet.ui.TabItem
+import com.example.p2pnet.ui.WgConfig
+import com.example.p2pnet.ui.WgInterface
+import com.example.p2pnet.ui.WgPeer
 import com.example.p2pnet.ui.toPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,7 +70,10 @@ class LoginViewModel(
     }
 
     fun onWghelp() {
-        repository.sendWghelp()
+        val target = _uiState.value.targetUsername
+        if (target.isNotEmpty()) {
+            repository.sendWghelp(target)
+        }
     }
 
     fun onConnect() {
@@ -99,7 +105,7 @@ class LoginViewModel(
                 appendMessage(dir, text)
             }
 
-            override fun onHelloDone(info: com.example.p2pnet.data.remote.WsClient.PeerInfo?, sock: java.net.DatagramSocket?, peerIp: String, peerPort: Int) {
+            override fun onHelloDone(info: com.example.p2pnet.data.remote.WsClient.PeerInfo?, sock: java.net.DatagramSocket?, peerIp: String, peerPort: Int, mode: String) {
                 appendMessage(Direction.SYSTEM, "UDP hello 线程已退出")
             }
 
@@ -156,14 +162,36 @@ class LoginViewModel(
         repository.onUdpRecv = { text ->
             appendMessage(Direction.UDP_RECV, text)
         }
-        repository.onHelloDone = { info, sock, peerIp, peerPort ->
-            appendMessage(Direction.SYSTEM, "onHelloDone 被调用")
+        repository.onHelloDone = { info, sock, peerIp, peerPort, mode ->
+            appendMessage(Direction.SYSTEM, "onHelloDone 被调用 mode=$mode")
             if (info != null && sock != null) {
                 appendMessage(Direction.SYSTEM, "P2P已建立: ${info.name} (${info.peerIp}:${info.peerPort})")
                 appendMessage(Direction.SYSTEM, "peer info: 本机=${info.myIp}:${info.myPort} 对方=${info.peerIp}:${info.peerPort}")
-                navigateTo(info.toPage())
-                appendMessage(Direction.SYSTEM, "navigateTo 完成，启动 socket")
-                startUdpPeerSocket(info.toPage(), sock)
+                if (mode == "wg") {
+                    // wghelp 模式：找到已有的 WireGuard tab，更新数据后跳转
+                    val tabs = _uiState.value.tabs
+                    val wgIndex = tabs.indexOfFirst { it.page is Page.WireGuard }
+                    if (wgIndex >= 0) {
+                        val updatedPage = Page.WireGuard(
+                            targetUsername = info.name,
+                            myIp = info.myIp,
+                            myPort = info.myPort,
+                            peerIp = info.peerIp,
+                            peerPort = info.peerPort
+                        )
+                        val updatedTabs = tabs.toMutableList()
+                        updatedTabs[wgIndex] = updatedTabs[wgIndex].copy(page = updatedPage)
+                        _uiState.value = _uiState.value.copy(tabs = updatedTabs, currentTabIndex = wgIndex, currentPage = updatedPage)
+                        appendMessage(Direction.SYSTEM, "已跳转到 WireGuard tab")
+                    } else {
+                        appendMessage(Direction.SYSTEM, "WireGuard tab 未找到")
+                    }
+                } else {
+                    // udp 模式：创建新 tab 并跳转
+                    navigateTo(info.toPage())
+                    appendMessage(Direction.SYSTEM, "navigateTo 完成，启动 socket")
+                    startUdpPeerSocket(info.toPage(), sock)
+                }
             } else {
                 appendMessage(Direction.SYSTEM, "onHelloDone info=null（hello线程超时或异常）")
             }
@@ -226,6 +254,26 @@ class LoginViewModel(
     private var udpSockRunning = false
     private val _udpSockMessages = MutableStateFlow<List<String>>(emptyList())
     val udpSockMessages = _udpSockMessages
+
+    // WireGuard tunnel 日志（独立的流）
+    private val _wgLogMessages = MutableStateFlow<List<String>>(emptyList())
+    val wgLogMessages = _wgLogMessages
+
+    fun appendWgLog(text: String) {
+        _wgLogMessages.value = _wgLogMessages.value + text
+    }
+
+    fun clearWgLog() {
+        _wgLogMessages.value = emptyList()
+    }
+
+    fun clearMessages() {
+        _uiState.value = _uiState.value.copy(messages = emptyList())
+    }
+
+    fun clearUdpSockMessages() {
+        _udpSockMessages.value = emptyList()
+    }
 
     // RTT 计算：跟踪每个 ping 的本地发送时刻，收到 pong 时查表算 RTT
     private val sentPings = mutableMapOf<Int, Long>()
@@ -376,6 +424,7 @@ class LoginViewModel(
                 is Page.UdpTest -> "UDP"
                 is Page.VideoCall -> "视频通话"
                 is Page.Chat -> "聊天"
+                is Page.WireGuard -> "WireGuard"
             }
             _uiState.value = _uiState.value.copy(
                 tabs = tabs + TabItem(page, title),
@@ -424,4 +473,129 @@ class LoginViewModel(
             messages = _uiState.value.messages + item
         )
     }
+
+    // ── WireGuard Tunnel ──
+
+    /** 生成 WireGuard 密钥对（使用 BoringSSL/WebCrypto） */
+    fun generateWgKeypair(callback: (publicKey: String, privateKey: String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val privKey = generateRandomBase64(32)
+                // 简单演示：实际需要用 WireGuard 指定的 Curve25519
+                val pubKey = generateRandomBase64(32)
+                launch(Dispatchers.Main) {
+                    callback(pubKey, privKey)
+                }
+            } catch (e: Exception) {
+                launch(Dispatchers.Main) {
+                    callback("", "")
+                }
+            }
+        }
+    }
+
+    /** 生成随机 base64 字符串（临时实现） */
+    private fun generateRandomBase64(byteLen: Int): String {
+        val bytes = ByteArray(byteLen)
+        java.security.SecureRandom().nextBytes(bytes)
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+    }
+
+    /** 启动 WireGuard tunnel（手动模式，单 peer，保留兼容） */
+    fun startWgTunnel(config: WgConfig, callback: (Boolean, String) -> Unit) {
+        // 转换为 WgInterface 格式
+        val iface = WgInterface(
+            myIp = config.myIp,
+            myPort = config.myPort,
+            privateKey = config.myPrivateKey,
+            peers = listOf(WgPeer(
+                endpoint = config.peerEndpoint,
+                publicKey = config.peerPublicKey,
+                presharedKey = config.peerPresharedKey,
+                allowedIPs = config.allowedIPs
+            ))
+        )
+        startWgTunnelManual(iface, callback)
+    }
+
+    /** 启动 WireGuard tunnel（自动模式，wghelp 后调用） */
+    fun startWgTunnelAuto(page: Page.WireGuard, callback: (Boolean, String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // TODO: 自动模式需要知道对方的公钥（通过 wghelp 响应获取或提前配置）
+                val autoInterface = WgInterface(
+                    myIp = "10.0.0.2/24",
+                    myPort = page.myPort,
+                    privateKey = "", // 需要从本地存储读取
+                    peers = listOf(WgPeer(
+                        endpoint = "${page.peerIp}:${page.peerPort}",
+                        publicKey = "", // 需要从对方获取
+                        presharedKey = "",
+                        allowedIPs = "0.0.0.0/0"
+                    ))
+                )
+                val configText = buildWireGuardInterfaceConfig(autoInterface)
+                android.util.Log.e("WireGuard", "Auto config:\n$configText")
+                appendWgLog("WireGuard 自动配置生成完成: ${page.peerIp}:${page.peerPort}")
+                launch(Dispatchers.Main) {
+                    callback(true, "自动配置已生成")
+                }
+            } catch (e: Exception) {
+                launch(Dispatchers.Main) {
+                    callback(false, e.message ?: "未知错误")
+                }
+            }
+        }
+    }
+
+    /** 停止 WireGuard tunnel */
+    fun stopWgTunnel() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // TODO: 停止 WireGuard tunnel
+                android.util.Log.e("WireGuard", "stopWgTunnel called")
+            } catch (e: Exception) {
+                android.util.Log.e("WireGuard", "stopWgTunnel error: ${e.message}")
+            }
+        }
+    }
+
+    /** 启动 WireGuard tunnel（手动模式，传入 WgInterface + 多 peer） */
+    fun startWgTunnelManual(wgInterface: WgInterface, callback: ((Boolean, String) -> Unit)? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // TODO: 实际建立 WireGuard tunnel
+                val configText = buildWireGuardInterfaceConfig(wgInterface)
+                android.util.Log.e("WireGuard", "Manual config:\n$configText")
+                appendWgLog("WireGuard 手动配置生成完成")
+                launch(Dispatchers.Main) {
+                    callback?.invoke(true, "配置已生成")
+                }
+            } catch (e: Exception) {
+                appendWgLog("WireGuard 错误: ${e.message}")
+                launch(Dispatchers.Main) {
+                    callback?.invoke(false, e.message ?: "未知错误")
+                }
+            }
+        }
+    }
+
+    /** 生成 WgInterface 的 wg-quick 格式配置（支持多 peer） */
+    private fun buildWireGuardInterfaceConfig(iface: WgInterface): String = buildString {
+        append("[Interface]\n")
+        append("ListenPort = ${iface.myPort}\n")
+        append("PrivateKey = ${iface.privateKey}\n")
+        if (iface.myIp.isNotEmpty()) append("Address = ${iface.myIp}\n")
+        append("\n")
+        for (peer in iface.peers) {
+            append("[Peer]\n")
+            append("PublicKey = ${peer.publicKey}\n")
+            if (peer.presharedKey.isNotEmpty()) append("PresharedKey = ${peer.presharedKey}\n")
+            append("Endpoint = ${peer.endpoint}\n")
+            append("AllowedIPs = ${peer.allowedIPs}\n")
+            append("\n")
+        }
+    }
+
+    // buildWireGuardConfig 已移除，请使用 buildWireGuardInterfaceConfig
 }

@@ -23,7 +23,7 @@ class P2pRepository(
     var onSend: ((String) -> Unit)? = null
     var onUdpSend: ((String) -> Unit)? = null
     var onUdpRecv: ((String) -> Unit)? = null
-    var onHelloDone: ((WsClient.PeerInfo?, java.net.DatagramSocket?, String, Int) -> Unit)? = null
+    var onHelloDone: ((WsClient.PeerInfo?, java.net.DatagramSocket?, String, Int, String) -> Unit)? = null
 
     fun useClient(client: WsClient?) {
         _client = client ?: WsClient(localPrefs)
@@ -60,8 +60,8 @@ class P2pRepository(
                     this@P2pRepository.onUdpRecv?.invoke(text)
                 }
 
-                override fun onHelloDone(info: WsClient.PeerInfo?, sock: java.net.DatagramSocket?, peerIp: String, peerPort: Int) {
-                    this@P2pRepository.onHelloDone?.invoke(info, sock, peerIp, peerPort)
+                override fun onHelloDone(info: WsClient.PeerInfo?, sock: java.net.DatagramSocket?, peerIp: String, peerPort: Int, mode: String) {
+                    this@P2pRepository.onHelloDone?.invoke(info, sock, peerIp, peerPort, mode)
                 }
 
                 override fun onLoginSuccess(username: String) {
@@ -118,7 +118,7 @@ class P2pRepository(
     }
 
     fun sendList() = ws.sendList()
-    fun sendWghelp() = ws.sendWghelp()
+    fun sendWghelp(target: String) = ws.sendWghelp(target)
     fun sendP2pUdp(target: String) = ws.sendP2pUdp(target)
     fun sendP2pTcp(target: String) = ws.sendP2pTcp(target)
     fun getServerHost(): String = localPrefs.serverHost
