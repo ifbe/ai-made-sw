@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="8dp"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="4dp"
+    app:strokeColor="#2196F3"
+    app:strokeWidth="2dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <!-- 顶部：类型选择 + 取消按钮 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="类型："
+                android:textSize="14sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerType"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
+
+            <ImageButton
+                android:id="@+id/btnCancel"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="取消" />
+
+        </LinearLayout>
+
+        <!-- 通用参数（默认显示） -->
+        <LinearLayout
+            android:id="@+id/layoutParams"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="参数："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputParams"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="host:port user:xxx"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- HUMAN：IP -->
+        <LinearLayout
+            android:id="@+id/layoutIp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="IP："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputIp"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="192.168.x.x"
+                android:inputType="textUri"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- HUMAN：端口 -->
+        <LinearLayout
+            android:id="@+id/layoutPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="端口："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputPort"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="9999"
+                android:inputType="number"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- PTY：设备路径 -->
+        <LinearLayout
+            android:id="@+id/layoutPtyDevice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="ptmx："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputPtyDevice"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="/dev/ptmx"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- PTY：Shell -->
+        <LinearLayout
+            android:id="@+id/layoutPtyShell"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="shell："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputPtyShell"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="/system/bin/sh"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</com.google.android.material.card.MaterialCardView>
