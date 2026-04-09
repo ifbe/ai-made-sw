@@ -76,9 +76,9 @@
 
         </LinearLayout>
 
-        <!-- HUMAN：IP -->
+        <!-- SOCKET：IP -->
         <LinearLayout
-            android:id="@+id/layoutIp"
+            android:id="@+id/layoutSocketIp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
@@ -94,7 +94,7 @@
                 android:textColor="#666666" />
 
             <EditText
-                android:id="@+id/inputIp"
+                android:id="@+id/inputSocketIp"
                 android:layout_width="0dp"
                 android:layout_height="32dp"
                 android:layout_weight="1"
@@ -108,9 +108,9 @@
 
         </LinearLayout>
 
-        <!-- HUMAN：端口 -->
+        <!-- SOCKET：端口 -->
         <LinearLayout
-            android:id="@+id/layoutPort"
+            android:id="@+id/layoutSocketPort"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
@@ -126,7 +126,7 @@
                 android:textColor="#666666" />
 
             <EditText
-                android:id="@+id/inputPort"
+                android:id="@+id/inputSocketPort"
                 android:layout_width="0dp"
                 android:layout_height="32dp"
                 android:layout_weight="1"
@@ -141,6 +141,31 @@
         </LinearLayout>
 
         <!-- PTY：设备路径 -->
+        <!-- SOCKET：协议类型 -->
+        <LinearLayout
+            android:id="@+id/layoutSockType"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="协议："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerSockType"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
+
+        </LinearLayout>
+
         <LinearLayout
             android:id="@+id/layoutPtyDevice"
             android:layout_width="match_parent"
@@ -201,6 +226,361 @@
                 android:textColorHint="#999999"
                 android:background="@drawable/bg_input"
                 android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- SERIAL：设备路径 -->
+        <LinearLayout
+            android:id="@+id/layoutSerialDevice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="串口："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputSerialDevice"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="/dev/ttyS0"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- SERIAL：波特率 -->
+        <LinearLayout
+            android:id="@+id/layoutSerialBaud"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="波特率："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputSerialBaud"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="115200"
+                android:inputType="number"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- SSH：IP -->
+        <LinearLayout
+            android:id="@+id/layoutSshIp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="IP："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputSshIp"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="192.168.x.x"
+                android:inputType="textUri"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- SSH：端口 -->
+        <LinearLayout
+            android:id="@+id/layoutSshPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="端口："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputSshPort"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="22"
+                android:inputType="number"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- SSH：用户 -->
+        <LinearLayout
+            android:id="@+id/layoutSshUser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="用户："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputSshUser"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="root"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- SSH：密码 -->
+        <LinearLayout
+            android:id="@+id/layoutSshPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="密码："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputSshPassword"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="password"
+                android:inputType="textPassword"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AI：IP -->
+        <LinearLayout
+            android:id="@+id/layoutAiIp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="IP："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAiIp"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="192.168.5.180"
+                android:inputType="textUri"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AI：端口 -->
+        <LinearLayout
+            android:id="@+id/layoutAiPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="端口："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAiPort"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="12345"
+                android:inputType="number"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AI：API Key -->
+        <LinearLayout
+            android:id="@+id/layoutAiApiKey"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="Key："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAiApiKey"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="sk-xxxx"
+                android:inputType="textPassword"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AI：模型 + 查询按钮 -->
+        <LinearLayout
+            android:id="@+id/layoutAiModel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="模型："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAiModel"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="模型名称"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+            <Button
+                android:id="@+id/btnQueryModels"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="查询模型"
+                android:textSize="11sp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="8dp" />
+
+        </LinearLayout>
+
+        <!-- AI：模型列表（查询后显示） -->
+        <LinearLayout
+            android:id="@+id/layoutAiModels"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="模型列表："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerAiModels"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
 
         </LinearLayout>
 

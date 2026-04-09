@@ -112,6 +112,6 @@ Java_com_example_chatroom_participants_PtyNative_closePty(JNIEnv *env, jobject t
 
 JNIEXPORT jint JNICALL
 Java_com_example_chatroom_participants_PtyNative_getPid(JNIEnv *env, jobject thiz, jint masterFd) {
-    // getpid returns current process PID (the parent/consumer)
     return (jint) getpid();
 }
+

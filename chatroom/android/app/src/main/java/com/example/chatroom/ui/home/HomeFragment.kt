@@ -23,13 +23,24 @@ import com.google.android.material.button.MaterialButton
 
 data class EditingCardData(
     val id: String = java.util.UUID.randomUUID().toString(),
-    var type: ParticipantType? = null,
+    var type: ParticipantType = ParticipantType.SOCKET,
     var name: String = "",
     var params: String = "",
-    var humanIp: String = "",
-    var humanPort: String = "",
+    var socketIp: String = "",
+    var socketPort: String = "",
+    var sockType: String = "TCP",
     var ptyDevice: String = "/dev/ptmx",
-    var ptyShell: String = "/system/bin/sh"
+    var ptyShell: String = "/system/bin/sh",
+    var serialDevice: String = "/dev/ttyS0",
+    var serialBaud: String = "115200",
+    var sshIp: String = "",
+    var sshPort: String = "22",
+    var sshUser: String = "",
+    var sshPassword: String = "",
+    var aiIp: String = "",
+    var aiPort: String = "",
+    var aiApiKey: String = "",
+    var aiModel: String = ""
 )
 
 class HomeFragment : Fragment() {
@@ -72,15 +83,38 @@ class HomeFragment : Fragment() {
             val sessionId = SessionManager.createSession()
             validCards.forEach { card ->
                 val params: Map<String, String> = when (card.type) {
-                    ParticipantType.HUMAN -> {
-                        if (card.humanIp.isNotBlank() && card.humanPort.isNotBlank()) {
-                            mapOf("ip" to card.humanIp, "port" to card.humanPort)
-                        } else emptyMap()
+                    ParticipantType.SOCKET -> {
+                        val m = mutableMapOf<String, String>()
+                        if (card.socketIp.isNotBlank()) m["ip"] = card.socketIp
+                        if (card.socketPort.isNotBlank()) m["port"] = card.socketPort
+                        if (card.sockType.isNotBlank()) m["sockType"] = card.sockType
+                        m
                     }
                     ParticipantType.PTY -> {
                         val m = mutableMapOf<String, String>()
                         if (card.ptyDevice.isNotBlank()) m["device"] = card.ptyDevice
                         if (card.ptyShell.isNotBlank()) m["shell"] = card.ptyShell
+                        m
+                    }
+                    ParticipantType.SERIAL -> {
+                        if (card.serialDevice.isNotBlank() && card.serialBaud.isNotBlank()) {
+                            mapOf("device" to card.serialDevice, "baud" to card.serialBaud)
+                        } else emptyMap()
+                    }
+                    ParticipantType.SSH -> {
+                        val m = mutableMapOf<String, String>()
+                        if (card.sshIp.isNotBlank()) m["ip"] = card.sshIp
+                        if (card.sshPort.isNotBlank()) m["port"] = card.sshPort
+                        if (card.sshUser.isNotBlank()) m["user"] = card.sshUser
+                        if (card.sshPassword.isNotBlank()) m["password"] = card.sshPassword
+                        m
+                    }
+                    ParticipantType.AI -> {
+                        val m = mutableMapOf<String, String>()
+                        if (card.aiIp.isNotBlank()) m["ip"] = card.aiIp
+                        if (card.aiPort.isNotBlank()) m["port"] = card.aiPort
+                        if (card.aiApiKey.isNotBlank()) m["apiKey"] = card.aiApiKey
+                        if (card.aiModel.isNotBlank()) m["model"] = card.aiModel
                         m
                     }
                     else -> parseParams(card.params)
@@ -119,7 +153,8 @@ class HomeFragment : Fragment() {
                 ParticipantListItem.EditingCard(
                     id = card.id,
                     onCancel = {
-                        editingCards.removeAt(index)
+                        val cardId = card.id
+                        editingCards.removeAll { it.id == cardId }
                         refreshList()
                     }
                 )

@@ -14,7 +14,10 @@ import com.example.chatroom.core.Message
 import com.example.chatroom.core.ParticipantType
 import com.example.chatroom.core.SessionManager
 import com.example.chatroom.participants.PtyParticipant
-import com.example.chatroom.participants.TcpParticipant
+import com.example.chatroom.participants.AiParticipant
+import com.example.chatroom.participants.SerialParticipant
+import com.example.chatroom.participants.SocketParticipant
+import com.example.chatroom.participants.SocketType
 import com.google.android.material.button.MaterialButton
 
 class ChatFragment : Fragment() {
@@ -66,7 +69,7 @@ class ChatFragment : Fragment() {
                 // 显示发送info（所有人都有）
                 val sendInfo = Message(
                     senderId = "self",
-                    senderType = ParticipantType.HUMAN,
+                    senderType = ParticipantType.SOCKET,
                     senderName = "我",
                     content = "📤 发送: $text",
                     isInfo = true
@@ -117,11 +120,13 @@ class ChatFragment : Fragment() {
                     pty.connect(device, shell)
                     activeParticipants[config.id] = pty
                 }
-                ParticipantType.HUMAN -> {
+                ParticipantType.SOCKET -> {
                     val ip = config.params["ip"] ?: ""
                     val port = config.params["port"]?.toIntOrNull() ?: 0
+                    val sockTypeStr = config.params["sockType"] ?: "TCP"
+                    val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
                     if (ip.isNotBlank() && port > 0) {
-                        val tcp = TcpParticipant(sessionId, ip, port) { msg ->
+                        val socket = SocketParticipant(sessionId, ip, port, sockType) { msg ->
                             SessionManager.addMessage(sessionId, msg)
                             val msgs = SessionManager.getMessages(sessionId).toList()
                             adapter.submitList(msgs)
@@ -129,14 +134,66 @@ class ChatFragment : Fragment() {
                                 recyclerView.scrollToPosition(msgs.size - 1)
                             }
                         }
-                        tcp.connect()
-                        activeParticipants[config.id] = tcp
+                        socket.connect()
+                        activeParticipants[config.id] = socket
                     } else {
                         val msg = Message(
                             senderId = "system",
-                            senderType = ParticipantType.HUMAN,
+                            senderType = ParticipantType.SOCKET,
                             senderName = "系统",
-                            content = "❌ HUMAN 配置错误：需要 ip 和 port",
+                            content = "❌ SOCKET 配置错误：需要 ip 和 port",
+                            isInfo = true
+                        )
+                        SessionManager.addMessage(sessionId, msg)
+                    }
+                }
+                ParticipantType.SERIAL -> {
+                    val device = config.params["device"] ?: ""
+                    val baud = config.params["baud"]?.toIntOrNull() ?: 115200
+                    if (device.isNotBlank()) {
+                        val serial = SerialParticipant(sessionId, device, baud) { msg ->
+                            SessionManager.addMessage(sessionId, msg)
+                            val msgs = SessionManager.getMessages(sessionId).toList()
+                            adapter.submitList(msgs)
+                            recyclerView.post {
+                                recyclerView.scrollToPosition(msgs.size - 1)
+                            }
+                        }
+                        serial.connect()
+                        activeParticipants[config.id] = serial
+                    } else {
+                        val msg = Message(
+                            senderId = "system",
+                            senderType = ParticipantType.SERIAL,
+                            senderName = "系统",
+                            content = "❌ SERIAL 配置错误：需要 device",
+                            isInfo = true
+                        )
+                        SessionManager.addMessage(sessionId, msg)
+                    }
+                }
+                ParticipantType.AI -> {
+                    val ip = config.params["ip"] ?: ""
+                    val port = config.params["port"] ?: ""
+                    val apiKey = config.params["apiKey"] ?: ""
+                    val model = config.params["model"] ?: ""
+                    if (ip.isNotBlank() && port.isNotBlank()) {
+                        val ai = AiParticipant(sessionId, ip, port, apiKey, model) { msg ->
+                            SessionManager.addMessage(sessionId, msg)
+                            val msgs = SessionManager.getMessages(sessionId).toList()
+                            adapter.submitList(msgs)
+                            recyclerView.post {
+                                recyclerView.scrollToPosition(msgs.size - 1)
+                            }
+                        }
+                        ai.connect()
+                        activeParticipants[config.id] = ai
+                    } else {
+                        val msg = Message(
+                            senderId = "system",
+                            senderType = ParticipantType.AI,
+                            senderName = "系统",
+                            content = "❌ AI 配置错误：需要 ip 和 port",
                             isInfo = true
                         )
                         SessionManager.addMessage(sessionId, msg)
@@ -151,7 +208,7 @@ class ChatFragment : Fragment() {
         if (configs.isEmpty()) {
             val msg = Message(
                 senderId = "system",
-                senderType = ParticipantType.HUMAN,
+                senderType = ParticipantType.SOCKET,
                 senderName = "系统",
                 content = "该会话没有任何参与者",
                 isInfo = true
@@ -172,8 +229,14 @@ class ChatFragment : Fragment() {
                 ParticipantType.PTY -> {
                     (activeParticipants[config.id] as? PtyParticipant)?.sendInput(text)
                 }
-                ParticipantType.HUMAN -> {
-                    (activeParticipants[config.id] as? TcpParticipant)?.sendInput(text)
+                ParticipantType.SOCKET -> {
+                    (activeParticipants[config.id] as? SocketParticipant)?.sendInput(text)
+                }
+                ParticipantType.SERIAL -> {
+                    (activeParticipants[config.id] as? SerialParticipant)?.sendInput(text)
+                }
+                ParticipantType.AI -> {
+                    (activeParticipants[config.id] as? AiParticipant)?.sendInput(text)
                 }
                 else -> {
                     // TODO

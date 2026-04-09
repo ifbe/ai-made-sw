@@ -9,7 +9,7 @@ enum class ParticipantType(val icon: String) {
     AI("🤖"),
     SERIAL("🔌"),
     SMART_DEVICE("💡"),
-    HUMAN("👤")
+    SOCKET("👤")
 }
 
 /** 样式（VT100 SGR） */

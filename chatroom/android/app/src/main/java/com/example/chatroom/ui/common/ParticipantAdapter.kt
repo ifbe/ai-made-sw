@@ -84,14 +84,39 @@ class ParticipantAdapter(
         private val typeSpinner: Spinner = v.findViewById(R.id.spinnerType)
         private val paramsInput: EditText = v.findViewById(R.id.inputParams)
         private val layoutParams: View = v.findViewById(R.id.layoutParams)
-        private val inputIp: EditText = v.findViewById(R.id.inputIp)
-        private val layoutIp: View = v.findViewById(R.id.layoutIp)
-        private val inputPort: EditText = v.findViewById(R.id.inputPort)
-        private val layoutPort: View = v.findViewById(R.id.layoutPort)
+        private val inputSocketIp: EditText = v.findViewById(R.id.inputSocketIp)
+        private val layoutSocketIp: View = v.findViewById(R.id.layoutSocketIp)
+        private val layoutSocketPort: View = v.findViewById(R.id.layoutSocketPort)
+        private val inputSocketPort: EditText = v.findViewById(R.id.inputSocketPort)
+        private val layoutSockType: View = v.findViewById(R.id.layoutSockType)
+        private val spinnerSockType: Spinner = v.findViewById(R.id.spinnerSockType)
         private val inputPtyDevice: EditText = v.findViewById(R.id.inputPtyDevice)
         private val layoutPtyDevice: View = v.findViewById(R.id.layoutPtyDevice)
         private val inputPtyShell: EditText = v.findViewById(R.id.inputPtyShell)
         private val layoutPtyShell: View = v.findViewById(R.id.layoutPtyShell)
+        private val layoutSerialDevice: View = v.findViewById(R.id.layoutSerialDevice)
+        private val inputSerialDevice: EditText = v.findViewById(R.id.inputSerialDevice)
+        private val layoutSerialBaud: View = v.findViewById(R.id.layoutSerialBaud)
+        private val inputSerialBaud: EditText = v.findViewById(R.id.inputSerialBaud)
+        private val layoutAiIp: View = v.findViewById(R.id.layoutAiIp)
+        private val inputAiIp: EditText = v.findViewById(R.id.inputAiIp)
+        private val layoutAiPort: View = v.findViewById(R.id.layoutAiPort)
+        private val inputAiPort: EditText = v.findViewById(R.id.inputAiPort)
+        private val layoutAiApiKey: View = v.findViewById(R.id.layoutAiApiKey)
+        private val inputAiApiKey: EditText = v.findViewById(R.id.inputAiApiKey)
+        private val layoutAiModel: View = v.findViewById(R.id.layoutAiModel)
+        private val inputAiModel: EditText = v.findViewById(R.id.inputAiModel)
+        private val btnQueryModels: android.widget.Button = v.findViewById(R.id.btnQueryModels)
+        private val layoutAiModels: View = v.findViewById(R.id.layoutAiModels)
+        private val spinnerAiModels: Spinner = v.findViewById(R.id.spinnerAiModels)
+        private val layoutSshIp: View = v.findViewById(R.id.layoutSshIp)
+        private val inputSshIp: EditText = v.findViewById(R.id.inputSshIp)
+        private val layoutSshPort: View = v.findViewById(R.id.layoutSshPort)
+        private val inputSshPort: EditText = v.findViewById(R.id.inputSshPort)
+        private val layoutSshUser: View = v.findViewById(R.id.layoutSshUser)
+        private val inputSshUser: EditText = v.findViewById(R.id.inputSshUser)
+        private val layoutSshPassword: View = v.findViewById(R.id.layoutSshPassword)
+        private val inputSshPassword: EditText = v.findViewById(R.id.inputSshPassword)
         private val btnCancel: ImageButton = v.findViewById(R.id.btnCancel)
 
         fun bind(item: ParticipantListItem.EditingCard, editingCards: MutableList<EditingCardData>) {
@@ -110,10 +135,20 @@ class ParticipantAdapter(
 
             // 恢复内容
             paramsInput.setText(cardData.params)
-            inputIp.setText(cardData.humanIp)
-            inputPort.setText(cardData.humanPort)
+            inputSocketIp.setText(cardData.socketIp)
+            inputSocketPort.setText(cardData.socketPort)
             inputPtyDevice.setText(cardData.ptyDevice)
             inputPtyShell.setText(cardData.ptyShell)
+            inputSerialDevice.setText(cardData.serialDevice)
+            inputSerialBaud.setText(cardData.serialBaud)
+            inputSshIp.setText(cardData.sshIp)
+            inputSshPort.setText(cardData.sshPort)
+            inputSshUser.setText(cardData.sshUser)
+            inputSshPassword.setText(cardData.sshPassword)
+            inputAiIp.setText(cardData.aiIp)
+            inputAiPort.setText(cardData.aiPort)
+            inputAiApiKey.setText(cardData.aiApiKey)
+            inputAiModel.setText(cardData.aiModel)
 
             // 类型切换
             typeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
@@ -135,22 +170,35 @@ class ParticipantAdapter(
             })
 
             // IP
-            inputIp.addTextChangedListener(object : android.text.TextWatcher {
+            inputSocketIp.addTextChangedListener(object : android.text.TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: android.text.Editable?) {
-                    cardData.humanIp = s.toString()
+                    cardData.socketIp = s.toString()
                 }
             })
 
             // 端口
-            inputPort.addTextChangedListener(object : android.text.TextWatcher {
+            inputSocketPort.addTextChangedListener(object : android.text.TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: android.text.Editable?) {
-                    cardData.humanPort = s.toString()
+                    cardData.socketPort = s.toString()
                 }
             })
+
+            // SOCKET 协议类型
+            val sockTypes = listOf("TCP", "UDP")
+            val sockAdapter = android.widget.ArrayAdapter(itemView.context, android.R.layout.simple_spinner_dropdown_item, sockTypes)
+            spinnerSockType.adapter = sockAdapter
+            val selPos = sockTypes.indexOf(cardData.sockType).coerceAtLeast(0)
+            spinnerSockType.setSelection(selPos, false)
+            spinnerSockType.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    cardData.sockType = sockTypes[pos]
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
 
             // PTY 设备
             inputPtyDevice.addTextChangedListener(object : android.text.TextWatcher {
@@ -170,20 +218,193 @@ class ParticipantAdapter(
                 }
             })
 
+            // SERIAL 设备
+            inputSerialDevice.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.serialDevice = s.toString()
+                }
+            })
+
+            // SERIAL 波特率
+            inputSerialBaud.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.serialBaud = s.toString()
+                }
+            })
+
+            // SSH IP
+            inputSshIp.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.sshIp = s.toString()
+                }
+            })
+
+            // SSH 端口
+            inputSshPort.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.sshPort = s.toString()
+                }
+            })
+
+            // SSH 用户
+            inputSshUser.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.sshUser = s.toString()
+                }
+            })
+
+            // AI IP
+            inputAiIp.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.aiIp = s.toString()
+                }
+            })
+
+            // AI 端口
+            inputAiPort.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.aiPort = s.toString()
+                }
+            })
+
+            // AI API Key
+            inputAiApiKey.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.aiApiKey = s.toString()
+                }
+            })
+
+            // AI 模型
+            inputAiModel.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.aiModel = s.toString()
+                }
+            })
+
+            // 查询模型按钮
+            btnQueryModels.setOnClickListener {
+                val ip = cardData.aiIp
+                val port = cardData.aiPort
+                val apiKey = cardData.aiApiKey
+                if (ip.isBlank() || port.isBlank()) {
+                    android.widget.Toast.makeText(it.context, "请先填 IP 和端口", android.widget.Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                btnQueryModels.isEnabled = false
+                btnQueryModels.text = "查询中..."
+                Thread({
+                    try {
+                        val url = java.net.URL("http://" + ip + ":" + port + "/v1/models")
+                        val conn = url.openConnection() as java.net.HttpURLConnection
+                        conn.requestMethod = "GET"
+                        conn.setRequestProperty("Authorization", "Bearer " + apiKey)
+                        conn.connectTimeout = 5000
+                        conn.readTimeout = 10000
+                        val code = conn.responseCode
+                        val body = if (code == 200) java.io.BufferedReader(java.io.InputStreamReader(conn.inputStream)).readText() else ""
+                        conn.disconnect()
+
+                        val models = mutableListOf<String>()
+                        if (code == 200) {
+                            val json = org.json.JSONObject(body)
+                            val data = json.optJSONArray("data")
+                            if (data != null) {
+                                for (i in 0 until data.length()) {
+                                    val m = data.getJSONObject(i).optString("id", "")
+                                    if (m.isNotBlank()) models.add(m)
+                                }
+                            }
+                        }
+
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            btnQueryModels.isEnabled = true
+                            btnQueryModels.text = "查询模型"
+                            if (models.isEmpty()) {
+                                android.widget.Toast.makeText(it.context, "未查到模型（code=" + code + ")", android.widget.Toast.LENGTH_SHORT).show()
+                                layoutAiModels.visibility = View.GONE
+                            } else {
+                                val adapter = android.widget.ArrayAdapter(it.context, android.R.layout.simple_spinner_dropdown_item, models)
+                                spinnerAiModels.adapter = adapter
+                                layoutAiModels.visibility = View.VISIBLE
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            btnQueryModels.isEnabled = true
+                            btnQueryModels.text = "查询模型"
+                            android.widget.Toast.makeText(it.context, "查询失败: " + e.message, android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }, "QueryModels").start()
+            }
+
+            // 模型 Spinner 选择
+            spinnerAiModels.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    val model = parent?.getItemAtPosition(pos) as? String ?: return
+                    cardData.aiModel = model
+                    inputAiModel.setText(model)
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+
+            // SSH 密码
+            inputSshPassword.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.sshPassword = s.toString()
+                }
+            })
+
             btnCancel.setOnClickListener {
-                editingCards.remove(cardData)
+                val id = cardData.id
+                editingCards.removeAll { it.id == id }
                 item.onCancel()
             }
         }
 
         private fun updateFieldsVisibility(type: ParticipantType?) {
-            val isHuman = type == ParticipantType.HUMAN
+            val isSocket = type == ParticipantType.SOCKET
             val isPty = type == ParticipantType.PTY
-            layoutParams.visibility = if (isHuman || isPty) View.GONE else View.VISIBLE
-            layoutIp.visibility = if (isHuman) View.VISIBLE else View.GONE
-            layoutPort.visibility = if (isHuman) View.VISIBLE else View.GONE
+            val isSerial = type == ParticipantType.SERIAL
+            val isSsh = type == ParticipantType.SSH
+            val isAi = type == ParticipantType.AI
+            layoutParams.visibility = if (isSocket || isPty || isSerial || isSsh || isAi) View.GONE else View.VISIBLE
+            layoutSocketIp.visibility = if (isSocket) View.VISIBLE else View.GONE
+            layoutSocketPort.visibility = if (isSocket) View.VISIBLE else View.GONE
+            layoutSockType.visibility = if (isSocket) View.VISIBLE else View.GONE
             layoutPtyDevice.visibility = if (isPty) View.VISIBLE else View.GONE
             layoutPtyShell.visibility = if (isPty) View.VISIBLE else View.GONE
+            layoutSerialDevice.visibility = if (isSerial) View.VISIBLE else View.GONE
+            layoutSerialBaud.visibility = if (isSerial) View.VISIBLE else View.GONE
+            layoutAiIp.visibility = if (isAi) View.VISIBLE else View.GONE
+            layoutAiPort.visibility = if (isAi) View.VISIBLE else View.GONE
+            layoutAiApiKey.visibility = if (isAi) View.VISIBLE else View.GONE
+            layoutAiModel.visibility = if (isAi) View.VISIBLE else View.GONE
+            layoutAiModels.visibility = View.GONE
+            layoutSshIp.visibility = if (isSsh) View.VISIBLE else View.GONE
+            layoutSshPort.visibility = if (isSsh) View.VISIBLE else View.GONE
+            layoutSshUser.visibility = if (isSsh) View.VISIBLE else View.GONE
+            layoutSshPassword.visibility = if (isSsh) View.VISIBLE else View.GONE
         }
     }
 
