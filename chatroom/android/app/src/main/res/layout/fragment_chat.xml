@@ -6,77 +6,230 @@
     android:orientation="vertical"
     android:background="#F0F0F0">
 
-    <!-- 聊天消息列表 -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/recyclerMessages"
+    <!-- 聊天消息列表 + 输入栏，共同占用剩余空间 -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:padding="8dp"
-        android:clipToPadding="false" />
+        android:orientation="vertical">
 
-    <!-- 输入栏 -->
-    <LinearLayout
-        android:id="@+id/inputBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="8dp"
-        android:background="#FFFFFF"
-        android:elevation="4dp"
-        android:gravity="center_vertical">
-
-        <!-- 文件/图片按钮 -->
-        <ImageButton
-            android:id="@+id/btnAttach"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@android:drawable/ic_menu_gallery"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="附件" />
-
-        <!-- 文字输入框 -->
-        <EditText
-            android:id="@+id/editInput"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
+        <!-- 聊天消息列表 -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerMessages"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
             android:layout_weight="1"
-            android:layout_marginHorizontal="8dp"
-            android:hint="输入消息..."
-            android:inputType="textMultiLine"
-            android:maxLines="4"
-            android:background="@drawable/bg_input"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="8dp"             android:textColor="#000000"
-            android:textColorHint="#999999"
-        />
+            android:padding="8dp"
+            android:clipToPadding="false" />
 
-        <!-- 发送按钮 -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSend"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:text="发送"
-            android:textColor="#FFFFFF"
-            app:backgroundTint="#2196F3" />
+        <!-- 文字模式输入栏 -->
+        <LinearLayout
+            android:id="@+id/inputBarText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:background="#FFFFFF"
+            android:elevation="4dp"
+            android:gravity="center_vertical">
+
+            <Spinner
+                android:id="@+id/spinnerInputMode"
+                android:layout_width="56dp"
+                android:layout_height="40dp"
+                android:minWidth="56dp"
+                android:background="@null"
+                android:dropDownWidth="160dp" />
+
+            <EditText
+                android:id="@+id/editInput"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="8dp"
+                android:hint="输入消息..."
+                android:inputType="textMultiLine"
+                android:maxLines="4"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="8dp"
+                android:textColor="#000000"
+                android:textColorHint="#999999" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSend"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="发送"
+                android:textColor="#FFFFFF"
+                app:backgroundTint="#2196F3" />
+
+        </LinearLayout>
+
+        <!-- 遥控器模式（上下左右大按钮） -->
+        <LinearLayout
+            android:id="@+id/inputBarRemote"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:background="#FFFFFF"
+            android:elevation="4dp"
+            android:visibility="gone"
+            android:gravity="center_vertical">
+
+            <Spinner
+                android:id="@+id/spinnerInputModeRemote"
+                android:layout_width="56dp"
+                android:layout_height="40dp"
+                android:minWidth="56dp"
+                android:background="@null"
+                android:dropDownWidth="160dp" />
+
+            <TableLayout
+                android:id="@+id/remoteGrid"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center">
+
+                <TableRow android:gravity="center">
+
+                    <View
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:background="@android:color/transparent" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnRemoteUp"
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:text="↑"
+                        android:textSize="24sp"
+                        android:textColor="#FFFFFF"
+                        app:backgroundTint="#2196F3" />
+
+                    <View
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:background="@android:color/transparent" />
+
+                </TableRow>
+
+                <TableRow android:gravity="center">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnRemoteLeft"
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:text="←"
+                        android:textSize="24sp"
+                        android:textColor="#FFFFFF"
+                        app:backgroundTint="#2196F3" />
+
+                    <View
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:background="@android:color/transparent" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnRemoteRight"
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:text="→"
+                        android:textSize="24sp"
+                        android:textColor="#FFFFFF"
+                        app:backgroundTint="#2196F3" />
+
+                </TableRow>
+
+                <TableRow android:gravity="center">
+
+                    <View
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:background="@android:color/transparent" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnRemoteDown"
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:text="↓"
+                        android:textSize="24sp"
+                        android:textColor="#FFFFFF"
+                        app:backgroundTint="#2196F3" />
+
+                    <View
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:background="@android:color/transparent" />
+
+                </TableRow>
+
+            </TableLayout>
+
+        </LinearLayout>
+
+        <!-- 语音模式（TODO） -->
+        <LinearLayout
+            android:id="@+id/inputBarVoice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:background="#FFFFFF"
+            android:elevation="4dp"
+            android:visibility="gone"
+            android:gravity="center_vertical">
+
+            <Spinner
+                android:id="@+id/spinnerInputModeVoice"
+                android:layout_width="56dp"
+                android:layout_height="40dp"
+                android:minWidth="56dp"
+                android:background="@null"
+                android:dropDownWidth="160dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:text="语音模式（TODO）"
+                android:textColor="#999999"
+                android:textSize="14sp" />
+
+        </LinearLayout>
+
+        <!-- 文件模式（TODO） -->
+        <LinearLayout
+            android:id="@+id/inputBarFile"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:background="#FFFFFF"
+            android:elevation="4dp"
+            android:visibility="gone"
+            android:gravity="center_vertical">
+
+            <Spinner
+                android:id="@+id/spinnerInputModeFile"
+                android:layout_width="56dp"
+                android:layout_height="40dp"
+                android:minWidth="56dp"
+                android:background="@null"
+                android:dropDownWidth="160dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:text="文件模式（TODO）"
+                android:textColor="#999999"
+                android:textSize="14sp" />
+
+        </LinearLayout>
 
     </LinearLayout>
-
-    <!-- 控制按钮模式（默认隐藏） -->
-    <HorizontalScrollView
-        android:id="@+id/controlPad"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#EEEEEE"
-        android:padding="8dp"
-        android:visibility="gone">
-
-        <LinearLayout
-            android:id="@+id/controlPadLayout"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal" />
-
-    </HorizontalScrollView>
 
 </LinearLayout>

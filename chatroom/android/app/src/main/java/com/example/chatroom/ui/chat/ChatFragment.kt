@@ -4,8 +4,11 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.EditText
-import android.widget.ImageButton
+import android.widget.Spinner
+import com.google.android.material.button.MaterialButton
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -13,12 +16,13 @@ import com.example.chatroom.R
 import com.example.chatroom.core.Message
 import com.example.chatroom.core.ParticipantType
 import com.example.chatroom.core.SessionManager
-import com.example.chatroom.participants.PtyParticipant
 import com.example.chatroom.participants.AiParticipant
+import com.example.chatroom.participants.PtyParticipant
 import com.example.chatroom.participants.SerialParticipant
 import com.example.chatroom.participants.SocketParticipant
 import com.example.chatroom.participants.SocketType
-import com.google.android.material.button.MaterialButton
+
+enum class ChatInputMode { TEXT, REMOTE, VOICE, FILE }
 
 class ChatFragment : Fragment() {
 
@@ -27,9 +31,14 @@ class ChatFragment : Fragment() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var editInput: EditText
     private lateinit var btnSend: MaterialButton
-    private lateinit var btnAttach: ImageButton
-
     private val activeParticipants = mutableMapOf<String, Any>()
+
+    private lateinit var inputBarText: View
+    private lateinit var inputBarRemote: View
+    private lateinit var inputBarVoice: View
+    private lateinit var inputBarFile: View
+
+    private var currentInputMode = ChatInputMode.TEXT
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,7 +55,11 @@ class ChatFragment : Fragment() {
         recyclerView = view.findViewById(R.id.recyclerMessages)
         editInput = view.findViewById(R.id.editInput)
         btnSend = view.findViewById(R.id.btnSend)
-        btnAttach = view.findViewById(R.id.btnAttach)
+
+        inputBarText = view.findViewById(R.id.inputBarText)
+        inputBarRemote = view.findViewById(R.id.inputBarRemote)
+        inputBarVoice = view.findViewById(R.id.inputBarVoice)
+        inputBarFile = view.findViewById(R.id.inputBarFile)
 
         adapter = MessageAdapter()
         recyclerView.layoutManager = LinearLayoutManager(requireContext()).apply {
@@ -62,11 +75,13 @@ class ChatFragment : Fragment() {
         adapter.submitList(initial)
         recyclerView.scrollToPosition(initial.size - 1)
 
+        setupInputModeSpinners()
+        setupRemoteControls()
+
         // 发送按钮
         btnSend.setOnClickListener {
             val text = editInput.text?.toString() ?: ""
             if (text.isNotEmpty()) {
-                // 显示发送info（所有人都有）
                 val sendInfo = Message(
                     senderId = "self",
                     senderType = ParticipantType.SOCKET,
@@ -75,20 +90,85 @@ class ChatFragment : Fragment() {
                     isInfo = true
                 )
                 SessionManager.addMessage(sessionId, sendInfo)
-
-                // 广播给各参与者
                 broadcastToParticipants(text)
-
-                // 清输入框并刷新
                 editInput.text?.clear()
                 val msgs = SessionManager.getMessages(sessionId).toList()
                 adapter.submitList(msgs)
                 recyclerView.scrollToPosition(msgs.size - 1)
             }
         }
+    }
 
-        btnAttach.setOnClickListener {
-            // TODO: 文件选择
+    private fun setupInputModeSpinners() {
+        val v = requireView()
+        val modes = listOf("📝文字", "🎮遥控", "🎤语音", "📁文件")
+
+        fun configureSpinner(spinner: Spinner) {
+            val selAdapter = ArrayAdapter(requireContext(), R.layout.spinner_selected, modes)
+            val dropAdapter = ArrayAdapter(requireContext(), R.layout.spinner_dropdown, modes)
+            spinner.adapter = selAdapter
+            spinner.setSelection(currentInputMode.ordinal, false)
+        }
+
+        configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputMode))
+        configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputModeRemote))
+        configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputModeVoice))
+        configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputModeFile))
+
+        val allSpinners = listOf(
+            v.findViewById<Spinner>(R.id.spinnerInputMode),
+            v.findViewById<Spinner>(R.id.spinnerInputModeRemote),
+            v.findViewById<Spinner>(R.id.spinnerInputModeVoice),
+            v.findViewById<Spinner>(R.id.spinnerInputModeFile)
+        )
+
+        fun syncSpinners(selected: ChatInputMode) {
+            currentInputMode = selected
+            allSpinners.forEach { it.setSelection(selected.ordinal, true) }
+
+            inputBarText.visibility = if (selected == ChatInputMode.TEXT) View.VISIBLE else View.GONE
+            inputBarRemote.visibility = if (selected == ChatInputMode.REMOTE) View.VISIBLE else View.GONE
+            inputBarVoice.visibility = if (selected == ChatInputMode.VOICE) View.VISIBLE else View.GONE
+            inputBarFile.visibility = if (selected == ChatInputMode.FILE) View.VISIBLE else View.GONE
+        }
+
+        allSpinners.forEach { spinner ->
+            spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    syncSpinners(ChatInputMode.entries[pos])
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
+        }
+
+        // 初始化显示
+        syncSpinners(ChatInputMode.TEXT)
+    }
+
+    private fun setupRemoteControls() {
+        val v = requireView()
+        val directions = listOf(
+            R.id.btnRemoteUp to "↑",
+            R.id.btnRemoteDown to "↓",
+            R.id.btnRemoteLeft to "←",
+            R.id.btnRemoteRight to "→"
+        )
+
+        directions.forEach { (btnId, label) ->
+            v.findViewById<MaterialButton>(btnId)!!.setOnClickListener {
+                val sendInfo = Message(
+                    senderId = "self",
+                    senderType = ParticipantType.SOCKET,
+                    senderName = "我",
+                    content = "📤 发送: $label",
+                    isInfo = true
+                )
+                SessionManager.addMessage(sessionId, sendInfo)
+                broadcastToParticipants(label)
+                val msgs = SessionManager.getMessages(sessionId).toList()
+                adapter.submitList(msgs)
+                recyclerView.scrollToPosition(msgs.size - 1)
+            }
         }
     }
 
