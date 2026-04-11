@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import com.example.chatroom.core.Message
 import com.example.chatroom.core.ParticipantType
+import java.nio.charset.Charset
 
 /**
  * Serial participant using JNI /dev/ttyS* with termios.
@@ -66,8 +67,9 @@ class SerialParticipant(
                 continue
             }
 
-            for (i in 0 until n) {
-                val c = buffer[i].toInt().toChar()
+            // 用 UTF-8 解码后按行处理
+            val text = String(buffer, 0, n, Charset.forName("UTF-8"))
+            for (c in text) {
                 when (c) {
                     '\n' -> {
                         val line = lineBuilder.toString()
@@ -125,13 +127,24 @@ class SerialParticipant(
         mainHandler.post { onMessage(msg) }
     }
 
-    private fun dispatchLine(line: String) {
+    private fun dispatchLine(content: String) {
+        val bytes = content.toByteArray()
+        val len = bytes.size
+        val hex = bytes.take(8).joinToString(" ") { "%02X".format(it) }
+        val infoMsg = Message(
+            senderId = "serial",
+            senderType = ParticipantType.SERIAL,
+            senderName = displayName,
+            content = "📥 接收 len=$len hex=$hex",
+            isInfo = true
+        )
         val msg = Message(
             senderId = "serial",
             senderType = ParticipantType.SERIAL,
             senderName = displayName,
-            content = line
+            content = content
         )
+        mainHandler.post { onMessage(infoMsg) }
         mainHandler.post { onMessage(msg) }
     }
 

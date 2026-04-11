@@ -37,10 +37,16 @@ data class EditingCardData(
     var sshPort: String = "22",
     var sshUser: String = "",
     var sshPassword: String = "",
+    var telnetIp: String = "",
+    var telnetPort: String = "23",
+    var telnetUser: String = "",
+    var telnetPassword: String = "",
     var aiIp: String = "",
     var aiPort: String = "",
     var aiApiKey: String = "",
-    var aiModel: String = ""
+    var aiModel: String = "",
+    var bluetoothDevice: String = "",
+    var bluetoothProtocol: String = "SPP"
 )
 
 class HomeFragment : Fragment() {
@@ -109,12 +115,26 @@ class HomeFragment : Fragment() {
                         if (card.sshPassword.isNotBlank()) m["password"] = card.sshPassword
                         m
                     }
+                    ParticipantType.TELNET -> {
+                        val m = mutableMapOf<String, String>()
+                        if (card.telnetIp.isNotBlank()) m["ip"] = card.telnetIp
+                        if (card.telnetPort.isNotBlank()) m["port"] = card.telnetPort
+                        if (card.telnetUser.isNotBlank()) m["user"] = card.telnetUser
+                        if (card.telnetPassword.isNotBlank()) m["password"] = card.telnetPassword
+                        m
+                    }
                     ParticipantType.AI -> {
                         val m = mutableMapOf<String, String>()
                         if (card.aiIp.isNotBlank()) m["ip"] = card.aiIp
                         if (card.aiPort.isNotBlank()) m["port"] = card.aiPort
                         if (card.aiApiKey.isNotBlank()) m["apiKey"] = card.aiApiKey
                         if (card.aiModel.isNotBlank()) m["model"] = card.aiModel
+                        m
+                    }
+                    ParticipantType.BLUETOOTH -> {
+                        val m = mutableMapOf<String, String>()
+                        if (card.bluetoothDevice.isNotBlank()) m["device"] = card.bluetoothDevice
+                        if (card.bluetoothProtocol.isNotBlank()) m["protocol"] = card.bluetoothProtocol
                         m
                     }
                     else -> parseParams(card.params)

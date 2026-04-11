@@ -3,6 +3,7 @@ package com.example.chatroom.participants
 import android.os.Handler
 import android.os.Looper
 import com.example.chatroom.core.Message
+import java.nio.charset.Charset
 import com.example.chatroom.core.ParticipantType
 import com.example.chatroom.core.Vt100Style
 
@@ -68,11 +69,9 @@ class PtyParticipant(
                 continue
             }
 
-            // 正常读取，追加到 buffer
-            for (i in 0 until n) {
-                val c = buffer[i].toInt().toChar()
-                output.append(c)
-            }
+            // 正常读取，用 UTF-8 解码后追加
+            val text = String(buffer, 0, n, Charset.forName("UTF-8"))
+            output.append(text)
         }
 
         running = false
@@ -111,12 +110,23 @@ class PtyParticipant(
     }
 
     private fun dispatchLine(content: String) {
+        val bytes = content.toByteArray()
+        val len = bytes.size
+        val hex = bytes.take(8).joinToString(" ") { "%02X".format(it) }
+        val infoMsg = Message(
+            senderId = "pty",
+            senderType = ParticipantType.PTY,
+            senderName = displayName,
+            content = "📥 接收 len=$len hex=$hex",
+            isInfo = true
+        )
         val msg = Message(
             senderId = "pty",
             senderType = ParticipantType.PTY,
             senderName = displayName,
             content = content
         )
+        mainHandler.post { onMessage(infoMsg) }
         mainHandler.post { onMessage(msg) }
     }
 

@@ -194,13 +194,24 @@ class SocketParticipant(
         mainHandler.post { onMessage(msg) }
     }
 
-    private fun dispatchLine(line: String) {
+    private fun dispatchLine(content: String) {
+        val bytes = content.toByteArray()
+        val len = bytes.size
+        val hex = bytes.take(8).joinToString(" ") { "%02X".format(it) }
+        val infoMsg = Message(
+            senderId = "socket",
+            senderType = ParticipantType.SOCKET,
+            senderName = displayName,
+            content = "📥 接收 len=$len hex=$hex",
+            isInfo = true
+        )
         val msg = Message(
             senderId = "socket",
             senderType = ParticipantType.SOCKET,
             senderName = displayName,
-            content = line
+            content = content
         )
+        mainHandler.post { onMessage(infoMsg) }
         mainHandler.post { onMessage(msg) }
     }
 

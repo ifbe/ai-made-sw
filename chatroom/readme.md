@@ -4,14 +4,19 @@
 
 多 Tab 聊天终端 App，每个 Session 是一个多参与者聊天室，支持：
 
-| 类型 | 说明 | 实现方式 |
-|------|------|----------|
-| **SOCKET** | TCP/UDP socket 客户端 | Java Socket / DatagramSocket |
-| **PTY** | 本地伪终端 | JNI /dev/ptmx + forkpty |
-| **SERIAL** | 串口通信 | JNI termios |
-| **SSH** | SSH 连接（仅 UI 配置） | 参数：ip/port/user/password |
-| **AI** | OpenAI 兼容 API | HTTP POST |
-| **SMART_DEVICE** | 智能设备 | 类型预留 |
+| 类型 | 图标 | 说明 | 状态 |
+|------|------|------|------|
+| **SERIAL** | 🔌 | 串口通信 | ✅ 完整实现 |
+| **PTY** | 🖥️ | 本地伪终端 | ✅ 完整实现 |
+| **SSH** | 🔐 | SSH 连接 | ⚠️ 仅 UI 配置，逻辑未实现 |
+| **TELNET** | 📡 | TELNET 连接 | ⚠️ 仅 UI 配置，逻辑待实现 |
+| **SOCKET** | 🌐 | TCP/UDP socket 客户端 | ✅ 完整实现 |
+| **BBS** | 💬 | 论坛/BBS（Telnet 文本协议） | ⚠️ 仅 UI 配置，逻辑未实现 |
+| **AI** | 🤖 | OpenAI 兼容 API | ✅ 完整实现 |
+| **OPENCLAW** | 🦞 | 本地 OpenClaw gateway 聊天 | ⚠️ 仅 UI 配置，逻辑未实现 |
+| **BLUETOOTH** | 📱 | 蓝牙 SPP/RFCOMM 串口 | ⚠️ 仅 UI 配置，逻辑待实现 |
+| **INFRARED** | 💡 | 红外遥控（电视/空调等） | ⚠️ 仅 UI 配置，逻辑未实现 |
+| **SMART_DEVICE** | 🏠 | 智能家居设备 | ⚠️ 仅 UI 配置，逻辑未实现 |
 
 **消息路由**：用户发一条 → 广播给 Session 内所有参与者 → 各参与者自行处理并回复 → 回复也广播给所有人。
 
@@ -32,7 +37,7 @@
 app/src/main/java/com/example/chatroom/
 ├── MainActivity.kt               # 首页 + ViewPager2 + TabLayout
 ├── core/
-│   ├── Models.kt                 # ParticipantType / Message / EditingCardData
+│   ├── Models.kt                 # ParticipantType / Message / ParticipantConfig
 │   └── SessionManager.kt         # 管理所有 Session 和消息
 ├── participants/
 │   ├── PtyNative.kt              # JNI wrapper（loadLibrary "pty"）
@@ -40,7 +45,9 @@ app/src/main/java/com/example/chatroom/
 │   ├── SocketParticipant.kt      # SOCKET：TCP + UDP（SocketType 枚举）
 │   ├── SerialNative.kt           # JNI wrapper
 │   ├── SerialParticipant.kt      # SERIAL：termios 串口
-│   ├── AiParticipant.kt          # AI：HTTP OpenAI 兼容 API
+│   ├── AiParticipant.kt         # AI：HTTP OpenAI 兼容 API
+│   ├── BluetoothParticipant.kt   # BLUETOOTH：SPP/RFCOMM（stub）
+│   ├── TelnetParticipant.kt      # TELNET：TCP 登录（stub）
 │   └── SocketType.kt             # TCP / UDP 枚举
 ├── ui/
 │   ├── home/
@@ -69,12 +76,18 @@ app/src/main/jni/
 ### ParticipantType（Models.kt）
 ```kotlin
 enum class ParticipantType(val icon: String) {
-    PTY("🖥️"),
-    SSH("🖥️"),
-    AI("🤖"),
     SERIAL("🔌"),
-    SMART_DEVICE("💡"),
-    SOCKET("👤")
+    PTY("🖥️"),
+    SSH("🔐"),
+    TELNET("📡"),
+    SOCKET("🌐"),
+    BBS("💬"),
+    AI("🤖"),
+    OPENCLAW("🦞"),
+    BLUETOOTH("📱"),
+    INFRARED("💡"),
+    SMART_DEVICE("🏠"),
+    USER("👤")   // 内部使用，不显示在类型选择列表
 }
 ```
 
@@ -88,7 +101,8 @@ data class Message(
     val content: String,
     val timestamp: Long = System.currentTimeMillis(),
     val style: Vt100Style = Vt100Style(),
-    val isInfo: Boolean = false  // true = 小灰字居中，不显示气泡
+    val imageUri: String? = null,  // 图片消息
+    val isInfo: Boolean = false    // true = 小灰字居中，不显示气泡
 )
 ```
 
@@ -99,31 +113,34 @@ data class EditingCardData(
     var type: ParticipantType = ParticipantType.SOCKET,  // 默认 SOCKET
     var name: String = "",
     var params: String = "",
+    // SOCKET
     var socketIp: String = "",
     var socketPort: String = "",
     var sockType: String = "TCP",     // TCP 或 UDP
+    // PTY
     var ptyDevice: String = "/dev/ptmx",
     var ptyShell: String = "/system/bin/sh",
+    // SERIAL
     var serialDevice: String = "/dev/ttyS0",
     var serialBaud: String = "115200",
+    // SSH
     var sshIp: String = "",
     var sshPort: String = "22",
     var sshUser: String = "",
     var sshPassword: String = "",
+    // TELNET
+    var telnetIp: String = "",
+    var telnetPort: String = "23",
+    var telnetUser: String = "",
+    var telnetPassword: String = "",
+    // AI
     var aiIp: String = "",
     var aiPort: String = "",
     var aiApiKey: String = "",
-    var aiModel: String = ""
-)
-```
-
-### ParticipantConfig（创建会话时从 EditingCardData 序列化）
-```kotlin
-data class ParticipantConfig(
-    val id: String = UUID.randomUUID().toString(),
-    val type: ParticipantType,
-    val name: String,
-    val params: Map<String, String> = emptyMap()  // 各类型自有参数
+    var aiModel: String = "",
+    // BLUETOOTH
+    var bluetoothDevice: String = "",
+    var bluetoothProtocol: String = "SPP"  // SPP 或 RFCOMM
 )
 ```
 
@@ -136,20 +153,34 @@ data class ParticipantConfig(
 - 参与者编辑卡片列表（所见即所得）
 - 底部 TabBar：Home / Sessions 切换
 - 点击大加号 → 新增 SOCKET 类型卡片（默认类型）
-- 每个卡片可切换类型，填写对应参数
+- 每个卡片可切换类型（11 种），填写对应参数
 - 右上角 × 删除卡片
-- **SOCKET** 卡片字段：IP / 端口 / 协议（TCP/UDP 下拉）
-- **PTY** 卡片字段：ptmx 路径 / shell
-- **SERIAL** 卡片字段：串口设备 / 波特率
-- **SSH** 卡片字段：IP / 端口 / 用户 / 密码
-- **AI** 卡片字段：IP / 端口 / Key / 模型（手动输入 + 查询模型按钮 + 模型列表 Spinner）
+
+各类型字段：
+
+| 类型 | 字段 |
+|------|------|
+| SOCKET | IP / 端口 / 协议（TCP/UDP） |
+| PTY | ptmx 路径 / shell |
+| SERIAL | 串口设备 / 波特率 |
+| SSH | IP / 端口 / 用户 / 密码 |
+| TELNET | IP / 端口 / 用户 / 密码（独立于 SSH） |
+| AI | IP / 端口 / Key / 模型 |
+| BBS | 通用 params 输入框 |
+| OPENCLAW | 通用 params 输入框 |
+| BLUETOOTH | 设备 Spinner（刷新获取已配对设备）/ 协议 Spinner（SPP/RFCOMM） |
+| INFRARED | 通用 params 输入框 |
+| SMART_DEVICE | 通用 params 输入框 |
 
 ### 聊天界面（ChatFragment）
-- RecyclerView 消息列表
-- 用户消息：右对齐气泡
-- 参与者消息：左对齐气泡，带类型图标
+- RecyclerView 消息列表，`stackFromEnd=true`
+- 用户消息：右对齐白色气泡，marginEnd=1dp，paddingHorizontal=14dp
+- 参与者消息：左对齐气泡，marginStart=1dp，paddingHorizontal=4dp
+- **PTY/SSH 发来的消息**：7sp 等宽字体（其他保持 15sp），以容纳 80 字符宽度
 - 系统消息（isInfo=true）：小灰字居中，无气泡
-- **输入栏**：4 种输入模式通过 Spinner 切换，四个 Spinner 同步
+- **接收信息灰字**：PTY/SOCKET/SERIAL/AI 收到消息时，先显示一行 📥 接收 len=X hex=XX...（hex 只显示前 8 字节），再显示气泡内容
+- **发送信息灰字**：用户发送时同步显示 📤 发送: xxx
+- **输入栏**：4 种输入模式通过 Spinner 切换
   - 📝文字：EditText + 发送按钮（默认）
   - 🎮遥控：Spinner + 3×3 方向键网格，点击直接发送 ↑↓←→
   - 🎤语音：（TODO）
@@ -163,15 +194,16 @@ data class ParticipantConfig(
 ### SOCKET（SocketParticipant）
 - `SocketType.TCP`：Java `Socket(ip, port)`，阻塞读 `\n` 分行
 - `SocketType.UDP`：Java `DatagramSocket()` 随机端口，`sendto` / `recvfrom` 显式地址
-- 每个 `receive()` 或每次 `read()` 直接出一个气泡（原样显示，不做行处理）
+- UDP 接收用 `Charset.forName("UTF-8")` 解码
+- 每个 `receive()` 或每次 `read()` 直接出一个气泡
 - `soTimeout` 避免永久阻塞
-- 连接/发送都在后台线程
 
 ### PTY（PtyParticipant）
 - JNI C 代码操作 `/dev/ptmx`
 - `openPtmx()` → 打开 `/dev/ptmx` 获取 master fd
 - `forkPty(masterFd, slaveName)` → fork 出子进程，子进程 exec shell
 - `readPty(masterFd, buf, timeoutMs)` → select 超时读取
+- 读取后用 `Charset.forName("UTF-8")` 解码（不再逐字节 `.toChar()`，解决中文乱码）
 - `writePty(masterFd, text)` → 写给 shell
 - `closePty(masterFd)` → 关闭 master fd
 - 需要 root Android
@@ -179,10 +211,10 @@ data class ParticipantConfig(
 ### SERIAL（SerialParticipant）
 - JNI C 代码操作 `/dev/tty*`
 - `openSerial(device, baud)` → `open()` + `termios` 配置（8N1, raw, 波特率转换）
+- 读取后用 `Charset.forName("UTF-8")` 解码
 - `readSerial(fd, buf, timeoutMs)` → `select` 超时读取
 - `writeSerial(fd, data)` → `write()`
 - `closeSerial(fd)` → `close()`
-- 支持波特率：9600 / 19200 / 38400 / 57600 / 115200 / 230400 / 460800 / 921600
 
 ### AI（AiParticipant）
 - HTTP POST `http://ip:port/v1/chat/completions`
@@ -196,10 +228,22 @@ data class ParticipantConfig(
   ```
 - Header：`Authorization: Bearer {apiKey}`
 - 读取 `choices[0].message.content` 作为回复
+- 收到 AI 响应时：先显示 📥 接收 len=X hex=XX...，再显示气泡内容
 - 模型列表：`GET http://ip:port/v1/models` 查到后填充 Spinner
 
-### SSH
-- 仅 UI 配置（ip/port/user/password），连接逻辑未实现
+### SSH、TELNET、BBS、OPENCLAW、INFRARED、SMART_DEVICE
+- 仅 UI 配置，连接逻辑未实现
+
+### BLUETOOTH
+- UI 配置已就绪：设备 Spinner + 协议 Spinner（SPP/RFCOMM）
+- stub 实现：BluetoothParticipant.kt，连接逻辑待实现
+- 参数：`device`（设备名）、`protocol`（SPP/RFCOMM）
+- 设计思路：
+  - 每个设备同时开 `BluetoothServerSocket` 监听 + 作为客户端连接其他设备
+  - 连接 n 个 peers = n 个 `BluetoothSocket`
+  - 发消息时广播给所有已连接 peers
+  - 配对在系统设置里完成，app 只从已配对列表选择设备
+- 跨平台：蓝牙 SPP/RFCOMM 可跨 win/mac/linux/android，但 iOS 不支持 RFCOMM
 
 ---
 
@@ -211,12 +255,6 @@ $ANDROID_NDK_HOME/ndk-build
 # 输出：libs/armeabi-v7a/libpty.so (包含 ptmx.c + serial.c)
 ```
 
-Android.mk 配置：
-```makefile
-LOCAL_MODULE := pty
-LOCAL_SRC_FILES := ptmx.c serial.c
-```
-
 ---
 
 ## 权限
@@ -224,6 +262,8 @@ LOCAL_SRC_FILES := ptmx.c serial.c
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.BLUETOOTH" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 <!-- PTY/SERIAL 需要 root -->
 ```
 
@@ -231,22 +271,21 @@ AndroidManifest 设置 `android:usesCleartextTraffic="true"`（AI HTTP 明文）
 
 ---
 
-## 消息类型设计
+## 气泡布局细节
 
-| 类型 | senderId | 说明 |
-|------|----------|------|
-| SOCKET TCP | `"socket"` | TCP socket 消息 |
-| SOCKET UDP | `"socket"` | UDP socket 消息 |
-| PTY | `"pty"` | 终端输出 |
-| SERIAL | `"serial"` | 串口数据 |
-| AI | `"ai"` | API 回复 |
-| 系统 | `"system"` | isInfo=true 小灰字 |
+| 位置 | margin | padding | 字体大小 |
+|------|--------|---------|---------|
+| 右侧（自己） | marginEnd=1dp | paddingHorizontal=14dp | 15sp |
+| 左侧（PTY/SSH） | marginStart=1dp, marginEnd=4dp | paddingHorizontal=4dp | **7sp** |
+| 左侧（其他） | marginStart=1dp, marginEnd=32dp | paddingHorizontal=14dp | 15sp |
+
+PTY/SSH 用 7sp 等宽字体，约 4.9dp/字符，340dp 可用宽度约显示 69 字符。通过调整 left margin 和 padding 可容纳 80 字符满行。
 
 ---
 
 ## 已知限制
 
-- SSH 参与者：仅有 UI，无实际连接实现
-- Bluetooth：未实现
+- SSH、TELNET、BBS、OPENCLAW、INFRARED、SMART_DEVICE：仅有 UI，无实际连接实现
+- Bluetooth：UI 就绪，连接逻辑待实现
 - 图片/视频消息：未实现
 - PTY/SERIAL：需要 root Android 权限

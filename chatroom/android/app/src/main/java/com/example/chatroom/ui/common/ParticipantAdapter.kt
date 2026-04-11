@@ -117,6 +117,19 @@ class ParticipantAdapter(
         private val inputSshUser: EditText = v.findViewById(R.id.inputSshUser)
         private val layoutSshPassword: View = v.findViewById(R.id.layoutSshPassword)
         private val inputSshPassword: EditText = v.findViewById(R.id.inputSshPassword)
+        private val layoutTelnetIp: View = v.findViewById(R.id.layoutTelnetIp)
+        private val inputTelnetIp: EditText = v.findViewById(R.id.inputTelnetIp)
+        private val layoutTelnetPort: View = v.findViewById(R.id.layoutTelnetPort)
+        private val inputTelnetPort: EditText = v.findViewById(R.id.inputTelnetPort)
+        private val layoutTelnetUser: View = v.findViewById(R.id.layoutTelnetUser)
+        private val inputTelnetUser: EditText = v.findViewById(R.id.inputTelnetUser)
+        private val layoutTelnetPassword: View = v.findViewById(R.id.layoutTelnetPassword)
+        private val inputTelnetPassword: EditText = v.findViewById(R.id.inputTelnetPassword)
+        private val layoutBluetoothDevice: View = v.findViewById(R.id.layoutBluetoothDevice)
+        private val spinnerBluetoothDevice: Spinner = v.findViewById(R.id.spinnerBluetoothDevice)
+        private val btnRefreshBluetoothDevices: android.widget.Button = v.findViewById(R.id.btnRefreshBluetoothDevices)
+        private val layoutBluetoothProtocol: View = v.findViewById(R.id.layoutBluetoothProtocol)
+        private val spinnerBluetoothProtocol: Spinner = v.findViewById(R.id.spinnerBluetoothProtocol)
         private val btnCancel: ImageButton = v.findViewById(R.id.btnCancel)
 
         fun bind(item: ParticipantListItem.EditingCard, editingCards: MutableList<EditingCardData>) {
@@ -125,7 +138,7 @@ class ParticipantAdapter(
             typeSpinner.adapter = ArrayAdapter(
                 itemView.context,
                 android.R.layout.simple_spinner_dropdown_item,
-                ParticipantType.entries.map { "${it.icon} ${it.name}" }
+                ParticipantType.entries.filter { it != ParticipantType.USER }.map { "${it.icon} ${it.name}" }
             )
 
             // 恢复类型选择
@@ -145,10 +158,31 @@ class ParticipantAdapter(
             inputSshPort.setText(cardData.sshPort)
             inputSshUser.setText(cardData.sshUser)
             inputSshPassword.setText(cardData.sshPassword)
+            inputTelnetIp.setText(cardData.telnetIp)
+            inputTelnetPort.setText(cardData.telnetPort)
+            inputTelnetUser.setText(cardData.telnetUser)
+            inputTelnetPassword.setText(cardData.telnetPassword)
             inputAiIp.setText(cardData.aiIp)
             inputAiPort.setText(cardData.aiPort)
             inputAiApiKey.setText(cardData.aiApiKey)
             inputAiModel.setText(cardData.aiModel)
+
+            // 蓝牙协议 Spinner
+            spinnerBluetoothProtocol.adapter = ArrayAdapter(
+                itemView.context,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("SPP", "RFCOMM")
+            )
+            // 恢复协议选择
+            val protoPos = cardData.bluetoothProtocol?.let { if (it == "SPP") 0 else 1 } ?: 0
+            spinnerBluetoothProtocol.setSelection(protoPos, false)
+
+            // 蓝牙设备 Spinner（初始为空，后续通过系统 API 填充已配对设备）
+            spinnerBluetoothDevice.adapter = ArrayAdapter(
+                itemView.context,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("请先刷新设备")
+            )
 
             // 类型切换
             typeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
@@ -375,6 +409,56 @@ class ParticipantAdapter(
                 }
             })
 
+            // TELNET IP
+            inputTelnetIp.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.telnetIp = s.toString()
+                }
+            })
+
+            // TELNET 端口
+            inputTelnetPort.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.telnetPort = s.toString()
+                }
+            })
+
+            // TELNET 用户
+            inputTelnetUser.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.telnetUser = s.toString()
+                }
+            })
+
+            // TELNET 密码
+            inputTelnetPassword.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.telnetPassword = s.toString()
+                }
+            })
+
+            // 蓝牙协议选择
+            spinnerBluetoothProtocol.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    cardData.bluetoothProtocol = if (pos == 0) "SPP" else "RFCOMM"
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+
+            // 蓝牙设备刷新按钮
+            btnRefreshBluetoothDevices.setOnClickListener {
+                // TODO: 调用 BluetoothAdapter 获取已配对设备列表
+                android.widget.Toast.makeText(it.context, "刷新蓝牙设备（待实现）", android.widget.Toast.LENGTH_SHORT).show()
+            }
+
             btnCancel.setOnClickListener {
                 val id = cardData.id
                 editingCards.removeAll { it.id == id }
@@ -387,8 +471,10 @@ class ParticipantAdapter(
             val isPty = type == ParticipantType.PTY
             val isSerial = type == ParticipantType.SERIAL
             val isSsh = type == ParticipantType.SSH
+            val isTelnet = type == ParticipantType.TELNET
             val isAi = type == ParticipantType.AI
-            layoutParams.visibility = if (isSocket || isPty || isSerial || isSsh || isAi) View.GONE else View.VISIBLE
+            val isBluetooth = type == ParticipantType.BLUETOOTH
+            layoutParams.visibility = if (isSocket || isPty || isSerial || isSsh || isTelnet || isAi || isBluetooth) View.GONE else View.VISIBLE
             layoutSocketIp.visibility = if (isSocket) View.VISIBLE else View.GONE
             layoutSocketPort.visibility = if (isSocket) View.VISIBLE else View.GONE
             layoutSockType.visibility = if (isSocket) View.VISIBLE else View.GONE
@@ -396,6 +482,8 @@ class ParticipantAdapter(
             layoutPtyShell.visibility = if (isPty) View.VISIBLE else View.GONE
             layoutSerialDevice.visibility = if (isSerial) View.VISIBLE else View.GONE
             layoutSerialBaud.visibility = if (isSerial) View.VISIBLE else View.GONE
+            layoutBluetoothDevice.visibility = if (isBluetooth) View.VISIBLE else View.GONE
+            layoutBluetoothProtocol.visibility = if (isBluetooth) View.VISIBLE else View.GONE
             layoutAiIp.visibility = if (isAi) View.VISIBLE else View.GONE
             layoutAiPort.visibility = if (isAi) View.VISIBLE else View.GONE
             layoutAiApiKey.visibility = if (isAi) View.VISIBLE else View.GONE
@@ -405,6 +493,10 @@ class ParticipantAdapter(
             layoutSshPort.visibility = if (isSsh) View.VISIBLE else View.GONE
             layoutSshUser.visibility = if (isSsh) View.VISIBLE else View.GONE
             layoutSshPassword.visibility = if (isSsh) View.VISIBLE else View.GONE
+            layoutTelnetIp.visibility = if (isTelnet) View.VISIBLE else View.GONE
+            layoutTelnetPort.visibility = if (isTelnet) View.VISIBLE else View.GONE
+            layoutTelnetUser.visibility = if (isTelnet) View.VISIBLE else View.GONE
+            layoutTelnetPassword.visibility = if (isTelnet) View.VISIBLE else View.GONE
         }
     }
 

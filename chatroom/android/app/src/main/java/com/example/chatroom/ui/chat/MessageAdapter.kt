@@ -69,6 +69,8 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
                 imgContent.visibility = View.GONE
                 textContent.text = applyVt100Style(msg.content, msg.style)
                 textContent.typeface = Typeface.MONOSPACE
+                // PTY/SSH 终端用 7sp 字体以容纳 80 字符
+                textContent.textSize = if (msg.senderType == ParticipantType.PTY || msg.senderType == ParticipantType.SSH) 7f else 15f
             }
         }
 

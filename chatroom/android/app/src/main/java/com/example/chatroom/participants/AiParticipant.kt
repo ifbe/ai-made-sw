@@ -83,12 +83,24 @@ class AiParticipant(
                         ?.optString("content")
                         ?: "(无内容)"
 
+                    val text = content.trim()
+                    val bytes = text.toByteArray()
+                    val len = bytes.size
+                    val hex = bytes.take(8).joinToString(" ") { "%02X".format(it) }
+                    val infoMsg = Message(
+                        senderId = "ai",
+                        senderType = ParticipantType.AI,
+                        senderName = displayName,
+                        content = "📥 接收 len=$len hex=$hex",
+                        isInfo = true
+                    )
                     val replyMsg = Message(
                         senderId = "ai",
                         senderType = ParticipantType.AI,
                         senderName = displayName,
-                        content = content.trim()
+                        content = text
                     )
+                    mainHandler.post { onMessage(infoMsg) }
                     mainHandler.post { onMessage(replyMsg) }
                 } else {
                     mainHandler.post {

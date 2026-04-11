@@ -584,6 +584,194 @@
 
         </LinearLayout>
 
+        <!-- BLUETOOTH：设备选择 -->
+        <LinearLayout
+            android:id="@+id/layoutBluetoothDevice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="设备："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerBluetoothDevice"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/btnRefreshBluetoothDevices"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="刷新"
+                android:textSize="11sp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="8dp" />
+
+        </LinearLayout>
+
+        <!-- BLUETOOTH：协议选择 -->
+        <LinearLayout
+            android:id="@+id/layoutBluetoothProtocol"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="协议："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerBluetoothProtocol"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
+
+        </LinearLayout>
+
+        <!-- TELNET：IP -->
+        <LinearLayout
+            android:id="@+id/layoutTelnetIp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="IP："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputTelnetIp"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="IP"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- TELNET：端口 -->
+        <LinearLayout
+            android:id="@+id/layoutTelnetPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="端口："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputTelnetPort"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="23"
+                android:inputType="number"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- TELNET：用户 -->
+        <LinearLayout
+            android:id="@+id/layoutTelnetUser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="用户："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputTelnetUser"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="username"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- TELNET：密码 -->
+        <LinearLayout
+            android:id="@+id/layoutTelnetPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="密码："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputTelnetPassword"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="password"
+                android:inputType="textPassword"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
     </LinearLayout>
 
 </com.google.android.material.card.MaterialCardView>

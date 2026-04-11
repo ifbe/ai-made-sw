@@ -4,12 +4,18 @@ import android.graphics.Color
 
 /** 参与者类型 */
 enum class ParticipantType(val icon: String) {
-    PTY("🖥️"),
-    SSH("🖥️"),
-    AI("🤖"),
     SERIAL("🔌"),
-    SMART_DEVICE("💡"),
-    SOCKET("👤")
+    PTY("🖥️"),
+    SSH("🔐"),
+    TELNET("📡"),
+    SOCKET("🌐"),
+    BBS("💬"),
+    AI("🤖"),
+    OPENCLAW("🦞"),
+    BLUETOOTH("📱"),
+    INFRARED("💡"),
+    SMART_DEVICE("🏠"),
+    USER("👤")
 }
 
 /** 样式（VT100 SGR） */

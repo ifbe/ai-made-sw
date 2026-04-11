@@ -9,8 +9,8 @@
         android:layout_height="wrap_content"
         android:layout_gravity="start"
         android:orientation="vertical"
-        android:layout_marginStart="8dp"
-        android:layout_marginEnd="60dp">
+        android:layout_marginStart="1dp"
+        android:layout_marginEnd="4dp">
 
         <TextView
             android:id="@+id/textSender"
@@ -20,14 +20,14 @@
             android:textSize="12sp"
             android:textColor="#888888"
             android:layout_marginBottom="2dp"
-            android:layout_marginStart="8dp" />
+            android:layout_marginStart="1dp" />
 
         <LinearLayout
             android:id="@+id/bubble"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:background="@drawable/bg_bubble_left"
-            android:paddingHorizontal="14dp"
+            android:paddingHorizontal="4dp"
             android:paddingVertical="10dp"
             android:orientation="vertical">
 

@@ -82,13 +82,23 @@ class ChatFragment : Fragment() {
         btnSend.setOnClickListener {
             val text = editInput.text?.toString() ?: ""
             if (text.isNotEmpty()) {
+                // 气泡消息（显示在上方）
+                val sendBubble = Message(
+                    senderId = "self",
+                    senderType = ParticipantType.USER,
+                    senderName = "我",
+                    content = text,
+                    isInfo = false
+                )
+                // 灰字消息（显示在下方）
                 val sendInfo = Message(
                     senderId = "self",
-                    senderType = ParticipantType.SOCKET,
+                    senderType = ParticipantType.USER,
                     senderName = "我",
                     content = "📤 发送: $text",
                     isInfo = true
                 )
+                SessionManager.addMessage(sessionId, sendBubble)
                 SessionManager.addMessage(sessionId, sendInfo)
                 broadcastToParticipants(text)
                 editInput.text?.clear()
@@ -156,13 +166,21 @@ class ChatFragment : Fragment() {
 
         directions.forEach { (btnId, label) ->
             v.findViewById<MaterialButton>(btnId)!!.setOnClickListener {
+                val sendBubble = Message(
+                    senderId = "self",
+                    senderType = ParticipantType.USER,
+                    senderName = "我",
+                    content = label,
+                    isInfo = false
+                )
                 val sendInfo = Message(
                     senderId = "self",
-                    senderType = ParticipantType.SOCKET,
+                    senderType = ParticipantType.USER,
                     senderName = "我",
                     content = "📤 发送: $label",
                     isInfo = true
                 )
+                SessionManager.addMessage(sessionId, sendBubble)
                 SessionManager.addMessage(sessionId, sendInfo)
                 broadcastToParticipants(label)
                 val msgs = SessionManager.getMessages(sessionId).toList()
