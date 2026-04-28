@@ -38,6 +38,25 @@ class BoxSpace(context: Context) : GLSurfaceView.Renderer {
     @Volatile private var gX = 0f; @Volatile private var gY = 0f; @Volatile private var gZ = -1f
     // Quaternion [x,y,z,w] — stored for axis arrow debug
     @Volatile private var qX = 0f; @Volatile private var qY = 0f; @Volatile private var qZ = 0f; @Volatile private var qW = 1f
+    // World axes in body space (computed once in onDrawFrame, reused by drawArrow/drawBoat)
+    @Volatile private var wxX = 1f; @Volatile private var wxY = 0f; @Volatile private var wxZ = 0f
+    @Volatile private var wyX = 0f; @Volatile private var wyY = 1f; @Volatile private var wyZ = 0f
+    @Volatile private var wzX = 0f; @Volatile private var wzY = 0f; @Volatile private var wzZ = 1f
+    // Boat corner positions (updated each frame in drawBoat)
+    @Volatile private var bFRx = 0f; @Volatile private var bFRy = 0f; @Volatile private var bFRz = 0f
+    @Volatile private var bFLx = 0f; @Volatile private var bFLy = 0f; @Volatile private var bFLz = 0f
+    @Volatile private var bBLx = 0f; @Volatile private var bBLy = 0f; @Volatile private var bBLz = 0f
+    @Volatile private var bBRx = 0f; @Volatile private var bBRy = 0f; @Volatile private var bBRz = 0f
+    @Volatile private var tFRx = 0f; @Volatile private var tFRy = 0f; @Volatile private var tFRz = 0f
+    @Volatile private var tFLx = 0f; @Volatile private var tFLy = 0f; @Volatile private var tFLz = 0f
+    @Volatile private var tBLx = 0f; @Volatile private var tBLy = 0f; @Volatile private var tBLz = 0f
+    @Volatile private var tBRx = 0f; @Volatile private var tBRy = 0f; @Volatile private var tBRz = 0f
+
+    /** Returns the 8 boat corner positions [x,y,z]×8 as a FloatArray. Call after onDrawFrame. */
+    fun getBoatVertices(): FloatArray = floatArrayOf(
+        bFRx, bFRy, bFRz, bFLx, bFLy, bFLz, bBLx, bBLy, bBLz, bBRx, bBRy, bBRz,
+        tFRx, tFRy, tFRz, tFLx, tFLy, tFLz, tBLx, tBLy, tBLz, tBRx, tBRy, tBRz
+    )
 
     private var vaoWater = 0; private var vboWater = 0
     private var vaoScreen = 0; private var vboScreen = 0
@@ -135,25 +154,25 @@ class BoxSpace(context: Context) : GLSurfaceView.Renderer {
         val mvp = computeMVP(qX, qY, qZ, qW)
         val gLen3 = sqrt(gX * gX + gY * gY + gZ * gZ)
 
-        // ── 1. Axes and arrows (opaque, depth test ON) ──
+        // ── 1. Compute world axes from quaternion (reused by arrow + boat) ──
+        val qx = qX; val qy = qY; val qz = qZ; val qw = qW
+        wxX =  1f - 2f*(qy*qy + qz*qz); wxY =  2f * (qx*qy - qz*qw); wxZ =  2f * (qx*qz + qy*qw)
+        wyX =  2f * (qx*qy + qz*qw); wyY =  1f - 2f*(qx*qx + qz*qz); wyZ =  2f * (qy*qz - qx*qw)
+        wzX =  2f * (qx*qz - qy*qw); wzY =  2f * (qy*qz + qx*qw); wzZ =  1f - 2f*(qx*qx + qy*qy)
+
+        // ── 2. Gravity arrow ──
         val gLen1 = sqrt(gX * gX + gY * gY + gZ * gZ)
         if (gLen1 >= 0.001f) {
             drawArrow(gX / gLen1, gY / gLen1, gZ / gLen1, mvp)
         }
 
-        // ── World axis debug arrows (rotated by quaternion into body space) ──
-        // World X+ → red, Y+ → green, Z+ → blue
-        val qx = qX; val qy = qY; val qz = qZ; val qw = qW
-        // World axis — C quaternion2bodyspaceworldaxis exact port
-        val wxX =  1f - 2f*(qy*qy + qz*qz)
-        val wxY =  2f * (qx*qy - qz*qw)
-        val wxZ =  2f * (qx*qz + qy*qw)
-        val wyX =  2f * (qx*qy + qz*qw)
-        val wyY =  1f - 2f*(qx*qx + qz*qz)
-        val wyZ =  2f * (qy*qz - qx*qw)
-        val wzX =  2f * (qx*qz - qy*qw)
-        val wzY =  2f * (qy*qz + qx*qw)
-        val wzZ =  1f - 2f*(qx*qx + qy*qy)
+        // ── 3. Boat ──
+        val gLen2 = sqrt(gX * gX + gY * gY + gZ * gZ)
+        if (gLen2 >= 0.001f) {
+            drawBoat(mvp)
+        }
+
+        // ── World axis debug rays ──
         val axisLen = 1000f  // box-space length to stretch across screen
         drawDebugLine(0f, 0f, 0f, wxX * axisLen, wxY * axisLen, wxZ * axisLen, 1f, 0.05f, 0.05f, mvp)  // red: world X
         drawDebugLine(0f, 0f, 0f, wyX * axisLen, wyY * axisLen, wyZ * axisLen, 0.05f, 1f, 0.05f, mvp)  // green: world Y
@@ -482,6 +501,102 @@ class BoxSpace(context: Context) : GLSurfaceView.Renderer {
         GLES30.glDeleteVertexArrays(1, vaoArr, 0)
     }
 
+    /** Flat rectangular raft — same quaternion basis computed once in onDrawFrame. */
+    private fun drawBoat(mvp: FloatArray) {
+        val fx = wyX; val fy = wyY; val fz = wyZ  // forward = world Y in body space
+        val rx = wxX; val ry = wxY; val rz = wxZ  // right = world X in body space
+        val ux = wzX; val uy = wzY; val uz = wzZ  // up = world Z in body space
+
+        val halfLen = boxD * 0.12f
+        val halfWid = boxD * 0.08f
+        val raftH = boxD / 12f  // 高度改为原来的 1/4
+
+        // bottom 4 corners (at water surface)
+        val bFRxv =  rx*halfWid + fx*halfLen; val bFRyv =  ry*halfWid + fy*halfLen; val bFRzv =  rz*halfWid + fz*halfLen
+        val bFLxv = -rx*halfWid + fx*halfLen; val bFLyv = -ry*halfWid + fy*halfLen; val bFLzv = -rz*halfWid + fz*halfLen
+        val bBLxv = -rx*halfWid - fx*halfLen; val bBLyv = -ry*halfWid - fy*halfLen; val bBLzv = -rz*halfWid - fz*halfLen
+        val bBRxv =  rx*halfWid - fx*halfLen; val bBRyv =  ry*halfWid - fy*halfLen; val bBRzv =  rz*halfWid - fz*halfLen
+
+        // top 4 corners = bottom + up * raftH
+        val tFRxv = bFRxv + ux*raftH; val tFRyv = bFRyv + uy*raftH; val tFRzv = bFRzv + uz*raftH
+        val tFLxv = bFLxv + ux*raftH; val tFLyv = bFLyv + uy*raftH; val tFLzv = bFLzv + uz*raftH
+        val tBLxv = bBLxv + ux*raftH; val tBLyv = bBLyv + uy*raftH; val tBLzv = bBLzv + uz*raftH
+        val tBRxv = bBRxv + ux*raftH; val tBRyv = bBRyv + uy*raftH; val tBRzv = bBRzv + uz*raftH
+
+        // Store to class fields for getBoatVertices()
+        bFRx = bFRxv; bFRy = bFRyv; bFRz = bFRzv
+        bFLx = bFLxv; bFLy = bFLyv; bFLz = bFLzv
+        bBLx = bBLxv; bBLy = bBLyv; bBLz = bBLzv
+        bBRx = bBRxv; bBRy = bBRyv; bBRz = bBRzv
+        tFRx = tFRxv; tFRy = tFRyv; tFRz = tFRzv
+        tFLx = tFLxv; tFLy = tFLyv; tFLz = tFLzv
+        tBLx = tBLxv; tBLy = tBLyv; tBLz = tBLzv
+        tBRx = tBRxv; tBRy = tBRyv; tBRz = tBRzv
+        bFRx = bFRxv; bFRy = bFRyv; bFRz = bFRzv
+        bFLx = bFLxv; bFLy = bFLyv; bFLz = bFLzv
+        bBLx = bBLxv; bBLy = bBLyv; bBLz = bBLzv
+        bBRx = bBRxv; bBRy = bBRyv; bBRz = bBRzv
+        tFRx = tFRxv; tFRy = tFRyv; tFRz = tFRzv
+        tFLx = tFLxv; tFLy = tFLyv; tFLz = tFLzv
+        tBLx = tBLxv; tBLy = tBLyv; tBLz = tBLzv
+        tBRx = tBRxv; tBRy = tBRyv; tBRz = tBRzv
+
+        val rR = 0.75f; val rG = 0.50f; val rB = 0.25f  // sides
+        val botR = 1f; val botG = 0f; val botB = 1f       // bottom = 0xff00ff magenta
+
+        // Bottom face (magenta)
+        val bottomVerts = floatArrayOf(
+            bBRx,bBRy,bBRz, botR,botG,botB,  bFRx,bFRy,bFRz, botR,botG,botB,  bFLx,bFLy,bFLz, botR,botG,botB,
+            bBRx,bBRy,bBRz, botR,botG,botB,  bFLx,bFLy,bFLz, botR,botG,botB,  bBLx,bBLy,bBLz, botR,botG,botB
+        )
+        // 4 side faces (brown)
+        val sideVerts = floatArrayOf(
+            bFRx,bFRy,bFRz, rR,rG,rB,  tFLx,tFLy,tFLz, rR,rG,rB,  tFRx,tFRy,tFRz, rR,rG,rB,
+            bFRx,bFRy,bFRz, rR,rG,rB,  bFLx,bFLy,bFLz, rR,rG,rB,  tFLx,tFLy,tFLz, rR,rG,rB,
+            bBRx,bBRy,bBRz, rR,rG,rB,  tFRx,tFRy,tFRz, rR,rG,rB,  tBRx,tBRy,tBRz, rR,rG,rB,
+            bBRx,bBRy,bBRz, rR,rG,rB,  bFRx,bFRy,bFRz, rR,rG,rB,  tFRx,tFRy,tFRz, rR,rG,rB,
+            bBLx,bBLy,bBLz, rR,rG,rB,  tBRx,tBRy,tBRz, rR,rG,rB,  tBLx,tBLy,tBLz, rR,rG,rB,
+            bBLx,bBLy,bBLz, rR,rG,rB,  bBRx,bBRy,bBRz, rR,rG,rB,  tBRx,tBRy,tBRz, rR,rG,rB,
+            bFLx,bFLy,bFLz, rR,rG,rB,  tBLx,tBLy,tBLz, rR,rG,rB,  tFLx,tFLy,tFLz, rR,rG,rB,
+            bFLx,bFLy,bFLz, rR,rG,rB,  bBLx,bBLy,bBLz, rR,rG,rB,  tBLx,tBLy,tBLz, rR,rG,rB
+        )
+
+        fun drawVerts(verts: FloatArray) {
+            val buf = java.nio.ByteBuffer.allocateDirect(verts.size * 4)
+                .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+            buf.put(verts).position(0)
+            val vaoArr = IntArray(1); val vboArr = IntArray(1)
+            GLES30.glGenVertexArrays(1, vaoArr, 0)
+            GLES30.glGenBuffers(1, vboArr, 0)
+            GLES30.glBindVertexArray(vaoArr[0])
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vboArr[0])
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, verts.size * 4, buf, GLES30.GL_DYNAMIC_DRAW)
+            GLES30.glEnableVertexAttribArray(0)
+            GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 24, 0)
+            GLES30.glEnableVertexAttribArray(1)
+            GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, 24, 12)
+            GLES30.glUseProgram(programArrow)
+            GLES30.glUniformMatrix4fv(uMVP_Arrow, 1, false, mvp, 0)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, verts.size / 6)
+            GLES30.glBindVertexArray(0)
+            GLES30.glDeleteBuffers(1, vboArr, 0)
+            GLES30.glDeleteVertexArrays(1, vaoArr, 0)
+        }
+
+        drawVerts(bottomVerts)
+        drawVerts(sideVerts)
+
+        // debug: draw 8 vertex points as tiny lines
+        val dp = 5f
+        drawDebugLine(bFRx,bFRy,bFRz-dp, bFRx,bFRy,bFRz+dp, 1f,1f,0f, mvp)
+        drawDebugLine(bFLx,bFLy,bFLz-dp, bFLx,bFLy,bFLz+dp, 1f,0.8f,0f, mvp)
+        drawDebugLine(bBLx,bBLy,bBLz-dp, bBLx,bBLy,bBLz+dp, 1f,0.6f,0f, mvp)
+        drawDebugLine(bBRx,bBRy,bBRz-dp, bBRx,bBRy,bBRz+dp, 1f,0.4f,0f, mvp)
+        drawDebugLine(tFRx,tFRy,tFRz-dp, tFRx,tFRy,tFRz+dp, 0f,1f,1f, mvp)
+        drawDebugLine(tFLx,tFLy,tFLz-dp, tFLx,tFLy,tFLz+dp, 0f,0.8f,1f, mvp)
+        drawDebugLine(tBLx,tBLy,tBLz-dp, tBLx,tBLy,tBLz+dp, 0f,0.6f,1f, mvp)
+        drawDebugLine(tBRx,tBRy,tBRz-dp, tBRx,tBRy,tBRz+dp, 0f,0.4f,1f, mvp)
+    }
     /** Draw a simple 4px line from origin in direction (gx,gy,gz). */
     private fun drawDebugLine(tailX: Float, tailY: Float, tailZ: Float, tipX: Float, tipY: Float, tipZ: Float, r: Float, g: Float, b: Float, mvp: FloatArray) {
         val verts = floatArrayOf(

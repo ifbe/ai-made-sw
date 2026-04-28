@@ -77,9 +77,12 @@ gZ = -(qw² + qz² - qx² - qy²)
 
 ### 渲染顺序
 
-1. **Axes + arrows** — 不透明，depth test 开启
-2. **Water surface** — 浅蓝 (0.5, 0.7, 1.0)，alpha=1.0（不透明），`GL_POLYGON_OFFSET_FILL` 避免 z-fighting
-3. **Water body** — 半透明，depth write 关闭（不写入深度缓冲，只读），`GL_BLEND` 开启
+1. **四元数正交基**（一次算好，箭头和木筏共用 wx/wy/wz）
+2. **重力箭头**（蓝色锥 + 黄色轴，programArrow shader）
+3. **木筏**（扁平矩形，programArrow shader，顶部棕色，底部 magenta）
+4. **调试射线**（红/绿/蓝坐标系轴，从原点延伸 box-space 1000 单位）
+5. **水面 polygon** — 浅蓝 (0.5, 0.7, 1.0)，alpha=1.0（不透明），`GL_POLYGON_OFFSET_FILL` 避免 z-fighting
+6. **水下水体** — 半透明，depth write 关闭，`GL_BLEND` 开启
 
 ### 水体深度着色（Water Body Shader）
 
@@ -105,7 +108,9 @@ alpha = 0.85
 |------|------|
 | `programWaterSurface` | 水面 polygon，纯色浅蓝不透明 |
 | `programWater` | 水体 screen quad，depth-based 深度着色半透明 |
-| `programArrow` | 重力箭头 + 坐标系轴 |
+| `programArrow` | 重力箭头 + 木筏 + 坐标系轴（共用同一 shader） |
+| `programWaterSurface` | 水面 polygon，纯色浅蓝不透明 |
+| `programWater` | 水体 screen quad，depth-based 深度着色半透明 |
 
 ### 深度处理
 
@@ -131,7 +136,6 @@ alpha = 0.85
 - Madgwick beta = 0.5
 - Mahony Kp = 1.0, Ki = 0.0（ integral windup 禁用）
 
-**已知限制**：纯 6 轴（无磁力计）在 pitch > 60° 时 accel 误差无法区分 pitch 和 yaw，导致三轴乱转。加磁力计可解。
 
 ## TODO
 
@@ -144,7 +148,6 @@ alpha = 0.85
   - 协方差矩阵传播，状态更新后重归一化
   - 参考：Sebastian Madgwick 的 MAV 项目或 PX4 的 ESKF 实现
 
-- [ ] 磁力计支持：给 mahony6/madgwick 加磁力计 yaw 绝对参考，解决大角度乱转问题
 
 - [ ] 水面 polygon 优化：确保水面边缘与屏幕边缘对齐
 
@@ -164,28 +167,26 @@ android/app/src/main/java/com/example/waterinbox/
 │   ├── SensorManager.kt    # 传感器读取 + fusion 选择 + 欧拉角/轴角计算
 │   └── SensorData.kt       # 传感器数据结构
 ├── renderer/
-│   └── BoxSpace.kt         # OpenGL ES 3.0 渲染
+│   └── BoxSpace.kt         # OpenGL ES 3.0 渲染（箭头、木筏、水面、水体）
+├── socket/
+│   └── SocketManager.kt   # UDP 发送，non-blocking 队列
 └── ui/
-    └── UISpace.kt          # 调试叠加层
+    └── UISpace.kt          # 调试叠加层（直接调用 BoxSpace.getBoatVertices() 显示 8 点坐标）
 ```
 
-## 测试脚本
+## Socket 通信
 
-```
-waterinbox/
-├── test_madgwick6.py   # Madgwick 迭代收敛测试
-└── test_mahony6.py      # Mahony 迭代收敛测试
-```
+UDP 发送，contentType 两档：
 
-用法：
-```bash
-python3 test_madgwick6.py [qx] [qy] [qz] [qw] [gx] [gy] [gz] [ax] [ay] [az]
-python3 test_mahony6.py  [qx] [qy] [qz] [qw] [gx] [gy] [gz] [ax] [ay] [az]
-```
+| contentType | 格式 | 说明 |
+|-------------|------|------|
+| `quaternion` | `qx,qy,qz,qw` | 四元数 |
+| `measure` | `gx,gy,gz,ax,ay,az,mx,my,mz,ms` | 传感器原始值 |
 
-默认：q=(0,0,0,1), gyro=(0,0,0), accel=(0.05, 0.03, 9.78), 100次迭代
+发送队列：`LinkedBlockingQueue<String>(100)`，非阻塞 `offer()` 写入，IO coroutine 轮询 `poll(5ms)` 发送。队列满时丢弃最旧数据，不阻塞传感器线程。
 
-输出：最终四元数 + 轴角（方便直观理解旋转方向和大小）
+
+IP/Port 可在 UI 面板中直接编辑（底部左侧面板）。
 
 ## C 参考代码
 
@@ -196,6 +197,29 @@ python3 test_mahony6.py  [qx] [qy] [qz] [qw] [gx] [gy] [gz] [ax] [ay] [az]
 路径：`/Users/ifbe/Desktop/code/ifbe/42/library/libsoft1/libauto/estimate/ahrs/`
 
 ## 历史
+
+### 2026-04-27
+
+**木筏渲染（BoxSpace OpenGL）**
+- 使用四元数正交基向量 wx/wy/wz（与坐标系调试射线共用）
+- forward=wy, right=wx, up=wz，直接向量加法算 8 个顶点
+- 几何：halfLen=boxD·0.12, halfWid=boxD·0.08, raftH=boxD/12（扁平）
+- 底面颜色 0xff00ff (magenta)，侧面棕色
+- 底部 4 点在水面上（n·P=0），顶部 4 点在 n·P=raftH
+- 叠加层直接调用 `BoxSpace.getBoatVertices()` 获取 8 点，不重复计算
+
+**UI 面板重构**
+- 底部左侧 socket 面板顺序：IP → Port → Protocol → Content
+- IP/Port 改为可编辑 `SocketTextField`（BasicTextField，深色背景，绿色光标）
+- 移除旧的 EditableText（cycle-click 交互）
+
+**Socket 非阻塞发送**
+- `LinkedBlockingQueue<String>(100)` 替代阻塞 send()
+- `onSensorData` 中 `offer()` 非阻塞写入，IO coroutine 轮询发送
+- 队列满时丢弃最旧数据，不阻塞传感器线程
+
+**坐标系统统一**
+- boxD 统一为 `min(screenW, screenH) / 2`（BoxSpace、SensorManager、UISpace overlay 一致）
 
 ### 2026-04-26
 

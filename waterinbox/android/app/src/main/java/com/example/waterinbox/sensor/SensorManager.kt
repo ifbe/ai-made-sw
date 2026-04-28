@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import com.example.waterinbox.math.BoxMath
 import com.example.waterinbox.math.FusionConfig
+import com.example.waterinbox.socket.SocketManager
 import com.example.waterinbox.math.fuse_madgwick
 import com.example.waterinbox.math.fuse_mahony3
 import com.example.waterinbox.math.fuse_mahony6
@@ -38,6 +39,7 @@ data class SensorData(
     val worldAxisX: FloatArray = floatArrayOf(1f, 0f, 0f),  // [x,y,z] world X+ → body
     val worldAxisY: FloatArray = floatArrayOf(0f, 1f, 0f),  // [x,y,z] world Y+ → body
     val worldAxisZ: FloatArray = floatArrayOf(0f, 0f, 1f),  // [x,y,z] world Z+ → body
+    val boatVertices: FloatArray = floatArrayOf(0f),  // 8 boat corner positions [x,y,z]×8, computed in BoxSpace.drawBoat
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -74,7 +76,7 @@ class SensorProbe(context: Context) : SensorEventListener {
     private val metrics = context.resources.displayMetrics
     private val boxW = metrics.widthPixels.toFloat()
     private val boxH = metrics.heightPixels.toFloat()
-    private val boxD = minOf(boxW, boxH) / 5f
+    private val boxD = minOf(boxW, boxH) / 2f
     private val boxMath = BoxMath(boxW / 2f, boxH / 2f, boxD)
 
     private val _data = MutableStateFlow(SensorData())
@@ -126,7 +128,7 @@ class SensorProbe(context: Context) : SensorEventListener {
                 }
                 lastGyrTimestamp = gyrTs
 
-                emit(lastDt)
+                emit(lastDt, gyrTs)
             }
             Sensor.TYPE_ACCELEROMETER -> {
                 aX = event.values[0]; aY = event.values[1]; aZ = event.values[2]
@@ -139,7 +141,7 @@ class SensorProbe(context: Context) : SensorEventListener {
         }
     }
 
-    private fun emit(dt: Float) {
+    private fun emit(dt: Float, gyroTimestampNs: Long) {
         // ── 1. 欧拉角 (ZYX, C code convention) ──
         // e[0]=roll(around X), e[1]=pitch(around Y), e[2]=yaw(around Z)
         val test = qY * qW - qX * qZ  // different from YXZ!
@@ -233,6 +235,14 @@ class SensorProbe(context: Context) : SensorEventListener {
                 "mahony6"  -> floatArrayOf(FusionConfig.mahonyKp, FusionConfig.mahonyKi, 0f)
                 else       -> floatArrayOf(0f, 0f, 0f)
             },
+        )
+        // ── 6. Socket output ──
+        SocketManager.onSensorData(
+            qX, qY, qZ, qW,
+            fixGX, fixGY, fixGZ,   // gyroC (corrected)
+            fixAX, fixAY, fixAZ,    // accelC (corrected, negated)
+            fixMX, fixMY, fixMZ,    // magC (corrected)
+            gyroTimestampNs,
         )
     }
 

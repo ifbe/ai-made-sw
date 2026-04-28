@@ -88,7 +88,13 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    UISpace(data = sensorData)
+                    UISpace(data = sensorData, algoLabel = when (FusionConfig.algorithm) {
+                        "mahony3"  -> "MH3"
+                        "mahony6"  -> "MH6"
+                        "madgwick" -> "MDW"
+                        "ekf"      -> "EKF"
+                        else       -> "??"
+                    }, boxSpace = renderer)
 
                 }
             }
