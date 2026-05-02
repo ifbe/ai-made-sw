@@ -1,6 +1,9 @@
 package com.example.waterinbox.math
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.sqrt
+
 
 /** Fast inverse square root, matching the C implementation exactly. */
 private fun invSqrt(x: Float): Float {
@@ -244,9 +247,85 @@ object FusionState {
  */
 object FusionConfig {
     var algorithm = "mahony6"
+    private val _yawAlgorithm = MutableStateFlow("none")
+    val yawAlgorithmFlow: StateFlow<String> = _yawAlgorithm
+    var yawAlgorithm: String
+        get() = _yawAlgorithm.value
+        set(v) { _yawAlgorithm.value = v }
     const val madgwickBeta = 0.5f
     const val mahonyKp = 1.0f
     const val mahonyKi = 0.0f
+
+
+    // Accelerometer reading (updated by SensorManager on each accel event)
+    var accelX = 0f
+    var accelY = 0f
+    var accelZ = 0f
+    // Magnetometer reading (updated by SensorManager on each mag event)
+    var magX = 0f
+    var magY = 0f
+    var magZ = 0f
+}
+
+/**
+ * Yaw correction: input=fused quat (qx,qy,qz,qw), output=yaw-corrected quat.
+ * Pipeline: fuse → fixYaw → emit → Socket
+ */
+fun fixYaw(qx: Float, qy: Float, qz: Float, qw: Float): FloatArray {
+    return when (FusionConfig.yawAlgorithm) {
+        "none" -> floatArrayOf(qx, qy, qz, qw)
+        "mag"  -> applyMagYawCorrection(qx, qy, qz, qw)
+        "gps"  -> floatArrayOf(qx, qy, qz, qw)  // TODO: GPS-based yaw fix
+        else   -> floatArrayOf(qx, qy, qz, qw)
+    }
+}
+
+/**
+ * Magnetometer-based yaw correction.
+ * Steps:
+ *  1. Compute current yaw from quat_fused (ZYX euler)
+ *  2. Compute reference yaw from magnetometer readings
+ *  3. Difference → apply as Z-axis rotation to quaternion
+ */
+private fun applyMagYawCorrection(qx: Float, qy: Float, qz: Float, qw: Float): FloatArray {
+    // Current yaw from quaternion (ZYX convention, same as C code)
+    val test = qy * qw - qx * qz
+    val curYaw = if (test > 0.499f || test < -0.499f) {
+        0f
+    } else {
+        kotlin.math.atan2(2f * (qz * qw + qx * qy), 1f - 2f * (qy * qy + qz * qz)).toFloat()
+    }
+
+    // Reference yaw from magnetometer (horizontal component only)
+    val mLen = sqrt(FusionConfig.magX * FusionConfig.magX + FusionConfig.magY * FusionConfig.magY)
+    if (mLen < 1e-6f) return floatArrayOf(qx, qy, qz, qw)
+
+    // atan2(magY, magX) gives heading relative to magnetic north
+    val refYaw = kotlin.math.atan2(FusionConfig.magY / mLen, FusionConfig.magX / mLen).toFloat()
+
+
+    // Yaw correction angle
+    var dYaw = refYaw - curYaw
+    // Normalize to [-PI, PI]
+    while (dYaw > Math.PI.toFloat()) dYaw -= (2f * Math.PI.toFloat())
+    while (dYaw < -Math.PI.toFloat()) dYaw += (2f * Math.PI.toFloat())
+
+    if (kotlin.math.abs(dYaw) < 1e-4f) return floatArrayOf(qx, qy, qz, qw)
+
+
+    // Apply Z-axis rotation: quat_new = quat_z_correction * quat_old
+    // Z-rotation quaternion: [sin(dYaw/2)*0, sin(dYaw/2)*0, sin(dYaw/2)*1, cos(dYaw/2)]
+    val half = dYaw * 0.5f
+    val qhz = kotlin.math.sin(half.toDouble()).toFloat()
+    val qhw = kotlin.math.cos(half.toDouble()).toFloat()
+
+    // Quaternion multiplication: q_new = q_z * q_old
+    return floatArrayOf(
+        qw * qhz + qx * qhw - qy * qhz + qz * qhz,
+        qw * qhz - qx * qhz + qy * qhw + qz * qhz,
+        qw * qhz + qx * qhz - qy * qhz + qz * qhw,
+        qw * qhz - qx * qhz - qy * qhz - qz * qhz
+    )
 }
 
 /**

@@ -64,16 +64,16 @@ class MainActivity : ComponentActivity() {
                 val renderer = remember { BoxSpace(context) }
 
                 // Update GL renderer with pre-computed gravity from SensorManager.emit()
-                renderer.setGravity(
-                    sensorData.gravity[0],
-                    sensorData.gravity[1],
-                    sensorData.gravity[2]
-                )
+                 renderer.setGravity(
+                     sensorData.gravity[0],
+                     sensorData.gravity[1],
+                     sensorData.gravity[2]
+                 )
                 renderer.setQuaternion(
-                    sensorData.quaternion[0],
-                    sensorData.quaternion[1],
-                    sensorData.quaternion[2],
-                    sensorData.quaternion[3]
+                    sensorData.quatFixed[0],
+                    sensorData.quatFixed[1],
+                    sensorData.quatFixed[2],
+                    sensorData.quatFixed[3]
                 )
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -88,13 +88,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    UISpace(data = sensorData, algoLabel = when (FusionConfig.algorithm) {
-                        "mahony3"  -> "MH3"
-                        "mahony6"  -> "MH6"
-                        "madgwick" -> "MDW"
-                        "ekf"      -> "EKF"
-                        else       -> "??"
-                    }, boxSpace = renderer)
+                    UISpace(data = sensorData, boxSpace = renderer)
 
                 }
             }

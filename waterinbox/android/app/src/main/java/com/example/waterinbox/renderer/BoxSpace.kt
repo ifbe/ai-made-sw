@@ -51,6 +51,13 @@ class BoxSpace(context: Context) : GLSurfaceView.Renderer {
     @Volatile private var tFLx = 0f; @Volatile private var tFLy = 0f; @Volatile private var tFLz = 0f
     @Volatile private var tBLx = 0f; @Volatile private var tBLy = 0f; @Volatile private var tBLz = 0f
     @Volatile private var tBRx = 0f; @Volatile private var tBRy = 0f; @Volatile private var tBRz = 0f
+    // Draw toggles — controlled by UI panel
+    @Volatile var drawWorldAxes = true
+    @Volatile var drawGravityArrow = true
+    @Volatile var drawMagnetArrow = true
+    @Volatile var drawBoat = true
+    @Volatile var drawWaterSurface = true
+    @Volatile var drawWaterBody = true
 
     /** Returns the 8 boat corner positions [x,y,z]×8 as a FloatArray. Call after onDrawFrame. */
     fun getBoatVertices(): FloatArray = floatArrayOf(
@@ -161,25 +168,39 @@ class BoxSpace(context: Context) : GLSurfaceView.Renderer {
         wzX =  2f * (qx*qz - qy*qw); wzY =  2f * (qy*qz + qx*qw); wzZ =  1f - 2f*(qx*qx + qy*qy)
 
         // ── 2. Gravity arrow ──
-        val gLen1 = sqrt(gX * gX + gY * gY + gZ * gZ)
-        if (gLen1 >= 0.001f) {
-            drawArrow(gX / gLen1, gY / gLen1, gZ / gLen1, mvp)
+        val aX = com.example.waterinbox.math.FusionConfig.accelX
+        val aY = com.example.waterinbox.math.FusionConfig.accelY
+        val aZ = com.example.waterinbox.math.FusionConfig.accelZ
+        val gLen1 = sqrt(aX * aX + aY * aY + aZ * aZ)
+        if (drawGravityArrow && gLen1 >= 0.001f) {
+            drawArrow(aX / gLen1, aY / gLen1, aZ / gLen1, mvp)
+        }
+
+        // ── Magnet arrow (from FusionConfig mag) ──
+        val mX = com.example.waterinbox.math.FusionConfig.magX
+        val mY = com.example.waterinbox.math.FusionConfig.magY
+        val mZ = com.example.waterinbox.math.FusionConfig.magZ
+        val mLen = sqrt(mX * mX + mY * mY + mZ * mZ)
+        if (drawMagnetArrow && mLen >= 0.001f) {
+            drawArrow(mX / mLen, mY / mLen, mZ / mLen, mvp, shaftLen * 0.6f)
         }
 
         // ── 3. Boat ──
         val gLen2 = sqrt(gX * gX + gY * gY + gZ * gZ)
-        if (gLen2 >= 0.001f) {
+        if (drawBoat && gLen2 >= 0.001f) {
             drawBoat(mvp)
         }
 
         // ── World axis debug rays ──
-        val axisLen = 1000f  // box-space length to stretch across screen
-        drawDebugLine(0f, 0f, 0f, wxX * axisLen, wxY * axisLen, wxZ * axisLen, 1f, 0.05f, 0.05f, mvp)  // red: world X
-        drawDebugLine(0f, 0f, 0f, wyX * axisLen, wyY * axisLen, wyZ * axisLen, 0.05f, 1f, 0.05f, mvp)  // green: world Y
-        drawDebugLine(0f, 0f, 0f, wzX * axisLen, wzY * axisLen, wzZ * axisLen, 0.05f, 0.05f, 1f, mvp)  // blue: world Z
+        if (drawWorldAxes) {
+            val axisLen = 1000f  // box-space length to stretch across screen
+            drawDebugLine(0f, 0f, 0f, wxX * axisLen, wxY * axisLen, wxZ * axisLen, 1f, 0.05f, 0.05f, mvp)  // red: world X
+            drawDebugLine(0f, 0f, 0f, wyX * axisLen, wyY * axisLen, wyZ * axisLen, 0.05f, 1f, 0.05f, mvp)  // green: world Y
+            drawDebugLine(0f, 0f, 0f, wzX * axisLen, wzY * axisLen, wzZ * axisLen, 0.05f, 0.05f, 1f, mvp)  // blue: world Z
+        }
 
         // ── 2. Water surface polygon (opaque) ──
-        if (gLen3 >= 0.001f) {
+        if (drawWaterSurface && gLen3 >= 0.001f) {
             val result = boxMath.solveWaterPlane(floatArrayOf(gX, gY, gZ))
             if (result.isWaterVisible && result.polygon.size >= 3) {
                 drawWaterSurface(result.polygon, mvp)
@@ -187,7 +208,7 @@ class BoxSpace(context: Context) : GLSurfaceView.Renderer {
         }
 
         // ── 3. Water body (transparent, depth write OFF) ──
-        if (gLen3 >= 0.001f) {
+        if (drawWaterBody && gLen3 >= 0.001f) {
             val nx = gX / gLen3; val ny = gY / gLen3; val nz = gZ / gLen3
             GLES30.glEnable(GLES30.GL_BLEND)
             GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
@@ -397,7 +418,8 @@ class BoxSpace(context: Context) : GLSurfaceView.Renderer {
 
     // Arrow: from box center toward gravity direction
     // Shaft from center to tip, cone at the tip (pointing in gravity direction)
-    private fun drawArrow(gx: Float, gy: Float, gz: Float, mvp: FloatArray) {
+    private fun drawArrow(gx: Float, gy: Float, gz: Float, mvp: FloatArray, customLength: Float = -1f) {
+        val arrowLen = if (customLength > 0f) customLength else shaftLen
         val sides = 12
         val cr = 0.9f; val cg = 0.15f; val cb = 0.15f  // red cone
         val greenR = 0.15f; val greenG = 0.9f; val greenB = 0.15f  // green shaft

@@ -55,6 +55,21 @@ Q_NED_TO_ENU = [0, -√2/2, -√2/2, 0]
 q_enu = Q_NED_TO_ENU ⊗ q_ned
 ```
 
+### 四元数输出（quatFused / quatFixed）
+
+融合输出 `quatFused` 经过 yaw 修正后得到 `quatFixed`，两者都在 UI 面板上实时显示：
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| `quatFused` | Mahony3/6 / Madgwick / EKF | 融合后的四元数 |
+| `quatFixed` | `fixYaw(quatFused)` | yaw 修正后的四元数（用于渲染和 Socket） |
+
+yaw 修正算法（`FusionConfig.yawAlgorithm`）：
+- `none` — 不修正
+- `mag` — 磁力计 yaw 修正
+
+---
+
 ### 重力向量（世界 → 机体）
 
 用四元数逆旋把世界重力 (0, 0, -1) 变换到机体坐标：
@@ -75,14 +90,27 @@ gZ = -(qw² + qz² - qx² - qy²)
 
 ## 渲染架构
 
+### 渲染开关（UI 可控）
+
+`BoxSpace` 暴露 6 个 `@Volatile var` 标志位，由 UI 面板右上角 ◎ 开关控制：
+
+| 标志 | 默认 | 说明 |
+|------|------|------|
+| `drawWorldAxes` | true | 世界坐标系轴调试射线（红/绿/蓝） |
+| `drawGravityArrow` | true | 重力箭头（绿色 shaft + 红色 cone） |
+| `drawMagnetArrow` | true | 磁力箭头（短箭头，0.6x 重力箭头长度） |
+| `drawBoat` | true | 木筏 8 点顶点 |
+| `drawWaterSurface` | true | 水面 polygon |
+| `drawWaterBody` | true | 水下半透明 quad |
+
 ### 渲染顺序
 
-1. **四元数正交基**（一次算好，箭头和木筏共用 wx/wy/wz）
-2. **重力箭头**（蓝色锥 + 黄色轴，programArrow shader）
-3. **木筏**（扁平矩形，programArrow shader，顶部棕色，底部 magenta）
-4. **调试射线**（红/绿/蓝坐标系轴，从原点延伸 box-space 1000 单位）
-5. **水面 polygon** — 浅蓝 (0.5, 0.7, 1.0)，alpha=1.0（不透明），`GL_POLYGON_OFFSET_FILL` 避免 z-fighting
-6. **水下水体** — 半透明，depth write 关闭，`GL_BLEND` 开启
+1. **重力箭头**（programArrow，drawGravityArrow 控制）
+2. **磁力箭头**（programArrow，drawMagnetArrow 控制，0.6x 长度）
+3. **木筏**（programArrow，drawBoat 控制）
+4. **世界坐标轴射线**（programArrow，drawWorldAxes 控制）
+5. **水面 polygon**（programWaterSurface，drawWaterSurface 控制，alpha=1.0 不透明，`GL_POLYGON_OFFSET_FILL` 避免 z-fighting）
+6. **水下水体**（programWater，drawWaterBody 控制，depth write 关闭）
 
 ### 水体深度着色（Water Body Shader）
 
@@ -156,22 +184,35 @@ alpha = 0.85
 - [ ] EKF 调参：协方差矩阵 Q/R 的合理取值
 - [ ] 性能优化：水面多边形预计算缓存
 
+## UI 面板布局
+
+四按钮四面板结构：
+
+| 位置 | 按钮 | 展开内容 |
+|------|------|---------|
+| 左上 | ▼ | 传感器数据：dt / Gyro / Accel / Mag / gyroCorr / accelCorr / magCorr / **qFused** / **qFixed** / Euler / AxisA / WrdX / WrdY / WrdZ / Grav / 8个船角顶点 / 水面多边形点 |
+| 右上 | ▼ | 渲染开关（◎）：坐标轴 / 重力箭头 / 磁力箭头 / 小船 / 水面 / 水体 — 展开在按钮左侧 |
+| 左下 | ▲ | MH3/MH6/MDW/EKF 切换 + YAW:none/mag 切换 + kp/ki/beta 参数面板 — 展开在按钮上方 |
+| 右下 | 已连接/未连接 + ▲ | IP/端口/协议/内容 选择器 — 展开在按钮上方 |
+
+点击算法按钮循环切换融合算法；点击 YAW 按钮循环切换 yaw 修正模式（none ↔ mag）。
+
 ## 文件结构
 
-```
+
 android/app/src/main/java/com/example/waterinbox/
 ├── math/
 │   ├── BoxMath.kt          # 水面多边形计算 + 所有 fusion 函数 + gravity 向量
 │   └── (FusionConfig.kt)   # 已被内联到 BoxMath.kt (FusionConfig/FusionState object)
 ├── sensor/
-│   ├── SensorManager.kt    # 传感器读取 + fusion 选择 + 欧拉角/轴角计算
-│   └── SensorData.kt       # 传感器数据结构
+│   └── SensorManager.kt    # 传感器读取 + fusion 选择 + 欧拉角/轴角计算（SensorData 内联在此）
 ├── renderer/
 │   └── BoxSpace.kt         # OpenGL ES 3.0 渲染（箭头、木筏、水面、水体）
+│                           # 暴露 6 个 draw flag：`drawWorldAxes / drawGravityArrow / drawMagnetArrow / drawBoat / drawWaterSurface / drawWaterBody`
 ├── socket/
 │   └── SocketManager.kt   # UDP 发送，non-blocking 队列
 └── ui/
-    └── UISpace.kt          # 调试叠加层（直接调用 BoxSpace.getBoatVertices() 显示 8 点坐标）
+    └── UISpace.kt          # 四按钮四面板 UI 叠加层（调用 BoxSpace.getBoatVertices() 显示 8 点坐标）
 ```
 
 ## Socket 通信
@@ -186,66 +227,4 @@ UDP 发送，contentType 两档：
 发送队列：`LinkedBlockingQueue<String>(100)`，非阻塞 `offer()` 写入，IO coroutine 轮询 `poll(5ms)` 发送。队列满时丢弃最旧数据，不阻塞传感器线程。
 
 
-IP/Port 可在 UI 面板中直接编辑（底部左侧面板）。
-
-## C 参考代码
-
-- `ahrs.mahony.c` — Mahony 6轴/9轴融合（含 magnetometer 参考实现）
-- `ahrs.madgwick.c` — Madgwick 梯度下降
-- `libmath.rotation.c` — 基础旋转数学
-
-路径：`/Users/ifbe/Desktop/code/ifbe/42/library/libsoft1/libauto/estimate/ahrs/`
-
-## 历史
-
-### 2026-04-27
-
-**木筏渲染（BoxSpace OpenGL）**
-- 使用四元数正交基向量 wx/wy/wz（与坐标系调试射线共用）
-- forward=wy, right=wx, up=wz，直接向量加法算 8 个顶点
-- 几何：halfLen=boxD·0.12, halfWid=boxD·0.08, raftH=boxD/12（扁平）
-- 底面颜色 0xff00ff (magenta)，侧面棕色
-- 底部 4 点在水面上（n·P=0），顶部 4 点在 n·P=raftH
-- 叠加层直接调用 `BoxSpace.getBoatVertices()` 获取 8 点，不重复计算
-
-**UI 面板重构**
-- 底部左侧 socket 面板顺序：IP → Port → Protocol → Content
-- IP/Port 改为可编辑 `SocketTextField`（BasicTextField，深色背景，绿色光标）
-- 移除旧的 EditableText（cycle-click 交互）
-
-**Socket 非阻塞发送**
-- `LinkedBlockingQueue<String>(100)` 替代阻塞 send()
-- `onSensorData` 中 `offer()` 非阻塞写入，IO coroutine 轮询发送
-- 队列满时丢弃最旧数据，不阻塞传感器线程
-
-**坐标系统统一**
-- boxD 统一为 `min(screenW, screenH) / 2`（BoxSpace、SensorManager、UISpace overlay 一致）
-
-### 2026-04-26
-
-**坐标系修复**
-- Madgwick ENU/NED 转换：quaternion 用 Hamilton 乘法 `[0, √2/2, √2/2, 0] ⊗ q_enu`，gyro/accel 用 `[gy, gx, -gz]`
-- `halfvz` 公式补上负号：-(qw² + qz² - 0.5)，与 C 代码一致
-- `fuse_mahony3` 重写为正确 Kotlin 语法（之前是 C 代码直接复制粘贴的混写 bug）
-
-**渲染重构**
-- `toNDC` 散乱调用 → 标准 MVP 矩阵管线（World=I, View=z_neg, Proj=ortho）
-- `drawDebugLine` 方向向量归一化问题修复
-- `boxD = min(W, H) / 2`，箭头尺寸按 boxD 比例缩放
-- 坐标系轴 debug 线段加粗（线宽 `0.05f → boxD * 0.025f`）
-
-**水体着色**
-- 新增两个独立 shader：`programWaterSurface`（水面）和 `programWater`（水体）
-- 水面：polygon 画法，纯色浅蓝 (0.5, 0.7, 1.0)，alpha=1.0，不透明
-- 水体：screen quad 按 `n·P` 算深度，lerp 浅蓝→深蓝，`0.97^(depth/10)` 衰减，alpha=0.85，半透明
-- 渲染顺序优化：轴→水面→水体，depth write 管控避免 z-fighting
-- `precision highp float`（32位浮点）用于水体 shader
-
-**UI**
-- 叠加层 `UISpace.kt`（原 `SensorOverlay.kt`）字段重排：dt→gyro组，AccelR→WorldAxis→WaterPoly之间
-- 删除了重复的 `AccelR` 行（与最上方 Accel 重复）
-- 按钮循环顺序：madgwick → mahony3 → mahony6 → ekf → madgwick
-
-**文件改名**
-- `renderer/WaterRenderer.kt` → `renderer/BoxSpace.kt`
-- `ui/SensorOverlay.kt` → `ui/UISpace.kt`
+IP/Port 可在 UI 面板中直接编辑（右下角面板）。

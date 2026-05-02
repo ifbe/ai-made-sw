@@ -15,6 +15,7 @@ import com.example.waterinbox.math.fuse_madgwick
 import com.example.waterinbox.math.fuse_mahony3
 import com.example.waterinbox.math.fuse_mahony6
 import com.example.waterinbox.math.fuse_ekf
+import com.example.waterinbox.math.fixYaw
 import kotlin.math.sqrt
 
 data class SensorData(
@@ -26,7 +27,8 @@ data class SensorData(
     val gyroCorr: FloatArray = floatArrayOf(0f, 0f, 0f),
     val magnetCorr: FloatArray = floatArrayOf(0f, 0f, 0f),
 
-    val quaternion: FloatArray = floatArrayOf(0f, 0f, 0f, 1f),  // [qx,qy,qz,qw]
+    val quatFused: FloatArray = floatArrayOf(0f, 0f, 0f, 1f),  // [qx,qy,qz,qw] — fuse output
+    val quatFixed: FloatArray = floatArrayOf(0f, 0f, 0f, 1f),  // [qx,qy,qz,qw] — after yaw correction
     val euler: FloatArray = floatArrayOf(0f, 0f, 0f),
     val axisAngle: FloatArray = floatArrayOf(0f, 0f, 0f, 0f),  // (axisX, axisY, axisZ, angleDeg)
 
@@ -46,7 +48,7 @@ data class SensorData(
         if (javaClass != other?.javaClass) return false
         other as SensorData
         return gyro.contentEquals(other.gyro) && accel.contentEquals(other.accel) &&
-                magnet.contentEquals(other.magnet) && quaternion.contentEquals(other.quaternion) &&
+                magnet.contentEquals(other.magnet) && quatFused.contentEquals(other.quatFused) &&
                 euler.contentEquals(other.euler) && axisAngle.contentEquals(other.axisAngle) &&
                 gravity.contentEquals(other.gravity) &&
                 kotlin.math.abs(dt - other.dt) < 1e-6f
@@ -56,7 +58,7 @@ data class SensorData(
         var result = gyro.contentHashCode()
         result = 31 * result + accel.contentHashCode()
         result = 31 * result + magnet.contentHashCode()
-        result = 31 * result + quaternion.contentHashCode()
+        result = 31 * result + quatFused.contentHashCode()
         result = 31 * result + euler.contentHashCode()
         result = 31 * result + axisAngle.contentHashCode()
         result = 31 * result + gravity.contentHashCode()
@@ -112,7 +114,7 @@ class SensorProbe(context: Context) : SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
             Sensor.TYPE_GYROSCOPE -> {
-                val gyrTs = event.timestamp  // nanoseconds since boot (sensor time base)
+                val gyrTs = event.timestamp
                 gX = event.values[0]; gY = event.values[1]; gZ = event.values[2]
                 fixGX = gX; fixGY = gY; fixGZ = gZ
 
@@ -125,23 +127,30 @@ class SensorProbe(context: Context) : SensorEventListener {
                         else        -> fuse_mahony6(fixGX, fixGY, fixGZ, fixAX, fixAY, fixAZ, qW, qX, qY, qZ, lastDt)
                     }
                     qX = result[0]; qY = result[1]; qZ = result[2]; qW = result[3]
-                }
-                lastGyrTimestamp = gyrTs
+                    lastGyrTimestamp = gyrTs
 
-                emit(lastDt, gyrTs)
+                    // fuse → fixYaw → emit
+                    val (fx, fy, fz, fw) = fixYaw(qX, qY, qZ, qW)
+                    emit(lastDt, gyrTs, fx, fy, fz, fw)
+                } else {
+                    lastGyrTimestamp = gyrTs
+                }
             }
             Sensor.TYPE_ACCELEROMETER -> {
                 aX = event.values[0]; aY = event.values[1]; aZ = event.values[2]
                 fixAX = -aX; fixAY = -aY; fixAZ = -aZ
+                FusionConfig.accelX = fixAX; FusionConfig.accelY = fixAY; FusionConfig.accelZ = fixAZ
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
                 mX = event.values[0]; mY = event.values[1]; mZ = event.values[2]
                 fixMX = mX; fixMY = mY; fixMZ = mZ
+                FusionConfig.magX = fixMX; FusionConfig.magY = fixMY; FusionConfig.magZ = fixMZ
             }
         }
     }
 
-    private fun emit(dt: Float, gyroTimestampNs: Long) {
+    private fun emit(dt: Float, gyroTimestampNs: Long, fX: Float, fY: Float, fZ: Float, fW: Float) {
+        // (fX,fY,fZ,fW) = quat_fixed from fixYaw; (qX,qY,qZ,qW) = quat_fused from fuse
         // ── 1. 欧拉角 (ZYX, C code convention) ──
         // e[0]=roll(around X), e[1]=pitch(around Y), e[2]=yaw(around Z)
         val test = qY * qW - qX * qZ  // different from YXZ!
@@ -191,22 +200,22 @@ class SensorProbe(context: Context) : SensorEventListener {
             axisX = 0f; axisY = 0f; axisZ = 1f
         }
 
-        // ── 3. 重力向量 (四元数逆旋 from world to body) ──
-        val gravityLocalX =  2f * (qW * qY - qZ * qX)
-        val gravityLocalY = -2f * (qY * qZ + qW * qX)
-        val gravityLocalZ = -1f + 2f * (qX * qX + qY * qY)
+        // Use quat_fixed for rendering (orientation of the box)
+        // Gravity in local space from quat_fixed:
+        val gravityLocalX =  2f * (fW * fY - fZ * fX)
+        val gravityLocalY = -2f * (fY * fZ + fW * fX)
+        val gravityLocalZ = -1f + 2f * (fX * fX + fY * fY)
 
         // World axis vectors — exact port of C quaternion2bodyspaceworldaxis(qx,qy,qz,qw)
-        // r=worldX+, f=worldY+, t=worldZ+ in body space
-        val wxX =  1f - 2f*(qY*qY + qZ*qZ)
-        val wxY =  2f * (qX*qY - qZ*qW)
-        val wxZ =  2f * (qX*qZ + qY*qW)
-        val wyX =  2f * (qX*qY + qZ*qW)
-        val wyY =  1f - 2f*(qX*qX + qZ*qZ)
-        val wyZ =  2f * (qY*qZ - qX*qW)
-        val wzX =  2f * (qX*qZ - qY*qW)
-        val wzY =  2f * (qY*qZ + qX*qW)
-        val wzZ =  1f - 2f*(qX*qX + qY*qY)
+        val wxX =  1f - 2f*(fY*fY + fZ*fZ)
+        val wxY =  2f * (fX*fY - fZ*fW)
+        val wxZ =  2f * (fX*fZ + fY*fW)
+        val wyX =  2f * (fX*fY + fZ*fW)
+        val wyY =  1f - 2f*(fX*fX + fZ*fZ)
+        val wyZ =  2f * (fY*fZ - fX*fW)
+        val wzX =  2f * (fX*fZ - fY*fW)
+        val wzY =  2f * (fY*fZ + fX*fW)
+        val wzZ =  1f - 2f*(fX*fX + fY*fY)
 
         // ── 5. 推送 ──
         _data.value = SensorData(
@@ -216,7 +225,8 @@ class SensorProbe(context: Context) : SensorEventListener {
             gyroCorr = floatArrayOf(fixGX, fixGY, fixGZ),
             accelCorr = floatArrayOf(fixAX, fixAY, fixAZ),
             magnetCorr = floatArrayOf(fixMX, fixMY, fixMZ),
-            quaternion = floatArrayOf(qX, qY, qZ, qW),
+            quatFused = floatArrayOf(qX, qY, qZ, qW),   // quat_fused
+            quatFixed  = floatArrayOf(fX, fY, fZ, fW),  // quat_fixed
             euler = floatArrayOf(
                 Math.toDegrees(roll.toDouble()).toFloat(),
                 Math.toDegrees(pitch.toDouble()).toFloat(),
@@ -238,7 +248,7 @@ class SensorProbe(context: Context) : SensorEventListener {
         )
         // ── 6. Socket output ──
         SocketManager.onSensorData(
-            qX, qY, qZ, qW,
+            fX, fY, fZ, fW,   // quat_fixed
             fixGX, fixGY, fixGZ,   // gyroC (corrected)
             fixAX, fixAY, fixAZ,    // accelC (corrected, negated)
             fixMX, fixMY, fixMZ,    // magC (corrected)
