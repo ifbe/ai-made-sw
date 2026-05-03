@@ -8,6 +8,8 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.Spinner
+import com.example.chatroom.ui.common.AxisView
+import android.widget.TextView
 import com.google.android.material.button.MaterialButton
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -22,7 +24,7 @@ import com.example.chatroom.participants.SerialParticipant
 import com.example.chatroom.participants.SocketParticipant
 import com.example.chatroom.participants.SocketType
 
-enum class ChatInputMode { TEXT, REMOTE, VOICE, FILE }
+enum class ChatInputMode { TEXT, REMOTE, DIM3, VOICE, FILE }
 
 class ChatFragment : Fragment() {
 
@@ -37,6 +39,7 @@ class ChatFragment : Fragment() {
     private lateinit var inputBarRemote: View
     private lateinit var inputBarVoice: View
     private lateinit var inputBarFile: View
+    private lateinit var inputBarDim3: View
 
     private var currentInputMode = ChatInputMode.TEXT
 
@@ -60,6 +63,7 @@ class ChatFragment : Fragment() {
         inputBarRemote = view.findViewById(R.id.inputBarRemote)
         inputBarVoice = view.findViewById(R.id.inputBarVoice)
         inputBarFile = view.findViewById(R.id.inputBarFile)
+        inputBarDim3 = view.findViewById(R.id.inputBarDim3)
 
         adapter = MessageAdapter()
         recyclerView.layoutManager = LinearLayoutManager(requireContext()).apply {
@@ -77,6 +81,7 @@ class ChatFragment : Fragment() {
 
         setupInputModeSpinners()
         setupRemoteControls()
+        setupNumPad()
 
         // 发送按钮
         btnSend.setOnClickListener {
@@ -111,7 +116,7 @@ class ChatFragment : Fragment() {
 
     private fun setupInputModeSpinners() {
         val v = requireView()
-        val modes = listOf("📝文字", "🎮遥控", "🎤语音", "📁文件")
+        val modes = listOf("📝文字", "🎮遥控", "📐三维", "🎤语音", "📁文件")
 
         fun configureSpinner(spinner: Spinner) {
             val selAdapter = ArrayAdapter(requireContext(), R.layout.spinner_selected, modes)
@@ -122,12 +127,14 @@ class ChatFragment : Fragment() {
 
         configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputMode))
         configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputModeRemote))
+        configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputModeDim3))
         configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputModeVoice))
         configureSpinner(v.findViewById<Spinner>(R.id.spinnerInputModeFile))
 
         val allSpinners = listOf(
             v.findViewById<Spinner>(R.id.spinnerInputMode),
             v.findViewById<Spinner>(R.id.spinnerInputModeRemote),
+            v.findViewById<Spinner>(R.id.spinnerInputModeDim3),
             v.findViewById<Spinner>(R.id.spinnerInputModeVoice),
             v.findViewById<Spinner>(R.id.spinnerInputModeFile)
         )
@@ -139,6 +146,7 @@ class ChatFragment : Fragment() {
             inputBarText.visibility = if (selected == ChatInputMode.TEXT) View.VISIBLE else View.GONE
             inputBarRemote.visibility = if (selected == ChatInputMode.REMOTE) View.VISIBLE else View.GONE
             inputBarVoice.visibility = if (selected == ChatInputMode.VOICE) View.VISIBLE else View.GONE
+            inputBarDim3.visibility = if (selected == ChatInputMode.DIM3) View.VISIBLE else View.GONE
             inputBarFile.visibility = if (selected == ChatInputMode.FILE) View.VISIBLE else View.GONE
         }
 
@@ -161,11 +169,111 @@ class ChatFragment : Fragment() {
             R.id.btnRemoteUp to "↑",
             R.id.btnRemoteDown to "↓",
             R.id.btnRemoteLeft to "←",
-            R.id.btnRemoteRight to "→"
+            R.id.btnRemoteRight to "→",
+            R.id.btnRemoteUpLeft to "↖",
+            R.id.btnRemoteUpRight to "↗",
+            R.id.btnRemoteDownLeft to "↙",
+            R.id.btnRemoteDownRight to "↘",
+            R.id.btnRemoteCenter to "◉"
         )
 
         directions.forEach { (btnId, label) ->
-            v.findViewById<MaterialButton>(btnId)!!.setOnClickListener {
+            v.findViewById<TextView>(btnId)!!.setOnClickListener {
+                val sendBubble = Message(
+                    senderId = "self",
+                    senderType = ParticipantType.USER,
+                    senderName = "我",
+                    content = label,
+                    isInfo = false
+                )
+                val sendInfo = Message(
+                    senderId = "self",
+                    senderType = ParticipantType.USER,
+                    senderName = "我",
+                    content = "📤 发送: $label",
+                    isInfo = true
+                )
+                SessionManager.addMessage(sessionId, sendBubble)
+                SessionManager.addMessage(sessionId, sendInfo)
+                broadcastToParticipants(label)
+                val msgs = SessionManager.getMessages(sessionId).toList()
+                adapter.submitList(msgs)
+                recyclerView.scrollToPosition(msgs.size - 1)
+            }
+        }
+
+        setupDim3Controls()
+    }
+
+    private fun setupDim3Controls() {
+        val v = requireView()
+
+
+        // 上箭头和下箭头（上下移动）
+        listOf(R.id.btnDim3Up to "+", R.id.btnDim3DownBtn to "-").forEach { (btnId, label) ->
+            v.findViewById<TextView>(btnId)!!.setOnClickListener {
+                sendMessage(label)
+            }
+        }
+
+
+        // 3x3方向键
+        val dim3Directions = listOf(
+            R.id.btnDim3UpLeft to "↖", R.id.btnDim3Up2 to "↑", R.id.btnDim3UpRight to "↗",
+            R.id.btnDim3Left to "←", R.id.btnDim3Center to "◉", R.id.btnDim3Right to "→",
+            R.id.btnDim3DownLeft to "↙", R.id.btnDim3Down to "↓", R.id.btnDim3DownRight to "↘"
+        )
+        dim3Directions.forEach { (btnId, label) ->
+            v.findViewById<TextView>(btnId)!!.setOnClickListener {
+                sendMessage(label)
+            }
+        }
+
+        // 坐标轴 6 轴旋转按钮
+        val axisView = v.findViewById<AxisView>(R.id.axisViewDim3)
+        axisView?.listener = object : AxisView.OnRotationClickListener {
+            override fun onXRotateCW()  { sendMessage("X+⟳") }
+            override fun onXRotateCCW() { sendMessage("X-⟲") }
+            override fun onYRotateCW()  { sendMessage("Y+⟳") }
+            override fun onYRotateCCW() { sendMessage("Y-⟲") }
+            override fun onZRotateCW()  { sendMessage("Z+⟳") }
+            override fun onZRotateCCW() { sendMessage("Z-⟲") }
+        }
+    }
+
+    private fun sendMessage(label: String) {
+        val sendBubble = Message(
+            senderId = "self",
+            senderType = ParticipantType.USER,
+            senderName = "我",
+            content = label,
+            isInfo = false
+        )
+        val sendInfo = Message(
+            senderId = "self",
+            senderType = ParticipantType.USER,
+            senderName = "我",
+            content = "📤 发送: $label",
+            isInfo = true
+        )
+        SessionManager.addMessage(sessionId, sendBubble)
+        SessionManager.addMessage(sessionId, sendInfo)
+        broadcastToParticipants(label)
+        val msgs = SessionManager.getMessages(sessionId).toList()
+        adapter.submitList(msgs)
+        recyclerView.scrollToPosition(msgs.size - 1)
+    }
+
+    private fun setupNumPad() {
+        val v = requireView()
+        val numDirections = listOf(
+            R.id.btnNum1 to "1", R.id.btnNum2 to "2", R.id.btnNum3 to "3",
+            R.id.btnNum4 to "4", R.id.btnNum5 to "5", R.id.btnNum6 to "6",
+            R.id.btnNum7 to "7", R.id.btnNum8 to "8", R.id.btnNum9 to "9"
+        )
+
+        numDirections.forEach { (btnId, label) ->
+            v.findViewById<TextView>(btnId)!!.setOnClickListener {
                 val sendBubble = Message(
                     senderId = "self",
                     senderType = ParticipantType.USER,

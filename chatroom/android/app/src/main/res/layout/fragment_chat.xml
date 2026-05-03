@@ -36,7 +36,7 @@
             <Spinner
                 android:id="@+id/spinnerInputMode"
                 android:layout_width="56dp"
-                android:layout_height="40dp"
+                android:layout_height="34dp"
                 android:minWidth="56dp"
                 android:background="@null"
                 android:dropDownWidth="160dp" />
@@ -59,14 +59,14 @@
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSend"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
+                android:layout_height="34dp"
                 android:text="发送"
                 android:textColor="#FFFFFF"
                 app:backgroundTint="#2196F3" />
 
         </LinearLayout>
 
-        <!-- 遥控器模式（上下左右大按钮） -->
+        <!-- 遥控器模式（方向键 + 数字键） -->
         <LinearLayout
             android:id="@+id/inputBarRemote"
             android:layout_width="match_parent"
@@ -80,93 +80,245 @@
 
             <Spinner
                 android:id="@+id/spinnerInputModeRemote"
-                android:layout_width="56dp"
-                android:layout_height="40dp"
-                android:minWidth="56dp"
+                android:layout_width="48dp"
+                android:layout_height="34dp"
+                android:minWidth="48dp"
                 android:background="@null"
                 android:dropDownWidth="160dp" />
 
-            <TableLayout
+            <!-- 方向键 3x3 -->
+            <GridLayout
                 android:id="@+id/remoteGrid"
+                android:layout_width="0dp"
+                android:layout_height="150dp"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:columnCount="3"
+                android:rowCount="3"
+                android:padding="2dp">
+
+                <TextView
+                    android:id="@+id/btnRemoteUpLeft"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="↖"
+                    android:textSize="20sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteUp"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="↑"
+                    android:textSize="24sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteUpRight"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="↗"
+                    android:textSize="20sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteLeft"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="←"
+                    android:textSize="24sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteCenter"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="◉"
+                    android:textSize="24sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteRight"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="→"
+                    android:textSize="24sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteDownLeft"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="↙"
+                    android:textSize="20sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteDown"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="↓"
+                    android:textSize="24sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+                <TextView
+                    android:id="@+id/btnRemoteDownRight"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_rowWeight="1"
+                    android:layout_columnWeight="1"
+                    android:gravity="center"
+                    android:text="↘"
+                    android:textSize="20sp"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/bg_remote_btn" />
+
+            </GridLayout>
+
+            <!-- 竖线分隔 -->
+            <View
+                android:layout_width="1dp"
+                android:layout_height="160dp"
+                android:background="#CCCCCC"
+                android:layout_marginHorizontal="6dp" />
+
+            <!-- 数字键 3x3 -->
+            <GridLayout
+                android:id="@+id/numPadGrid"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:gravity="center">
+                android:gravity="center"
+                android:columnCount="3"
+                android:rowCount="3"
+                android:padding="2dp">
 
-                <TableRow android:gravity="center">
+                <!-- Row 0: 1 2 3 -->
+                <TextView
+                    android:id="@+id/btnNum1"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="1"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                    <View
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:background="@android:color/transparent" />
+                <TextView
+                    android:id="@+id/btnNum2"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="2"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnRemoteUp"
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:text="↑"
-                        android:textSize="24sp"
-                        android:textColor="#FFFFFF"
-                        app:backgroundTint="#2196F3" />
+                <TextView
+                    android:id="@+id/btnNum3"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="3"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                    <View
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:background="@android:color/transparent" />
+                <!-- Row 1: 4 5 6 -->
+                <TextView
+                    android:id="@+id/btnNum4"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="4"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                </TableRow>
+                <TextView
+                    android:id="@+id/btnNum5"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="5"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                <TableRow android:gravity="center">
+                <TextView
+                    android:id="@+id/btnNum6"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="6"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnRemoteLeft"
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:text="←"
-                        android:textSize="24sp"
-                        android:textColor="#FFFFFF"
-                        app:backgroundTint="#2196F3" />
+                <!-- Row 2: 7 8 9 -->
+                <TextView
+                    android:id="@+id/btnNum7"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="7"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                    <View
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:background="@android:color/transparent" />
+                <TextView
+                    android:id="@+id/btnNum8"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="8"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnRemoteRight"
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:text="→"
-                        android:textSize="24sp"
-                        android:textColor="#FFFFFF"
-                        app:backgroundTint="#2196F3" />
+                <TextView
+                    android:id="@+id/btnNum9"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:gravity="center"
+                    android:text="9"
+                    android:textSize="22sp"
+                    android:textColor="#333333"
+                    android:background="@drawable/bg_remote_btn" />
 
-                </TableRow>
-
-                <TableRow android:gravity="center">
-
-                    <View
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:background="@android:color/transparent" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnRemoteDown"
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:text="↓"
-                        android:textSize="24sp"
-                        android:textColor="#FFFFFF"
-                        app:backgroundTint="#2196F3" />
-
-                    <View
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:background="@android:color/transparent" />
-
-                </TableRow>
-
-            </TableLayout>
+            </GridLayout>
 
         </LinearLayout>
 
@@ -185,7 +337,7 @@
             <Spinner
                 android:id="@+id/spinnerInputModeVoice"
                 android:layout_width="56dp"
-                android:layout_height="40dp"
+                android:layout_height="34dp"
                 android:minWidth="56dp"
                 android:background="@null"
                 android:dropDownWidth="160dp" />
@@ -215,7 +367,7 @@
             <Spinner
                 android:id="@+id/spinnerInputModeFile"
                 android:layout_width="56dp"
-                android:layout_height="40dp"
+                android:layout_height="34dp"
                 android:minWidth="56dp"
                 android:background="@null"
                 android:dropDownWidth="160dp" />
@@ -227,6 +379,120 @@
                 android:text="文件模式（TODO）"
                 android:textColor="#999999"
                 android:textSize="14sp" />
+
+        </LinearLayout>
+
+        <!-- 三维模式（3D梯形方向键） -->
+        <LinearLayout
+            android:id="@+id/inputBarDim3"
+            android:layout_width="match_parent"
+            android:layout_height="200dp"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:background="#FFFFFF"
+            android:elevation="4dp"
+            android:visibility="gone"
+            android:gravity="center_vertical">
+
+            <Spinner
+                android:id="@+id/spinnerInputModeDim3"
+                android:layout_width="48dp"
+                android:layout_height="34dp"
+                android:minWidth="48dp"
+                android:background="@null"
+                android:dropDownWidth="160dp" />
+
+            <!-- 左侧：上箭头 + 梯形3x3 + 下箭头 -->
+            <LinearLayout
+                android:id="@+id/leftSideDim3"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <!-- 油门+ -->
+                <TextView
+                    android:id="@+id/btnDim3Up"
+                    android:layout_width="80dp"
+                    android:layout_height="24dp"
+                    android:layout_marginBottom="6dp"
+                    android:gravity="center"
+                    android:text="+"
+                    android:textSize="22sp"
+                    android:textStyle="bold"
+                    android:textColor="#FFFFFF"
+                    android:background="@drawable/bg_remote_btn_solid" />
+
+                <!-- 3x3方向键 - 普通按钮 -->
+                <LinearLayout
+                    android:layout_width="120dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <!-- Row 0 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:orientation="horizontal"
+                        android:gravity="center">
+                        <TextView android:id="@+id/btnDim3UpLeft"    android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="↖"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                        <TextView android:id="@+id/btnDim3Up2"      android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="↑"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                        <TextView android:id="@+id/btnDim3UpRight" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="↗"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                    </LinearLayout>
+
+                    <!-- Row 1 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:orientation="horizontal"
+                        android:gravity="center">
+                        <TextView android:id="@+id/btnDim3Left"    android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="←"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                        <TextView android:id="@+id/btnDim3Center" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="◉"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                        <TextView android:id="@+id/btnDim3Right"   android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="→"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                    </LinearLayout>
+
+                    <!-- Row 2 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:orientation="horizontal"
+                        android:gravity="center">
+                        <TextView android:id="@+id/btnDim3DownLeft"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="↙"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                        <TextView android:id="@+id/btnDim3Down"      android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="↓"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                        <TextView android:id="@+id/btnDim3DownRight" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:text="↘"  android:textSize="24sp" android:textColor="#2196F3" android:background="@drawable/bg_remote_btn" />
+                    </LinearLayout>
+
+                </LinearLayout>
+
+                <!-- 油门- -->
+                <TextView
+                    android:id="@+id/btnDim3DownBtn"
+                    android:layout_width="80dp"
+                    android:layout_height="24dp"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:text="-"
+                    android:textSize="22sp"
+                    android:textStyle="bold"
+                    android:textColor="#FFFFFF"
+                    android:background="@drawable/bg_remote_btn_solid" />
+
+            </LinearLayout>
+
+            <!-- 竖线分割 -->
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:layout_marginVertical="0dp"
+                android:background="#CCCCCC" />
+
+            <!-- 旋转控制坐标轴 -->
+            <com.example.chatroom.ui.common.AxisView
+                android:id="@+id/axisViewDim3"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
 
         </LinearLayout>
 
