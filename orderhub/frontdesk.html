@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>食堂排队 · 三队列大屏</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            background: #0b1a2f;
+            font-family: 'Segoe UI', 'PingFang SC', Roboto, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            color: #eef4ff;
+        }
+        
+        /* 新增：三列网格布局 */
+        .grid-layout {
+            display: grid;
+            grid-template-columns: 80px 1fr 80px;
+            gap: 8px;
+            max-width: 1560px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        
+        /* 左列箭头容器 */
+        .left-arrow-col {
+            position: relative;
+            min-height: 700px;
+        }
+        
+        /* 右列箭头容器 */
+        .right-arrow-col {
+            position: relative;
+            min-height: 700px;
+        }
+        
+        /* 中列保持原有screen样式 */
+        .screen {
+            width: 100%;
+            background: #112b45;
+            border-radius: 48px;
+            padding: 30px 30px 25px;
+            box-shadow: 0 25px 50px -8px rgba(0,0,0,0.6), inset 0 2px 4px rgba(255,255,255,0.05);
+            border: 1px solid #2a4a6a;
+        }
+        
+        /* 箭头SVG层 */
+        .arrow-svg-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        h1 {
+            font-weight: 400;
+            font-size: 2.5rem;
+            letter-spacing: 4px;
+            text-align: center;
+            margin-bottom: 20px;
+            color: #b3e0ff;
+            text-shadow: 0 4px 10px rgba(0,160,255,0.3);
+        }
+
+        /* 状态栏 */
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            background: #0a1f2c;
+            border-radius: 40px;
+            padding: 12px 25px;
+            margin-bottom: 20px;
+            font-size: 1.3rem;
+            border: 1px solid #2a5a7a;
+        }
+        .capacity-info {
+            color: #aaccee;
+        }
+        .capacity-value {
+            font-weight: 700;
+            color: #f5e56b;
+            font-size: 1.8rem;
+            margin: 0 8px;
+        }
+
+        /* 三大区域 */
+        .section {
+            background: #0a1f2c;
+            border-radius: 28px;
+            padding: 20px 25px;
+            margin-bottom: 25px;
+            border: 1px solid #2a5a7a;
+        }
+        .section-header {
+            display: flex;
+            align-items: baseline;
+            font-size: 1.8rem;
+            color: #aaccee;
+            padding-bottom: 5px;
+            margin-bottom: 0;
+        }
+        .section-header span {
+            margin-left: 15px;
+            font-size: 1.2rem;
+            color: #7fa5c2;
+        }
+
+        /* 箭头行 - 紧贴标题 */
+        .arrow-row {
+            display: flex;
+            align-items: center;
+            padding: 2px 0 8px 0;
+            margin-top: -2px;
+            font-size: 1.1rem;
+            color: #7fa5c2;
+            white-space: nowrap;
+            border-bottom: 1px solid #2a5a7a;
+            margin-bottom: 12px;
+        }
+        .arrow-line {
+            display: flex;
+            align-items: center;
+            letter-spacing: -2px;
+        }
+        .arrow-blue .arrow-head { color: #4fa5d8; }
+        .arrow-blue .arrow-body { color: #4fa5d8; }
+        .arrow-blue .arrow-text { color: #7fc4e8; }
+        
+        .arrow-green .arrow-head { color: #6fcf97; }
+        .arrow-green .arrow-body { color: #6fcf97; }
+        .arrow-green .arrow-text { color: #9ed9b8; }
+        
+        .arrow-gray .arrow-head { color: #88aac0; }
+        .arrow-gray .arrow-body { color: #88aac0; }
+        .arrow-gray .arrow-text { color: #aac0ce; }
+
+        .arrow-head {
+            font-size: 1.6rem;
+            font-weight: bold;
+        }
+        .arrow-body {
+            font-size: 1.4rem;
+            letter-spacing: -3px;
+        }
+        .arrow-text {
+            margin: 0 2px 0 5px;
+            font-size: 1rem;
+        }
+
+        /* 队列容器——横向滚动 */
+        .queue-row {
+            display: flex;
+            gap: 20px;
+            overflow-x: auto;
+            padding: 10px 5px 15px;
+            scrollbar-width: thin;
+            scrollbar-color: #2e6a92 #0a1f2c;
+            min-height: 140px;
+            align-items: center;
+        }
+        .card {
+            flex: 0 0 auto;
+            min-width: 140px;
+            padding: 18px 15px;
+            border-radius: 24px;
+            background: #1d3b55;
+            box-shadow: 0 8px 0 #0a1a26, 0 4px 10px black;
+            border: 1px solid #3f7ea3;
+            text-align: center;
+            transition: transform 0.1s;
+            cursor: pointer;
+            user-select: none;
+        }
+        .card:active {
+            transform: translateY(4px);
+            box-shadow: 0 4px 0 #0a1a26, 0 4px 10px black;
+        }
+        .card-number {
+            font-size: 3.2rem;
+            font-weight: 800;
+            color: #f5e56b;
+            text-shadow: 0 0 10px #ffd966;
+            line-height: 1.2;
+        }
+        .card-label {
+            font-size: 1rem;
+            color: #b0cce5;
+            margin-top: 8px;
+            letter-spacing: 2px;
+        }
+        .card-sub {
+            font-size: 1.3rem;
+            color: #cde1f0;
+        }
+
+        /* 特殊卡片样式 */
+        .card.next-ticket {
+            background: #1f5a4a;
+            border-color: #7ed6a5;
+        }
+        .card.next-ticket .card-number {
+            color: #c3f2d6;
+        }
+        .card.called {
+            background: #8a4f2c;
+            border-color: #e6b17e;
+        }
+        .dining-card {
+            background: #23634b;
+            border-color: #8fdaaf;
+        }
+        .history-card {
+            background: #2e4459;
+            opacity: 0.85;
+            border-color: #5f89a3;
+        }
+        .empty-hint {
+            font-size: 1.6rem;
+            color: #6c8da3;
+            padding: 15px 25px;
+            font-style: italic;
+        }
+
+        .swipe-note {
+            margin-top: 5px;
+            font-size: 1.1rem;
+            color: #8eb3cc;
+            text-align: right;
+        }
+        .btn-reset {
+            background: #2f4f62;
+            border: none;
+            color: white;
+            padding: 10px 25px;
+            border-radius: 30px;
+            font-size: 1.2rem;
+            margin-top: 10px;
+            cursor: pointer;
+            box-shadow: 0 3px 0 #10232e;
+            border: 1px solid #6da5ce;
+        }
+
+        .config-panel {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .config-panel label {
+            color: #b0cce5;
+            font-size: 1.2rem;
+        }
+        .config-panel input {
+            width: 70px;
+            padding: 8px;
+            border-radius: 20px;
+            border: none;
+            background: #1d3b55;
+            color: white;
+            font-size: 1.3rem;
+            text-align: center;
+            border: 1px solid #3f7ea3;
+        }
+    </style>
+</head>
+<body>
+<div class="grid-layout">
+    <!-- 左列：箭头 -->
+<div class="left-arrow-col">
+    <svg class="arrow-svg-layer" viewBox="0 0 80 975" preserveAspectRatio="xMidYMid meet">
+            <marker id="arrowBlueRight" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+        <path d="M0,0 L10,4 L0,8 Z" fill="#4fa5d8" />
+    </marker>
+        <!-- 上水平线：y=160，从左向右 -->
+        <line x1="10" y1="180" x2="60" y2="180" stroke="#4fa5d8" stroke-width="4"/>
+        <!-- 垂直线：x=10，从160到490 -->
+        <line x1="10" y1="180" x2="10" y2="560" stroke="#4fa5d8" stroke-width="4" />
+        <!-- 下水平线：y=490，从左向右 -->
+        <line x1="10" y1="560" x2="60" y2="560" stroke="#4fa5d8" stroke-width="4" marker-end="url(#arrowBlueRight)" />
+    </svg>
+</div>
+
+    <!-- 中列：原有的完整内容 -->
+    <div class="screen">
+        <h1>🍜 工厂食堂 · 智能排队</h1>
+
+        <!-- 状态栏 -->
+        <div class="status-bar">
+            <div class="capacity-info">
+                🪑 总餐位: <span class="capacity-value" id="totalCapacityDisplay">4</span>
+            </div>
+            <div class="capacity-info">
+                🍽️ 当前就餐: <span class="capacity-value" id="currentDiningCount">0</span> / <span id="capacityLimit">4</span>
+            </div>
+            <div class="config-panel">
+                <label>设置餐位:</label>
+                <input type="number" id="capacityInput" min="1" max="20" value="4">
+                <button class="btn-reset" id="setCapacityBtn" style="margin-top:0; padding:6px 15px;">应用</button>
+            </div>
+        </div>
+
+        <!-- 1. 等待中区域 -->
+        <div class="section">
+            <div class="section-header">
+                ⏳ 等待中
+                <span>已叫号未进入 · 正在等待 (最多3个) · 待取号</span>
+            </div>
+            <!-- 箭头行：从右向左 ← 进餐厅 ← 等待 ← 取号 -->
+            <div class="arrow-row arrow-blue">
+                <span class="arrow-line">
+                    <span class="arrow-head">←</span>
+                    <span class="arrow-body">—————</span>
+                    <span class="arrow-text">进餐厅</span>
+                    <span class="arrow-body">←—————</span>
+                    <span class="arrow-text">等待</span>
+                    <span class="arrow-body">←—————</span>
+                    <span class="arrow-text">取号</span>
+                    <span class="arrow-head">←</span>
+                </span>
+            </div>
+            <div class="queue-row" id="waitingAreaRow">
+                <!-- 左: 已叫号未进入 -->
+                <div style="display: flex; flex-direction: column; min-width: 160px;">
+                    <div style="font-size:1.3rem; color:#b0cce5; margin-bottom: 8px;">🔔 已叫号未进</div>
+                    <div id="calledNotEnteredContainer" class="queue-row" style="padding:0; gap:12px; min-height:100px;"></div>
+                </div>
+                <div style="width:2px; background:#2a5a7a; margin:0 5px;"></div>
+                <!-- 中: 正在等待 -->
+                <div style="display: flex; flex-direction: column; flex:1;">
+                    <div style="font-size:1.3rem; color:#b0cce5; margin-bottom: 8px;">⏱️ 正在等待</div>
+                    <div id="waitingContainer" class="queue-row" style="padding:0; gap:12px;"></div>
+                </div>
+                <div style="width:2px; background:#2a5a7a; margin:0 5px;"></div>
+                <!-- 右: 待取号 -->
+                <div style="display: flex; flex-direction: column; min-width: 160px;">
+                    <div style="font-size:1.3rem; color:#b0cce5; margin-bottom: 8px;">🎫 待取号</div>
+                    <div id="nextTicketContainer" style="display: flex; justify-content: center;"></div>
+                </div>
+            </div>
+            <div class="swipe-note" style="margin-top:5px;">👆 点击「已叫号未进」→ 进入餐厅 &nbsp;&nbsp;|&nbsp;&nbsp; 点击「待取号」→ 取新号 &nbsp;&nbsp;|&nbsp;&nbsp; 单击等待卡片→作废</div>
+        </div>
+
+        <!-- 2. 就餐中区域 -->
+        <div class="section">
+            <div class="section-header">
+                🍽️ 就餐中
+                <span>点击卡片离开 → 移入历史</span>
+            </div>
+            <!-- 箭头行：从左向右 进入就餐 → 正在用餐 → 离开 -->
+            <div class="arrow-row arrow-green">
+                <span class="arrow-line">
+                    <span class="arrow-head">→</span>
+                    <span class="arrow-body">—————</span>
+                    <span class="arrow-text">进入就餐</span>
+                    <span class="arrow-body">→—————</span>
+                    <span class="arrow-text">正在用餐</span>
+                    <span class="arrow-body">→—————</span>
+                    <span class="arrow-text">离开</span>
+                    <span class="arrow-head">→</span>
+                </span>
+            </div>
+            <div id="diningContainer" class="queue-row"></div>
+            <div class="swipe-note">⬇️ 点击任意就餐卡片 = 顾客离开，进入历史 (可不按顺序)</div>
+        </div>
+
+        <!-- 3. 近期历史区域 -->
+        <div class="section">
+            <div class="section-header">
+                📋 近期历史
+                <span>左: 最早离开 · 右: 最新离开</span>
+            </div>
+            <!-- 箭头行：从右向左 ← 时间流逝 ← 更早 -->
+            <div class="arrow-row arrow-gray">
+                <span class="arrow-line">
+                    <span class="arrow-head">←</span>
+                    <span class="arrow-body">—————</span>
+                    <span class="arrow-text">早就离开</span>
+                    <span class="arrow-body">←—————</span>
+                    <span class="arrow-text">时间线</span>
+                    <span class="arrow-body">←—————</span>
+                    <span class="arrow-text">刚刚离开</span>
+                    <span class="arrow-head">←</span>
+                </span>
+            </div>
+            <div id="historyContainer" class="queue-row"></div>
+            <div class="swipe-note">💡 历史</div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; margin-top: 15px;">
+            <button class="btn-reset" id="resetBtn">⟲ 重置模拟数据</button>
+        </div>
+    </div>
+
+    <!-- 右列：箭头 -->
+<div class="right-arrow-col">
+<svg class="arrow-svg-layer" viewBox="0 0 80 975" preserveAspectRatio="xMidYMid meet">
+<defs>
+    <marker id="arrowGreenLeft" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse">
+        <path d="M0,0 L10,4 L0,8 Z" fill="#6fcf97" />
+    </marker>
+</defs>
+    <!-- 上水平线：无箭头 -->
+    <line x1="20" y1="560" x2="70" y2="560" stroke="#6fcf97" stroke-width="4" />
+    <!-- 垂直线 -->
+    <line x1="70" y1="560" x2="70" y2="960" stroke="#6fcf97" stroke-width="4" />
+    <!-- 下水平线：结尾有向左的箭头 -->
+    <line x1="70" y1="960" x2="20" y2="960" stroke="#6fcf97" stroke-width="4" marker-end="url(#arrowGreenLeft)" />
+</svg>
+</div>
+
+<script>
+    (function(){
+        // ---------- 配置 ----------
+        let totalCapacity = 4;
+        const MAX_WAITING_DISPLAY = 3;
+
+        // ---------- 状态管理 ----------
+        let calledNotEntered = [];
+        let waiting = [];
+        let nextTicketNumber = 26;
+        let dining = [];
+        let history = [];
+
+        // ---------- DOM 元素 ----------
+        const calledContainer = document.getElementById('calledNotEnteredContainer');
+        const waitingContainer = document.getElementById('waitingContainer');
+        const nextTicketContainer = document.getElementById('nextTicketContainer');
+        const diningContainer = document.getElementById('diningContainer');
+        const historyContainer = document.getElementById('historyContainer');
+        const totalCapacityDisplay = document.getElementById('totalCapacityDisplay');
+        const currentDiningCountSpan = document.getElementById('currentDiningCount');
+        const capacityLimitSpan = document.getElementById('capacityLimit');
+        const capacityInput = document.getElementById('capacityInput');
+        const setCapacityBtn = document.getElementById('setCapacityBtn');
+
+        function formatNumber(num) {
+            return 'A' + num.toString().padStart(3, '0');
+        }
+
+        function updateCapacityDisplay() {
+            totalCapacityDisplay.textContent = totalCapacity;
+            capacityLimitSpan.textContent = totalCapacity;
+            currentDiningCountSpan.textContent = dining.length;
+        }
+
+        function tryAutoCall() {
+            if (dining.length < totalCapacity && calledNotEntered.length === 0 && waiting.length > 0) {
+                const nextNum = waiting.shift();
+                calledNotEntered.push(nextNum);
+                showToast(`📢 自动叫号: ${nextNum} 请准备进入`);
+                return true;
+            }
+            return false;
+        }
+
+        function renderAll() {
+            renderCalledNotEntered();
+            renderWaiting();
+            renderNextTicket();
+            renderDining();
+            renderHistory();
+            updateCapacityDisplay();
+        }
+
+        function renderCalledNotEntered() {
+            if (calledNotEntered.length === 0) {
+                calledContainer.innerHTML = '<div class="empty-hint" style="font-size:1.2rem; padding:10px;">暂无</div>';
+                return;
+            }
+            let html = '';
+            calledNotEntered.forEach(num => {
+                html += `<div class="card called" data-number="${num}" data-queue="called">
+                    <div class="card-number">${num}</div>
+                    <div class="card-label">点击进餐厅</div>
+                </div>`;
+            });
+            calledContainer.innerHTML = html;
+        }
+
+        function renderWaiting() {
+            const displayWaiting = waiting.slice(0, MAX_WAITING_DISPLAY);
+            if (displayWaiting.length === 0) {
+                waitingContainer.innerHTML = '<div class="empty-hint" style="font-size:1.2rem;">暂无等待</div>';
+                return;
+            }
+            let html = '';
+            displayWaiting.forEach(num => {
+                html += `<div class="card" data-number="${num}" data-queue="waiting">
+                    <div class="card-number">${num}</div>
+                    <div class="card-sub">👥 单击作废</div>
+                </div>`;
+            });
+            if (waiting.length > MAX_WAITING_DISPLAY) {
+                html += `<div class="card" style="background:#1a3345; cursor:default;" data-queue="more">
+                    <div class="card-number" style="font-size:2rem;">...</div>
+                    <div class="card-sub">+${waiting.length - MAX_WAITING_DISPLAY}人</div>
+                </div>`;
+            }
+            waitingContainer.innerHTML = html;
+        }
+
+        function renderNextTicket() {
+            const nextNum = formatNumber(nextTicketNumber);
+            nextTicketContainer.innerHTML = `
+                <div class="card next-ticket" id="takeTicketCard" style="min-width:160px;">
+                    <div class="card-number">${nextNum}</div>
+                    <div class="card-label">🎫 点击取号</div>
+                    <div class="card-sub" style="font-size:0.9rem;">新顾客加入等待</div>
+                </div>
+            `;
+        }
+
+        function renderDining() {
+            if (dining.length === 0) {
+                diningContainer.innerHTML = '<div class="empty-hint">🍃 暂无就餐顾客</div>';
+                return;
+            }
+            let html = '';
+            dining.forEach(num => {
+                html += `<div class="card dining-card" data-number="${num}" data-queue="dining">
+                    <div class="card-number">${num}</div>
+                    <div class="card-label">🍜 就餐中</div>
+                    <div class="card-sub" style="font-size:0.8rem;">点击离开</div>
+                </div>`;
+            });
+            diningContainer.innerHTML = html;
+        }
+
+        function renderHistory() {
+            if (history.length === 0) {
+                historyContainer.innerHTML = '<div class="empty-hint">📭 暂无历史</div>';
+                return;
+            }
+            let html = '';
+            history.forEach(num => {
+                html += `<div class="card history-card" data-number="${num}">
+                    <div class="card-number" style="font-size:2.5rem;">${num}</div>
+                    <div class="card-label">✔️ 已离开</div>
+                </div>`;
+            });
+            historyContainer.innerHTML = html;
+        }
+
+        function handleTakeTicket() {
+            const newNumber = formatNumber(nextTicketNumber);
+            waiting.push(newNumber);
+            nextTicketNumber++;
+            const called = tryAutoCall();
+            renderAll();
+            showToast(`🧾 取号成功: ${newNumber}  ${called ? '已自动叫号' : '前面等待 ' + waiting.length + ' 人'}`);
+        }
+
+        function moveCalledToDining(number) {
+            const index = calledNotEntered.indexOf(number);
+            if (index === -1) return;
+            calledNotEntered.splice(index, 1);
+            dining.unshift(number);
+            const called = tryAutoCall();
+            renderAll();
+            showToast(`✅ ${number} 进入餐厅就餐 ${called ? '| 已自动叫号' : ''}`);
+        }
+
+        function moveDiningToHistory(number) {
+            const index = dining.indexOf(number);
+            if (index === -1) return;
+            dining.splice(index, 1);
+            history.push(number);
+            if (history.length > 12) history.shift();
+            const called = tryAutoCall();
+            renderAll();
+            showToast(`🚪 ${number} 已离开餐厅 ${called ? '| 已自动叫号' : ''}`);
+        }
+
+        function cancelWaiting(number) {
+            const index = waiting.indexOf(number);
+            if (index === -1) return;
+            waiting.splice(index, 1);
+            renderAll();
+            showToast(`❌ 号码 ${number} 已作废`);
+        }
+
+        function showToast(msg) {
+            const toast = document.createElement('div');
+            toast.textContent = msg;
+            toast.style.position = 'fixed';
+            toast.style.bottom = '30px';
+            toast.style.left = '50%';
+            toast.style.transform = 'translateX(-50%)';
+            toast.style.background = '#1e4f6b';
+            toast.style.color = 'white';
+            toast.style.padding = '16px 32px';
+            toast.style.borderRadius = '60px';
+            toast.style.fontSize = '1.5rem';
+            toast.style.boxShadow = '0 10px 20px black';
+            toast.style.border = '1px solid #7ab3d9';
+            toast.style.zIndex = '9999';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 2500);
+        }
+
+        // 事件监听
+        document.querySelector('.screen').addEventListener('click', (e) => {
+            const card = e.target.closest('.card');
+            if (!card) return;
+            
+            if (card.id === 'takeTicketCard' || card.closest('#takeTicketCard')) {
+                handleTakeTicket();
+                return;
+            }
+
+            const number = card.dataset.number;
+            const queue = card.dataset.queue;
+            if (!number) return;
+
+            if (queue === 'called') {
+                moveCalledToDining(number);
+            } else if (queue === 'dining') {
+                moveDiningToHistory(number);
+            } else if (queue === 'waiting') {
+                if (confirm(`确定作废号码 ${number} 吗？`)) {
+                    cancelWaiting(number);
+                }
+            }
+        });
+
+        setCapacityBtn.addEventListener('click', () => {
+            const newCap = parseInt(capacityInput.value);
+            if (newCap >= 1 && newCap <= 30) {
+                totalCapacity = newCap;
+                updateCapacityDisplay();
+                while (tryAutoCall()) {}
+                renderAll();
+                showToast(`⚙️ 餐位容量设为 ${totalCapacity}`);
+            }
+        });
+
+        function initMockData() {
+            calledNotEntered = ['A018'];
+            waiting = ['A019', 'A020', 'A021', 'A022', 'A023'];
+            nextTicketNumber = 26;
+            dining = ['A012', 'A015'];
+            history = ['A008', 'A009', 'A010', 'A011', 'A013', 'A014'];
+            totalCapacity = 4;
+            capacityInput.value = 4;
+            renderAll();
+        }
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            initMockData();
+            showToast('🔄 已重置为繁忙状态');
+        });
+
+        initMockData();
+    })();
+</script>
+</body>
+</html>

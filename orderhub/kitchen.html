@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>厨房生产大屏 · 预览</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #1a2a32;
+            font-family: 'Segoe UI', 'PingFang SC', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 25px;
+            color: #edf4fa;
+        }
+        .dashboard {
+            max-width: 1500px;
+            width: 100%;
+            background: #1e3a4b;
+            border-radius: 48px;
+            padding: 35px 30px;
+            box-shadow: 0 25px 40px #0a171f;
+            border: 1px solid #346680;
+        }
+        h1 {
+            font-size: 3rem;
+            font-weight: 400;
+            margin-bottom: 30px;
+            color: #d3eaff;
+            letter-spacing: 6px;
+            display: flex;
+            align-items: center;
+        }
+        .stats-badge {
+            margin-left: auto;
+            font-size: 1.5rem;
+            background: #0d262f;
+            padding: 10px 25px;
+            border-radius: 40px;
+        }
+        .dish-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 28px;
+        }
+        .dish-card {
+            background: #1e4459;
+            border-radius: 36px;
+            padding: 28px 20px 22px;
+            box-shadow: 0 12px 0 #0b222b, 0 6px 15px black;
+            border: 1px solid #4482a3;
+            transition: 0.05s;
+            display: flex;
+            flex-direction: column;
+        }
+        .dish-name {
+            font-size: 2.5rem;
+            font-weight: 600;
+            margin-bottom: 18px;
+            text-align: center;
+            color: #f5e3b6;
+            text-shadow: 0 2px 5px #00000040;
+        }
+        .counter-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 1.7rem;
+            margin: 12px 0;
+            background: #0b2c3b;
+            padding: 12px 18px;
+            border-radius: 50px;
+        }
+        .counter-label {
+            opacity: 0.9;
+        }
+        .counter-value {
+            font-weight: 700;
+            font-size: 2.2rem;
+            color: #f5f9b2;
+        }
+        .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 20px;
+            justify-content: center;
+        }
+        .btn {
+            background: #2d5f77;
+            border: none;
+            color: white;
+            font-size: 1.4rem;
+            font-weight: 600;
+            padding: 14px 18px;
+            border-radius: 48px;
+            cursor: pointer;
+            box-shadow: 0 5px 0 #12303e;
+            border: 1px solid #70b0d1;
+            flex: 1 0 80px;
+            transition: 0.05s;
+        }
+        .btn:active {
+            transform: translateY(4px);
+            box-shadow: 0 1px 0 #12303e;
+        }
+        .btn.primary {
+            background: #b37b2e;
+            border-color: #f5cf9a;
+        }
+        .btn.success {
+            background: #2a7a5c;
+            border-color: #9ed9c5;
+        }
+        .btn.warning {
+            background: #9e5e2a;
+        }
+        .reset-area {
+            margin-top: 35px;
+            text-align: right;
+        }
+        .small-btn {
+            background: #2f4f62;
+            font-size: 1.2rem;
+            padding: 10px 24px;
+            box-shadow: 0 3px 0 #10232e;
+        }
+    </style>
+</head>
+<body>
+<div class="dashboard">
+    <h1>
+        🍳 后厨生产看板 · 今日实时
+        <span class="stats-badge" id="totalPendingBadge">总缺口: 计算中...</span>
+    </h1>
+    
+    <div class="dish-grid" id="dishGrid"></div>
+    
+    <div class="reset-area">
+        <button class="btn small-btn" id="resetSimulation">⟲ 重置繁忙状态</button>
+    </div>
+</div>
+
+<script>
+    (function(){
+        // 菜品数据: 包含历史、待取、还缺
+        let dishes = [
+            { id: 1, name: '糖醋里脊', history: 28, ready: 3, pending: 5 },
+            { id: 2, name: '宫保鸡丁', history: 15, ready: 2, pending: 8 },
+            { id: 3, name: '麻婆豆腐', history: 22, ready: 0, pending: 4 },
+            { id: 4, name: '酸菜鱼', history: 8, ready: 5, pending: 12 },
+            { id: 5, name: '干煸豆角', history: 19, ready: 1, pending: 3 },
+            { id: 6, name: '红烧肉', history: 12, ready: 4, pending: 7 }
+        ];
+
+        const gridEl = document.getElementById('dishGrid');
+        const badgeEl = document.getElementById('totalPendingBadge');
+
+        function updateTotalPending() {
+            const total = dishes.reduce((sum, d) => sum + d.pending, 0);
+            badgeEl.textContent = `总缺口: ${total} 份`;
+        }
+
+        // 渲染所有卡片
+        function renderCards() {
+            let html = '';
+            dishes.forEach(dish => {
+                html += `
+                    <div class="dish-card" data-dish-id="${dish.id}">
+                        <div class="dish-name">${dish.name}</div>
+                        <div class="counter-row">
+                            <span class="counter-label">📊 历史出餐</span>
+                            <span class="counter-value" id="hist-${dish.id}">${dish.history}</span>
+                        </div>
+                        <div class="counter-row">
+                            <span class="counter-label">✅ 待取走</span>
+                            <span class="counter-value" id="ready-${dish.id}">${dish.ready}</span>
+                        </div>
+                        <div class="counter-row">
+                            <span class="counter-label">⏳ 还缺</span>
+                            <span class="counter-value" id="pending-${dish.id}" style="color: #ffb570;">${dish.pending}</span>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn primary" data-action="addPending" data-id="${dish.id}">➕还缺</button>
+                            <button class="btn success" data-action="cook" data-id="${dish.id}">🍲已炒完</button>
+                            <button class="btn warning" data-action="pickup" data-id="${dish.id}">📦取餐</button>
+                        </div>
+                    </div>
+                `;
+            });
+            gridEl.innerHTML = html;
+            updateTotalPending();
+        }
+
+        // 更新单个菜品的显示数字
+        function updateDishDisplay(dish) {
+            document.getElementById(`hist-${dish.id}`).textContent = dish.history;
+            document.getElementById(`ready-${dish.id}`).textContent = dish.ready;
+            document.getElementById(`pending-${dish.id}`).textContent = dish.pending;
+            updateTotalPending();
+        }
+
+        // 处理按钮动作
+        function handleAction(dishId, action) {
+            const dish = dishes.find(d => d.id === dishId);
+            if (!dish) return;
+            
+            // 弹出输入数量 (简化: 默认1，也可弹窗)
+            let qty = 1;
+            if (action === 'addPending') {
+                // 还缺: 增加 pending
+                dish.pending += qty;
+            } else if (action === 'cook') {
+                // 已炒完: 减少pending, 增加ready
+                if (dish.pending <= 0) {
+                    alert(`「${dish.name}」当前还缺数量为0，无需制作`);
+                    return;
+                }
+                const cookQty = Math.min(qty, dish.pending); // 最多炒完现有缺口
+                dish.pending -= cookQty;
+                dish.ready += cookQty;
+            } else if (action === 'pickup') {
+                // 取餐: 减少ready, 增加history
+                if (dish.ready <= 0) {
+                    alert(`「${dish.name}」没有待取走的菜品`);
+                    return;
+                }
+                const pickupQty = Math.min(qty, dish.ready);
+                dish.ready -= pickupQty;
+                dish.history += pickupQty;
+            }
+            updateDishDisplay(dish);
+        }
+
+        // 增强: 支持自定义数量 (通过prompt)
+        function handleActionWithPrompt(dishId, action) {
+            const dish = dishes.find(d => d.id === dishId);
+            if (!dish) return;
+            
+            let maxQty = 999;
+            let defaultMsg = '';
+            if (action === 'addPending') {
+                defaultMsg = `为「${dish.name}」增加还缺数量:`;
+                maxQty = 50;
+            } else if (action === 'cook') {
+                if (dish.pending <= 0) { alert('还缺数量为0'); return; }
+                defaultMsg = `「${dish.name}」本次炒完几份？(当前还缺 ${dish.pending})`;
+                maxQty = dish.pending;
+            } else if (action === 'pickup') {
+                if (dish.ready <= 0) { alert('没有待取菜品'); return; }
+                defaultMsg = `「${dish.name}」取走几份？(待取 ${dish.ready})`;
+                maxQty = dish.ready;
+            }
+            
+            let input = prompt(defaultMsg, '1');
+            if (input === null) return;
+            let qty = parseInt(input);
+            if (isNaN(qty) || qty <= 0) { alert('请输入有效正整数'); return; }
+            if (qty > maxQty) { 
+                alert(`不能超过 ${maxQty}`); 
+                return; 
+            }
+            
+            if (action === 'addPending') {
+                dish.pending += qty;
+            } else if (action === 'cook') {
+                dish.pending -= qty;
+                dish.ready += qty;
+            } else if (action === 'pickup') {
+                dish.ready -= qty;
+                dish.history += qty;
+            }
+            updateDishDisplay(dish);
+        }
+
+        // 事件监听 (委托)
+        gridEl.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            const dishId = parseInt(btn.dataset.id);
+            if (action && dishId) {
+                handleActionWithPrompt(dishId, action);
+            }
+        });
+
+        // 重置模拟数据为繁忙初始状态
+        function resetToBusy() {
+            dishes = [
+                { id: 1, name: '糖醋里脊', history: 28, ready: 3, pending: 5 },
+                { id: 2, name: '宫保鸡丁', history: 15, ready: 2, pending: 8 },
+                { id: 3, name: '麻婆豆腐', history: 22, ready: 0, pending: 4 },
+                { id: 4, name: '酸菜鱼', history: 8, ready: 5, pending: 12 },
+                { id: 5, name: '干煸豆角', history: 19, ready: 1, pending: 3 },
+                { id: 6, name: '红烧肉', history: 12, ready: 4, pending: 7 }
+            ];
+            renderCards();
+        }
+
+        document.getElementById('resetSimulation').addEventListener('click', resetToBusy);
+
+        // 初始化渲染
+        renderCards();
+
+        // 附加功能: 每10秒自动略微增加一些还缺(模拟新订单进来)，体现繁忙
+        setInterval(() => {
+            // 随机给某道菜增加1-2还缺 (中台请求)
+            const randomDish = dishes[Math.floor(Math.random() * dishes.length)];
+            randomDish.pending += Math.floor(Math.random() * 2) + 1;
+            updateDishDisplay(randomDish);
+        }, 12000);
+    })();
+</script>
+</body>
+</html>
