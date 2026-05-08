@@ -31,16 +31,6 @@ class SensorManager: ObservableObject {
 
     @Published var data = SensorData()
 
-    // Accelerometer reading (for arrow display)
-    @Published var accelX: Float = 0
-    @Published var accelY: Float = 0
-    @Published var accelZ: Float = 0
-
-    // Magnetometer reading (for arrow display)
-    @Published var magX: Float = 0
-    @Published var magY: Float = 0
-    @Published var magZ: Float = 0
-
     private var qW_f: Float = 1
     private var qX_f: Float = 0
     private var qY_f: Float = 0
@@ -86,34 +76,25 @@ class SensorManager: ObservableObject {
         let gy = Float(motion.rotationRate.y)
         let gz = Float(motion.rotationRate.z)
 
-        let ax = Float(motion.userAcceleration.x)
-        let ay = Float(motion.userAcceleration.y)
-        let az = Float(motion.userAcceleration.z)
+        // Gravity direction (normalized) for water surface calculation
+        // userAcceleration + gravity = actual acceleration (in g, ~1.0 when stationary)
+        let grav = motion.gravity
+        let ax = Float(motion.userAcceleration.x) + Float(grav.x)
+        let ay = Float(motion.userAcceleration.y) + Float(grav.y)
+        let az = Float(motion.userAcceleration.z) + Float(grav.z)
 
         let mx = Float(motion.magneticField.field.x)
         let my = Float(motion.magneticField.field.y)
         let mz = Float(motion.magneticField.field.z)
 
-        // Gravity direction (normalized) for water surface calculation
-        let grav = motion.gravity
-        // userAcceleration + gravity = actual acceleration (in g, ~1.0 when stationary)
-        let actualAccelX = Float(motion.userAcceleration.x) + Float(grav.x)
-        let actualAccelY = Float(motion.userAcceleration.y) + Float(grav.y)
-        let actualAccelZ = Float(motion.userAcceleration.z) + Float(grav.z)
-
         // Update config for arrow display (use actual acceleration, not normalized)
-        FusionConfig.accelX = actualAccelX
-        FusionConfig.accelY = actualAccelY
-        FusionConfig.accelZ = actualAccelZ
+        FusionConfig.accelX = ax
+        FusionConfig.accelY = ay
+        FusionConfig.accelZ = az
         FusionConfig.magX = mx
         FusionConfig.magY = my
         FusionConfig.magZ = mz
 
-        // Store for gravity arrow
-        accelX = actualAccelX
-        accelY = actualAccelY
-        accelZ = actualAccelZ
-    
         // Apply custom fusion algorithm using raw (unfused) gyro/accel + previous state
         let timestamp = motion.timestamp
         let dt = Float(timestamp - lastGyrTimestamp)
@@ -134,11 +115,11 @@ class SensorManager: ObservableObject {
                 qX_f = r[0]; qY_f = r[1]; qZ_f = r[2]; qW_f = r[3]
                 fusedQ = r
             case "mahony6":
-                let r = fuse_mahony6(gx: gx, gy: gy, gz: gz, ax: -ax, ay: -ay, az: -az, qW: qw, qX: qx, qY: qy, qZ: qz, dt: lastDt)
+                let r = fuse_mahony6(gx: gx, gy: gy, gz: gz, ax: ax, ay: ay, az: az, qW: qw, qX: qx, qY: qy, qZ: qz, dt: lastDt)
                 qX_f = r[0]; qY_f = r[1]; qZ_f = r[2]; qW_f = r[3]
                 fusedQ = r
             case "madgwick":
-                let r = fuse_madgwick(gx: gx, gy: gy, gz: gz, ax: -ax, ay: -ay, az: -az, qW: qw, qX: qx, qY: qy, qZ: qz, dt: lastDt)
+                let r = fuse_madgwick(gx: gx, gy: gy, gz: gz, ax: ax, ay: ay, az: az, qW: qw, qX: qx, qY: qy, qZ: qz, dt: lastDt)
                 qX_f = r[0]; qY_f = r[1]; qZ_f = r[2]; qW_f = r[3]
                 fusedQ = r
             case "ekf":
@@ -223,7 +204,7 @@ class SensorManager: ObservableObject {
                 accel: [ax, ay, az],
                 magnet: [mx, my, mz],
                 gyroCorr: [gx, gy, gz],
-                accelCorr: [-ax, -ay, -az],
+                accelCorr: [ax, ay, az],
                 magnetCorr: [mx, my, mz],
                 quatFused: fusedQ,
                 quatFixed: fixedQ,
@@ -240,6 +221,15 @@ class SensorManager: ObservableObject {
                 algoParams: self.getAlgoParams()
             )
         }
+
+        // Socket: quat_fixed + sensor data + timestamp (seconds, same unit as Android after ms/1e9)
+        SocketManager.shared.onSensorData(
+            qx: fixedQ[0], qy: fixedQ[1], qz: fixedQ[2], qw: fixedQ[3],
+            gx: gx, gy: gy, gz: gz,
+            ax: ax, ay: ay, az: az,
+            mx: mx, my: my, mz: mz,
+            timestamp: timestamp
+        )
     }
 
     func computeBoatVertices() -> [Float] {

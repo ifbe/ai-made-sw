@@ -12,6 +12,7 @@ class SocketManager: ObservableObject {
     @Published var isConnected = false
 
     private var connection: NWConnection?
+    private let queue = DispatchQueue(label: "SocketManager.sendQueue", qos: .userInitiated)
 
     private init() {}
 
@@ -46,29 +47,35 @@ class SocketManager: ObservableObject {
         }
 
         connection?.start(queue: .global(qos: .userInitiated))
-        isConnected = true
     }
 
     func disconnect() {
         connection?.cancel()
         connection = nil
-        isConnected = false
+        DispatchQueue.main.async {
+            self.isConnected = false
+        }
     }
 
+    /// Called from sensor thread. Drops if not connected.
+    /// quat format: qx,qy,qz,qw (fixed quaternion, 4 decimal places)
+    /// measure format: gx,gy,gz,ax,ay,az,mx,my,mz,timestamp_seconds (10 fields, 4 decimal places)
     func onSensorData(
         qx: Float, qy: Float, qz: Float, qw: Float,
         gx: Float, gy: Float, gz: Float,
         ax: Float, ay: Float, az: Float,
         mx: Float, my: Float, mz: Float,
-        ms: Double
+        timestamp: Double
     ) {
+        guard isConnected else { return }
+
         let data: String
         switch contentType {
         case "quaternion":
             data = String(format: "%.4f, %.4f, %.4f, %.4f", qx, qy, qz, qw)
         case "measure":
             data = String(format: "%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f",
-                          gx, gy, gz, ax, ay, az, mx, my, mz, ms)
+                          gx, gy, gz, ax, ay, az, mx, my, mz, timestamp)
         default:
             return
         }

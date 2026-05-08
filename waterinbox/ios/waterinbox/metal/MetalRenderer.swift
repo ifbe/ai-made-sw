@@ -148,8 +148,8 @@ class MetalViewController: NSObject, MTKViewDelegate {
         pipelineStateWaterBody = createPipelineState(
             library: waterLibrary,
             vertexFunction: "waterBodyVertex",
-            fragmentFunction: "waterBodyFragment"
-            // 水的顶点不使用 stage_in，不需要 vertexDescriptor
+            fragmentFunction: "waterBodyFragment",
+            enableBlending: true
         )
     }
 
@@ -291,13 +291,23 @@ class MetalViewController: NSObject, MTKViewDelegate {
         library: MTLLibrary,
         vertexFunction: String,
         fragmentFunction: String,
-        vertexDescriptor: MTLVertexDescriptor? = nil   // 新增
+        vertexDescriptor: MTLVertexDescriptor? = nil,
+        enableBlending: Bool = false
     ) -> MTLRenderPipelineState {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: vertexFunction)
         descriptor.fragmentFunction = library.makeFunction(name: fragmentFunction)
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         descriptor.depthAttachmentPixelFormat = .depth32Float
+
+
+        if enableBlending {
+            descriptor.colorAttachments[0].isBlendingEnabled = true
+            descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+            descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        }
 
         // 设置顶点描述符（如果有）
         if let vd = vertexDescriptor {
