@@ -135,7 +135,7 @@ fun UISpace(
             }
         }
 
-        // ── TOP-RIGHT: render toggles panel (to the LEFT of toggle, same row) ──
+// ── TOP-RIGHT: render toggles panel (to the LEFT of toggle, same row) ──
         if (topRightExpanded) {
             Column(
                 modifier = Modifier
@@ -143,15 +143,50 @@ fun UISpace(
                     .padding(end = 12.dp, top = 52.dp)
                     .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
                     .padding(8.dp)
-                    .width(100.dp),  // 添加固定宽度限制
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    .width(110.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                RenderToggle("坐标轴", boxSpace?.drawWorldAxes == true) { boxSpace?.drawWorldAxes = it }
-                RenderToggle("重力箭头", boxSpace?.drawGravityArrow == true) { boxSpace?.drawGravityArrow = it }
-                RenderToggle("磁力箭头", boxSpace?.drawMagnetArrow == true) { boxSpace?.drawMagnetArrow = it }
-                RenderToggle("小船", boxSpace?.drawBoat == true) { boxSpace?.drawBoat = it }
-                RenderToggle("水面", boxSpace?.drawWaterSurface == true) { boxSpace?.drawWaterSurface = it }
-                RenderToggle("水体", boxSpace?.drawWaterBody == true) { boxSpace?.drawWaterBody = it }
+                // ── DEBUG GROUP ───────────────────────────────────────────
+                RenderMasterToggle(
+                    label = "debug",
+                    isOn = (boxSpace?.drawWorldAxes == true && boxSpace?.drawGravityArrow == true && boxSpace?.drawMagnetArrow == true),
+                    onToggle = { on ->
+                        boxSpace?.drawWorldAxes = on
+                        boxSpace?.drawGravityArrow = on
+                        boxSpace?.drawMagnetArrow = on
+                    }
+                )
+                RenderToggle("坐标轴", boxSpace?.drawWorldAxes == true, { boxSpace?.drawWorldAxes = it }, indent = 12.dp)
+                RenderToggle("重力箭头", boxSpace?.drawGravityArrow == true, { boxSpace?.drawGravityArrow = it }, indent = 12.dp)
+                RenderToggle("磁力箭头", boxSpace?.drawMagnetArrow == true, { boxSpace?.drawMagnetArrow = it }, indent = 12.dp)
+                RenderToggleSeparator()
+
+                // ── WATER GROUP ────────────────────────────────────────────
+                RenderMasterToggle(
+                    label = "water",
+                    isOn = (boxSpace?.drawBoat == true && boxSpace?.drawWaterSurface == true && boxSpace?.drawWaterBody == true),
+                    onToggle = { on ->
+                        boxSpace?.drawBoat = on
+                        boxSpace?.drawWaterSurface = on
+                        boxSpace?.drawWaterBody = on
+                    }
+                )
+                RenderToggle("小船", boxSpace?.drawBoat == true, { boxSpace?.drawBoat = it }, indent = 12.dp)
+                RenderToggle("水面", boxSpace?.drawWaterSurface == true, { boxSpace?.drawWaterSurface = it }, indent = 12.dp)
+                RenderToggle("水体", boxSpace?.drawWaterBody == true, { boxSpace?.drawWaterBody = it }, indent = 12.dp)
+                RenderToggleSeparator()
+
+                // ── HUMAN GROUP ────────────────────────────────────────────
+                RenderMasterToggle(
+                    label = "human",
+                    isOn = (boxSpace?.drawHuman == true && boxSpace?.drawFixation == true),
+                    onToggle = { on ->
+                        boxSpace?.drawFixation = on
+                        boxSpace?.drawHuman = on
+                    }
+                )
+                RenderToggle("固定装置", boxSpace?.drawFixation == true, { boxSpace?.drawFixation = it }, indent = 12.dp)
+                RenderToggle("人形", boxSpace?.drawHuman == true, { boxSpace?.drawHuman = it }, indent = 12.dp)
             }
         }
 
@@ -369,16 +404,54 @@ fun UISpace(
 }
 
 @Composable
+private fun RenderToggleSeparator() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .height(1.dp)
+            .background(Color(0xFF444444))
+    )
+}
+
+@Composable
+private fun RenderMasterToggle(label: String, isOn: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle(!isOn) }
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = if (isOn) "■" else "□",
+            color = if (isOn) Color(0xFF44FF44) else Color.Gray,
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+        )
+        Text(
+            text = label,
+            color = Color(0xFF90CAF9),
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+@Composable
 private fun RenderToggle(
     label: String,
     isEnabled: Boolean,
-    onToggle: (Boolean) -> Unit
+    onToggle: (Boolean) -> Unit,
+    indent: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onToggle(!isEnabled) }
-            .padding(vertical = 2.dp),
+            .padding(start = indent)
+            .padding(vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
