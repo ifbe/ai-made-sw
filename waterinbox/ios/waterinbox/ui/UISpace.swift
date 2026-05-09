@@ -1,5 +1,15 @@
 import SwiftUI
 
+// MARK: - 辅助偏好键：同时获取视图尺寸
+struct ViewSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        value = CGSize(width: max(value.width, next.width),
+                       height: max(value.height, next.height))
+    }
+}
+
 struct UISpace: View {
     @ObservedObject var sensorManager: SensorManager
     @ObservedObject var socketManager: SocketManager
@@ -9,6 +19,12 @@ struct UISpace: View {
     @State private var bottomLeftExpanded = false
     @State private var bottomRightExpanded = false
 
+    // 面板尺寸（动态获取）
+    @State private var sensorPanelSize: CGSize = .zero
+    @State private var togglesPanelSize: CGSize = .zero
+    @State private var algoPanelSize: CGSize = .zero
+    @State private var socketPanelSize: CGSize = .zero
+
     private let monoFont = Font.system(size: 10, design: .monospaced)
     private let smallMonoFont = Font.system(size: 9, design: .monospaced)
     private let tinyMonoFont = Font.system(size: 8, design: .monospaced)
@@ -17,7 +33,7 @@ struct UISpace: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // TOP-LEFT: toggle button
+                // ── 左上角按钮 ──────────────────────────────
                 Button(action: { leftExpanded.toggle() }) {
                     Circle()
                         .fill(leftExpanded ? Color.green.opacity(0.85) : Color.black.opacity(0.6))
@@ -31,13 +47,18 @@ struct UISpace: View {
                 .position(x: 26, y: 64)
                 .buttonStyle(PlainButtonStyle())
 
-                // TOP-LEFT: sensor data panel
+                // 左上角面板（按钮正下方，左边距16）
                 if leftExpanded {
                     SensorDataPanel(data: sensorManager.data)
-                        .position(x: 100, y: 200)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: ViewSizeKey.self, value: geo.size)
+                        })
+                        .onPreferenceChange(ViewSizeKey.self) { sensorPanelSize = $0 }
+                        .position(x: 4 + sensorPanelSize.width / 2, y: 64)
+                        .offset(y: 14 + 4 + sensorPanelSize.height / 2)  // 按钮半径 + 间距 + 面板半高
                 }
 
-                // TOP-RIGHT: toggle button
+                // ── 右上角按钮 ──────────────────────────────
                 Button(action: { topRightExpanded.toggle() }) {
                     Circle()
                         .fill(topRightExpanded ? Color.blue.opacity(0.85) : Color.black.opacity(0.6))
@@ -51,13 +72,18 @@ struct UISpace: View {
                 .position(x: geometry.size.width - 26, y: 64)
                 .buttonStyle(PlainButtonStyle())
 
-                // TOP-RIGHT: render toggles panel
+                // 右上角面板（右边距16）
                 if topRightExpanded {
                     RenderTogglesPanel(metalViewController: nil)
-                        .position(x: geometry.size.width - 64, y: 200)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: ViewSizeKey.self, value: geo.size)
+                        })
+                        .onPreferenceChange(ViewSizeKey.self) { togglesPanelSize = $0 }
+                        .position(x: geometry.size.width - 4 - togglesPanelSize.width / 2, y: 64)
+                        .offset(y: 14 + 4 + togglesPanelSize.height / 2)
                 }
 
-                // BOTTOM-LEFT: toggle + buttons row
+                // ── 左下角按钮行 + 面板（面板在按钮上方）────
                 HStack(spacing: 8) {
                     Button(action: { bottomLeftExpanded.toggle() }) {
                         Circle()
@@ -108,15 +134,20 @@ struct UISpace: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                 }
-                .position(x: 70, y: geometry.size.height - 36)
+                .position(x: 80, y: geometry.size.height - 32)
 
-                // BOTTOM-LEFT: algo params panel
+                // 左下角面板（左边距16，按钮上方）
                 if bottomLeftExpanded {
                     AlgoParamsPanel(data: sensorManager.data)
-                        .position(x: 80, y: geometry.size.height - 140)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: ViewSizeKey.self, value: geo.size)
+                        })
+                        .onPreferenceChange(ViewSizeKey.self) { algoPanelSize = $0 }
+                        .position(x: 4 + algoPanelSize.width / 2, y: geometry.size.height - 32)
+                        .offset(y: -(14 + 4 + algoPanelSize.height / 2))
                 }
 
-                // BOTTOM-RIGHT: connect button + toggle row
+                // ── 右下角按钮行 + 面板（面板在按钮上方）────
                 HStack(spacing: 8) {
                     Button(action: {
                         if socketManager.isConnected {
@@ -148,12 +179,18 @@ struct UISpace: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                 }
-                .position(x: geometry.size.width - 68, y: geometry.size.height - 36)
+                .position(x: geometry.size.width - 48, y: geometry.size.height - 32)
 
-                // BOTTOM-RIGHT: socket panel
+                // 右下角面板（右边距16，按钮上方）
                 if bottomRightExpanded {
                     SocketPanel(socketManager: socketManager)
-                        .position(x: geometry.size.width - 80, y: geometry.size.height - 140)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: ViewSizeKey.self, value: geo.size)
+                        })
+                        .onPreferenceChange(ViewSizeKey.self) { socketPanelSize = $0 }
+                        .position(x: geometry.size.width - 4 - socketPanelSize.width / 2,
+                                  y: geometry.size.height - 32)
+                        .offset(y: -(14 + 4 + socketPanelSize.height / 2))
                 }
             }
         }
@@ -230,17 +267,85 @@ struct RenderTogglesPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RenderToggle(label: "坐标轴", isEnabled: $renderState.drawWorldAxes, onSync: { metalViewController?.drawWorldAxes = renderState.drawWorldAxes })
-            RenderToggle(label: "重力箭头", isEnabled: $renderState.drawGravityArrow, onSync: { metalViewController?.drawGravityArrow = renderState.drawGravityArrow })
-            RenderToggle(label: "磁力箭头", isEnabled: $renderState.drawMagnetArrow, onSync: { metalViewController?.drawMagnetArrow = renderState.drawMagnetArrow })
-            RenderToggle(label: "小船", isEnabled: $renderState.drawBoat, onSync: { metalViewController?.drawBoat = renderState.drawBoat })
-            RenderToggle(label: "水面", isEnabled: $renderState.drawWaterSurface, onSync: { metalViewController?.drawWaterSurface = renderState.drawWaterSurface })
-            RenderToggle(label: "水体", isEnabled: $renderState.drawWaterBody, onSync: { metalViewController?.drawWaterBody = renderState.drawWaterBody })
+            // ── DEBUG GROUP ───────────────────────────────────────────
+            RenderMasterToggle(
+                label: "debug",
+                isOn: renderState.drawWorldAxes && renderState.drawGravityArrow && renderState.drawMagnetArrow,
+                onToggle: { on in
+                    renderState.drawWorldAxes = on
+                    renderState.drawGravityArrow = on
+                    renderState.drawMagnetArrow = on
+                }
+            )
+            RenderToggle(label: "坐标轴", isEnabled: $renderState.drawWorldAxes, indent: 12)
+            RenderToggle(label: "重力箭头", isEnabled: $renderState.drawGravityArrow, indent: 12)
+            RenderToggle(label: "磁力箭头", isEnabled: $renderState.drawMagnetArrow, indent: 12)
+
+            RenderToggleDivider()
+
+            // ── WATER GROUP ──────────────────────────────────────────
+            RenderMasterToggle(
+                label: "water",
+                isOn: renderState.drawBoat && renderState.drawWaterSurface && renderState.drawWaterBody,
+                onToggle: { on in
+                    renderState.drawBoat = on
+                    renderState.drawWaterSurface = on
+                    renderState.drawWaterBody = on
+                }
+            )
+            RenderToggle(label: "小船", isEnabled: $renderState.drawBoat, indent: 12)
+            RenderToggle(label: "水面", isEnabled: $renderState.drawWaterSurface, indent: 12)
+            RenderToggle(label: "水体", isEnabled: $renderState.drawWaterBody, indent: 12)
+
+            RenderToggleDivider()
+
+            // ── HUMAN GROUP ──────────────────────────────────────────
+            RenderMasterToggle(
+                label: "human",
+                isOn: renderState.drawHuman && renderState.drawFixation,
+                onToggle: { on in
+                    renderState.drawHuman = on
+                    renderState.drawFixation = on
+                }
+            )
+            RenderToggle(label: "固定装置", isEnabled: $renderState.drawFixation, indent: 12)
+            RenderToggle(label: "人形", isEnabled: $renderState.drawHuman, indent: 12)
         }
         .padding(10)
-        .frame(width: 110)
+        .frame(width: 120)
         .background(Color.black.opacity(0.7))
         .cornerRadius(8)
+    }
+}
+
+struct RenderToggleDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.gray.opacity(0.35))
+            .frame(height: 1)
+            .padding(.vertical, 2)
+    }
+}
+
+struct RenderMasterToggle: View {
+    let label: String
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        Button(action: { onToggle(!isOn) }) {
+            HStack(spacing: 4) {
+                Text(isOn ? "■" : "□")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(isOn ? Color(hex: "44FF44") : .gray)
+                Text(label)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(Color(hex: "90CAF9"))
+                Spacer()
+            }
+            .padding(.vertical, 3)
+        }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 
@@ -308,7 +413,7 @@ struct SocketPanel: View {
                     .foregroundColor(.white)
                     .frame(width: 80)
                     .textFieldStyle(PlainTextFieldStyle())
-                    .onChange(of: ipText) { _, newVal in
+                    .onChange(of: ipText) { newVal in
                         socketManager.ip = newVal
                     }
             }
@@ -322,7 +427,7 @@ struct SocketPanel: View {
                     .frame(width: 50)
                     .keyboardType(.numberPad)
                     .textFieldStyle(PlainTextFieldStyle())
-                    .onChange(of: portText) { _, newVal in
+                    .onChange(of: portText) { newVal in
                         if let p = Int(newVal) {
                             socketManager.port = p
                         }
@@ -403,27 +508,20 @@ struct DividerRow: View {
 struct RenderToggle: View {
     let label: String
     @Binding var isEnabled: Bool
-    var onSync: (() -> Void)?
-
-    private let smallMonoFont = Font.system(size: 11, design: .monospaced)
+    var indent: CGFloat = 0
 
     var body: some View {
-        Button(action: {
-            isEnabled.toggle()
-            onSync?()
-        }) {
+        Button(action: { isEnabled.toggle() }) {
             HStack(spacing: 8) {
                 Text(isEnabled ? "■" : "□")
-                    .font(smallMonoFont)
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(isEnabled ? Color(hex: "44FF44") : .gray)
                     .frame(width: 16)
-                Text(label).font(smallMonoFont).foregroundColor(.white)
+                Text(label).font(.system(size: 11, design: .monospaced)).foregroundColor(.white)
                 Spacer()
             }
-            .padding(.vertical, 6)
-            .padding(.horizontal, 8)
-            .background(Color.black.opacity(0.3))
-            .cornerRadius(6)
+            .padding(.leading, indent)
+            .padding(.vertical, 1)
         }
         .buttonStyle(PlainButtonStyle())
     }

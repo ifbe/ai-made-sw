@@ -6,14 +6,28 @@ import UIKit
 class RenderState: ObservableObject {
     static let shared = RenderState()
 
-    @Published var drawWorldAxes: Bool = true
-    @Published var drawGravityArrow: Bool = true
-    @Published var drawMagnetArrow: Bool = true
-    @Published var drawBoat: Bool = true
-    @Published var drawWaterSurface: Bool = true
-    @Published var drawWaterBody: Bool = true
+    @Published var drawWorldAxes: Bool = false
+    @Published var drawGravityArrow: Bool = false
+    @Published var drawMagnetArrow: Bool = false
+    @Published var drawBoat: Bool = false
+    @Published var drawWaterSurface: Bool = false
+    @Published var drawWaterBody: Bool = false
+    @Published var drawHuman: Bool = false
+    @Published var drawFixation: Bool = false
 
-    private init() {}
+    private init() {
+        // Randomly enable one of the three render groups on startup
+        switch Int.random(in: 0..<3) {
+        case 0:
+            drawWorldAxes = true; drawGravityArrow = true; drawMagnetArrow = true
+        case 1:
+            drawBoat = true; drawWaterSurface = true; drawWaterBody = true
+        case 2:
+            drawHuman = true; drawFixation = true
+        default:
+            break
+        }
+    }
 }
 
 class SensorManager: ObservableObject {

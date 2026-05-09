@@ -1,6 +1,12 @@
 # Waterinbox
 
-把手机想象成一个装了一半水的密封盒子，屏幕是玻璃面。通过手机传感器的实时姿态，渲染出从屏幕这面"透视"进去看到的水面形状。
+把手机想象成一个"空的密封盒子"，屏幕是玻璃面。盒子里的"内容"可以是各种东西：
+
+1. 比如占盒子体积一半的水——水面永远垂直于重力方向，倾斜时形状随之改变，但总体积不变（无流体模拟，瞬间达到静止）。
+
+2. 比如腰部绑在盒子上、靠弹簧-质点物理驱动的人——四肢随惯性甩动，受重力和阻尼共同作用，可替换的内容物。
+
+通过手机传感器的实时姿态，渲染从屏幕这面"透视"进去看到的内容物形状。
 
 ## 效果
 
@@ -21,7 +27,11 @@ waterinbox/
 │       ├── sensor/
 │       │   └── SensorManager.kt # 传感器读取 + 欧拉角/轴角计算
 │       ├── renderer/
-│       │   └── BoxSpace.kt      # OpenGL ES 3.0 渲染（箭头/木筏/水面/水体）
+│       │   ├── BoxSpace.kt        # 核心类：状态 / setup / draw dispatch
+│       │   ├── BoxSpaceDebug.kt   # 坐标轴 / 重力箭头 / 磁力箭头
+│       │   ├── BoxSpaceWater.kt   # 木筏 / 水面 / 水体
+│       │   ├── BoxSpaceOther.kt   # future 扩展桩
+│       │   └── BoxSpaceHuman.kt   # 弹簧质点人（框架，未实现）
 │       ├── socket/
 │       │   └── SocketManager.kt # UDP 发送
 │       └── ui/
@@ -35,16 +45,20 @@ waterinbox/
         ├── Info.plist
         ├── Assets.xcassets/
         ├── metal/
-        │   └── MetalRenderer.swift   # Metal 渲染器
+        │   ├── MetalRenderer.swift    # 主类：Metal 对象 / pipeline state / draw(in:)
+        │   ├── debugelement.swift     # 坐标轴 / 重力箭头(gLen*200) / 磁力箭头(|mag|)
+        │   ├── waterelement.swift    # 木筏 / 水面 / 水体
+        │   ├── humanelement.swift    # 人形渲染（15关节 T-pose）+ 固定装置（爪子）
+        │   └── otherelement.swift    # future 扩展桩
         ├── sensor/
-        │   └── SensorManager.swift   # iOS 传感器 + CMMotionManager
+        │   └── SensorManager.swift    # iOS 传感器 + CMMotionManager
         ├── math/
-        │   ├── BoxMath.swift         # 水面多边形计算
-        │   └── FusionAlgorithm.swift # 融合算法（ENU 坐标系）
+        │   ├── BoxMath.swift          # 水面多边形计算
+        │   └── FusionAlgorithm.swift  # 融合算法（ENU 坐标系）
         ├── socket/
-        │   └── SocketManager.swift   # TCP/UDP 通信（Network.framework）
+        │   └── SocketManager.swift    # TCP/UDP 通信（Network.framework）
         └── ui/
-            └── UISpace.swift         # 四按钮四面板 UI
+            └── UISpace.swift          # 四按钮四面板 UI
 ```
 
 ## 核心原理
@@ -115,12 +129,16 @@ gZ = -1 + 2*(qx² + qy²)
 
 | 标志 | 默认 | 说明 |
 |------|------|------|
-| `drawWorldAxes` | true | 世界坐标系轴调试射线（红/绿/蓝） |
-| `drawGravityArrow` | true | 重力箭头 |
-| `drawMagnetArrow` | true | 磁力箭头（0.6x 重力箭头长度） |
-| `drawBoat` | true | 木筏 8 点顶点 |
-| `drawWaterSurface` | true | 水面 polygon |
-| `drawWaterBody` | true | 水下半透明 quad |
+| `drawWorldAxes` | **false** | 世界坐标系轴调试射线（红/绿/蓝） |
+| `drawGravityArrow` | **false** | 重力箭头（shaftLen = |accel| * 200，accel 单位 m/s² ≈ 9.8） |
+| `drawMagnetArrow` | **false** | 磁力箭头（shaftLen = |mag| 原始 µT 值，约 45-65） |
+| `drawBoat` | **false** | 木筏 8 点顶点 |
+| `drawWaterSurface` | **false** | 水面 polygon |
+| `drawWaterBody` | **false** | 水下半透明 quad |
+| `drawHuman` | **false** | 人形（15关节 T-pose 连线） |
+| `drawFixation` | **false** | 固定装置爪子（10顶点/4面，颜色与 Android 一致） |
+
+**启动时随机**：程序启动时随机开启 debug / water / human 三组之一（通过 `Int.random(in: 0..<3)` 实现）。
 
 ### 渲染顺序
 
@@ -188,7 +206,7 @@ iOS 使用 Network.framework（NWConnection）实现。
 
 ### iOS 近期
 
-- [ ] IOS的accel不带重力？
+- [ ] 完善 humanelement.swift 的弹簧质点物理
 
 ### Android 近期
 
