@@ -7,11 +7,11 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		AE944ED32FB087C400F4EF71 /* p2pnet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = p2pnet.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AEF0192A2FB822D800E72B9E /* p2pnet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = p2pnet.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		AE944ED52FB087C400F4EF71 /* p2pnet */ = {
+		AEF0192C2FB822D800E72B9E /* p2pnet */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = p2pnet;
 			sourceTree = "<group>";
@@ -19,7 +19,7 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		AE944ED02FB087C400F4EF71 /* Frameworks */ = {
+		AEF019272FB822D800E72B9E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -29,18 +29,18 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		AE944ECA2FB087C400F4EF71 = {
+		AEF019212FB822D800E72B9E = {
 			isa = PBXGroup;
 			children = (
-				AE944ED52FB087C400F4EF71 /* p2pnet */,
-				AE944ED42FB087C400F4EF71 /* Products */,
+				AEF0192C2FB822D800E72B9E /* p2pnet */,
+				AEF0192B2FB822D800E72B9E /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		AE944ED42FB087C400F4EF71 /* Products */ = {
+		AEF0192B2FB822D800E72B9E /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AE944ED32FB087C400F4EF71 /* p2pnet.app */,
+				AEF0192A2FB822D800E72B9E /* p2pnet.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,64 +48,64 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		AE944ED22FB087C400F4EF71 /* p2pnet */ = {
+		AEF019292FB822D800E72B9E /* p2pnet */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = AE944EDE2FB087C700F4EF71 /* Build configuration list for PBXNativeTarget "p2pnet" */;
+			buildConfigurationList = AEF019352FB822DA00E72B9E /* Build configuration list for PBXNativeTarget "p2pnet" */;
 			buildPhases = (
-				AE944ECF2FB087C400F4EF71 /* Sources */,
-				AE944ED02FB087C400F4EF71 /* Frameworks */,
-				AE944ED12FB087C400F4EF71 /* Resources */,
+				AEF019262FB822D800E72B9E /* Sources */,
+				AEF019272FB822D800E72B9E /* Frameworks */,
+				AEF019282FB822D800E72B9E /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AE944ED52FB087C400F4EF71 /* p2pnet */,
+				AEF0192C2FB822D800E72B9E /* p2pnet */,
 			);
 			name = p2pnet;
 			packageProductDependencies = (
 			);
 			productName = p2pnet;
-			productReference = AE944ED32FB087C400F4EF71 /* p2pnet.app */;
+			productReference = AEF0192A2FB822D800E72B9E /* p2pnet.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		AE944ECB2FB087C400F4EF71 /* Project object */ = {
+		AEF019222FB822D800E72B9E /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2630;
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
-					AE944ED22FB087C400F4EF71 = {
+					AEF019292FB822D800E72B9E = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
 			};
-			buildConfigurationList = AE944ECE2FB087C400F4EF71 /* Build configuration list for PBXProject "p2pnet" */;
+			buildConfigurationList = AEF019252FB822D800E72B9E /* Build configuration list for PBXProject "p2pnet" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
 				Base,
 			);
-			mainGroup = AE944ECA2FB087C400F4EF71;
+			mainGroup = AEF019212FB822D800E72B9E;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = AE944ED42FB087C400F4EF71 /* Products */;
+			productRefGroup = AEF0192B2FB822D800E72B9E /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				AE944ED22FB087C400F4EF71 /* p2pnet */,
+				AEF019292FB822D800E72B9E /* p2pnet */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		AE944ED12FB087C400F4EF71 /* Resources */ = {
+		AEF019282FB822D800E72B9E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -115,7 +115,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		AE944ECF2FB087C400F4EF71 /* Sources */ = {
+		AEF019262FB822D800E72B9E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -125,7 +125,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		AE944EDC2FB087C700F4EF71 /* Debug */ = {
+		AEF019332FB822DA00E72B9E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -189,7 +189,7 @@
 			};
 			name = Debug;
 		};
-		AE944EDD2FB087C700F4EF71 /* Release */ = {
+		AEF019342FB822DA00E72B9E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -246,7 +246,7 @@
 			};
 			name = Release;
 		};
-		AE944EDF2FB087C700F4EF71 /* Debug */ = {
+		AEF019362FB822DA00E72B9E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -256,6 +256,7 @@
 				DEVELOPMENT_TEAM = KM9J73MDRA;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -279,7 +280,7 @@
 			};
 			name = Debug;
 		};
-		AE944EE02FB087C700F4EF71 /* Release */ = {
+		AEF019372FB822DA00E72B9E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -315,25 +316,25 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AE944ECE2FB087C400F4EF71 /* Build configuration list for PBXProject "p2pnet" */ = {
+		AEF019252FB822D800E72B9E /* Build configuration list for PBXProject "p2pnet" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AE944EDC2FB087C700F4EF71 /* Debug */,
-				AE944EDD2FB087C700F4EF71 /* Release */,
+				AEF019332FB822DA00E72B9E /* Debug */,
+				AEF019342FB822DA00E72B9E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		AE944EDE2FB087C700F4EF71 /* Build configuration list for PBXNativeTarget "p2pnet" */ = {
+		AEF019352FB822DA00E72B9E /* Build configuration list for PBXNativeTarget "p2pnet" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AE944EDF2FB087C700F4EF71 /* Debug */,
-				AE944EE02FB087C700F4EF71 /* Release */,
+				AEF019362FB822DA00E72B9E /* Debug */,
+				AEF019372FB822DA00E72B9E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = AE944ECB2FB087C400F4EF71 /* Project object */;
+	rootObject = AEF019222FB822D800E72B9E /* Project object */;
 }
