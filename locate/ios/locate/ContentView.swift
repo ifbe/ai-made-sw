@@ -1,21 +1,24 @@
-//
-//  ContentView.swift
-//  locate
-//
-//  Created by 史蒙健 on 2026/5/10.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @State private var keychain = KeychainStorage()
+    @State private var isLoggedIn = false
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        Group {
+            if isLoggedIn {
+                MapContainerView(viewModel: MapViewModel(
+                    keychain: keychain,
+                    serverUrl: keychain.serverUrl
+                ), onLogout: {
+                    isLoggedIn = false
+                })
+            } else {
+                LoginView(viewModel: LoginViewModel(keychain: keychain)) {
+                    isLoggedIn = true
+                }
+            }
         }
-        .padding()
     }
 }
 
