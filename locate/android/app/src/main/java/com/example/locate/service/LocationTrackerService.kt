@@ -209,18 +209,23 @@ class LocationTrackerService : Service(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     fun getCurrentPosition(): Position? = currentPosition
+    fun getCurrentGcj02Position(): Position? {
+        val pos = currentPosition ?: return null
+        val (gcjLat, gcjLng) = wgs84ToGcj02(pos.lat, pos.lng)
+        return Position(gcjLat, gcjLng, pos.accuracy, pos.altitude, pos.speed, pos.bearing)
+    }
     fun getCurrentHeading(): Float = currentHeading
     fun setMapView(view: com.example.locate.ui.map.MapView?) { this.mapView = view }
 
     private fun sendUpdate() {
         val pos = currentPosition ?: return
+        val (gcjLat, gcjLng) = wgs84ToGcj02(pos.lat, pos.lng)
         // 第一次 GPS 到达时，把地图飞到自己的位置
         if (!hasMovedToSelf && mapView != null) {
             hasMovedToSelf = true
-            mapView?.moveTo(pos.lat, pos.lng, 17.0)
+            mapView?.moveTo(gcjLat, gcjLng, 17.0)
         }
-        // WGS84 → GCJ-02 转换（高德瓦片坐标系）
-        val (gcjLat, gcjLng) = wgs84ToGcj02(pos.lat, pos.lng)
+        mapView?.updateAltitude(pos.altitude)
         apiClient?.sendPosition(gcjLat, gcjLng, currentHeading)
         android.util.Log.d("GPS", "sendPosition: wgs84(${pos.lat},${pos.lng}) => gcj02($gcjLat,$gcjLng) accuracy=${pos.accuracy}m")
     }

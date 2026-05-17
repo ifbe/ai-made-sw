@@ -73,7 +73,7 @@
     window.MapInterface = {
         moveTo: function(lat, lng, zoom) {
             if (!map) return;
-            map.setView([lat, lng], zoom || map.getZoom());
+            map.flyTo([lat, lng], zoom || map.getZoom(), {animate: true, duration: 0.5});
         },
         getCenterAndZoom: function() {
             reportCenterAndZoom();

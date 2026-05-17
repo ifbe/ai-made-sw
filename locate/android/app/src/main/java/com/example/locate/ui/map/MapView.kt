@@ -44,10 +44,6 @@ interface MapView {
      */
     fun moveTo(lat: Double, lng: Double, zoom: Double = 15.0)
 
-    /**
-     * 显示服务器广播回来的自身位置（调试用，和本地GPS对比）
-     */
-    fun showServerPosition(lat: Double, lng: Double, heading: Float)
 
     /**
      * 地图点击事件
@@ -77,6 +73,30 @@ interface MapView {
      * 连接状态图标点击回调（断开连接时点击可回到登录页）
      */
     fun setOnConnectionStatusClickListener(listener: () -> Unit)
+
+    /**
+     * 更新队友列表面板
+     */
+    fun updateUserList(users: List<User>)
+
+    /**
+     * 更新海拔信息（显示在十字星旁）
+     */
+    fun updateAltitude(altitude: Double?)
+
+    /**
+     * 本地设置面板点击回调
+     * type: "location" = 我的位置, "target" = 我的目标
+     * lat/lng: 地图中心坐标（target 时用）
+     */
+    fun setOnLocalSettingsClickListener(listener: (type: String, lat: Double, lng: Double) -> Unit)
+
+    /**
+     * 队友列表面板点击回调
+     * type: "user" = 点左侧名字, "target" = 点右侧🎯
+     * user: 被点击的用户
+     */
+    fun setOnUserListClickListener(listener: (type: String, user: User) -> Unit)
 
     /**
      * 销毁视图

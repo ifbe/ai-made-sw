@@ -34,7 +34,6 @@ class MapViewImpl @JvmOverloads constructor(
     private val markerViews = mutableMapOf<String, MarkerView>()
     private var myMarker: MarkerView? = null
     private var myTargetMarker: MarkerView? = null
-    private var myServerMarker: MarkerView? = null  // 服务器广播回来的位置（调试用）
     private var myTargetLineView: TargetLineView? = null
 
     // 其他用户的 target 标记
@@ -48,11 +47,15 @@ class MapViewImpl @JvmOverloads constructor(
     private var currentZoom = 15.0
     private var currentCenterLat = 0.0
     private var currentCenterLng = 0.0
+    private var currentAltitude: Double? = null
     private var crosshairView: CrosshairView? = null
     private var cornerCoordsView: CornerCoordsView? = null
     private var connectionStatusView: ConnectionStatusView? = null
     private var targetButtonView: TargetButtonView? = null
-    private var targetButtonClickListener: ((Double, Double) -> Unit)? = null
+    private var localSettingsPanel: LocalSettingsPanel? = null
+    private var userListPanel: UserListPanel? = null
+    private var localSettingsClickListener: ((String, Double, Double) -> Unit)? = null
+    private var userListClickListener: ((String, User) -> Unit)? = null
 
     // 四角坐标（每次 onCenterAndZoom 时更新）
     private var cornerTopLeft: Pair<Double, Double>? = null    // (lat, lng)
@@ -114,34 +117,40 @@ class MapViewImpl @JvmOverloads constructor(
         cornerCoordsView = CornerCoordsView(context)
         overlay.addView(cornerCoordsView!!, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
-        // 连接状态图标（右上角）
+        // 连接状态图标（左下角）
         connectionStatusView = ConnectionStatusView(context)
         connectionStatusView?.setStatus(0)  // 初始=连接中(橙)
-        android.util.Log.d("MapDebug", "Adding connectionStatusView to overlay")
         overlay.addView(connectionStatusView!!, FrameLayout.LayoutParams(72, 72).apply {
-            gravity = android.view.Gravity.TOP or android.view.Gravity.END
-            topMargin = 60
-            marginEnd = 20
+            gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+            bottomMargin = 32
+            marginStart = 20
         })
         connectionStatusView?.setOnClickListener {
             connectionStatusClickListener?.invoke()
         }
 
-        // 目标设置按钮（连接图标下方）
-        targetButtonView = TargetButtonView(context)
+        // 服务器位置标记已移除
 
-        // 服务器位置标记（调试用，绿色和本地金色对比）
-        myServerMarker = MarkerView(context)
-        myServerMarker?.update(0.0, 0.0, 0f, isSelf = false, isServerPos = true)
-        overlay.addView(myServerMarker, FrameLayout.LayoutParams(80, 100))
-        targetButtonView?.setOnClickListener {
-            android.util.Log.d("MapDebug", "TargetButton clicked, currentCenter=${currentCenterLat},${currentCenterLng}")
-            targetButtonClickListener?.invoke(currentCenterLat, currentCenterLng)
+        // 左上角：本地设置面板
+        localSettingsPanel = LocalSettingsPanel(context)
+        localSettingsPanel?.setOnClickListener { type ->
+            localSettingsClickListener?.invoke(type, currentCenterLat, currentCenterLng)
         }
-        overlay.addView(targetButtonView!!, FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+        overlay.addView(localSettingsPanel!!, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            topMargin = 60
+            marginStart = 16
+        })
+
+        // 右上角：队友列表面板
+        userListPanel = UserListPanel(context)
+        userListPanel?.setOnClickListener { action, user ->
+            userListClickListener?.invoke(action, user)
+        }
+        overlay.addView(userListPanel!!, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = android.view.Gravity.TOP or android.view.Gravity.END
-            topMargin = 60 + 72 + 8
-            marginEnd = 20
+            topMargin = 60
+            marginEnd = 16
         })
 
 
@@ -275,16 +284,6 @@ class MapViewImpl @JvmOverloads constructor(
         postJs("MapInterface.moveTo($lat, $lng, $zoom)")
     }
 
-    override fun showServerPosition(lat: Double, lng: Double, heading: Float) {
-        android.util.Log.d("MapDebug", "showServerPosition: lat=$lat lng=$lng heading=$heading")
-        if (lat == 0.0 && lng == 0.0) return
-        pendingPositions["__server__"] = PendingUpdate(lat, lng, heading)
-        myServerMarker?.let { marker ->
-            if (marker.parent != null) {
-                updateMarkerPosition(marker, lat, lng, heading, isSelf = false, isServerPos = true)
-            }
-        }
-    }
 
     override fun setOnMapClickListener(listener: (Double, Double) -> Unit) {
         clickListener = listener
@@ -295,15 +294,37 @@ class MapViewImpl @JvmOverloads constructor(
     }
 
     override fun updateTargetButton(hasTarget: Boolean) {
-        post { targetButtonView?.setHasTarget(hasTarget) }
+        post {
+            targetButtonView?.setHasTarget(hasTarget)
+            localSettingsPanel?.setHasTarget(hasTarget)
+        }
     }
 
     override fun setOnTargetButtonClickListener(listener: (Double, Double) -> Unit) {
-        targetButtonClickListener = listener
+        localSettingsClickListener = { type, lat, lng ->
+            if (type == "target") listener(lat, lng)
+        }
     }
 
     override fun setOnConnectionStatusClickListener(listener: () -> Unit) {
         connectionStatusClickListener = listener
+    }
+
+    override fun updateUserList(users: List<User>) {
+        post { userListPanel?.updateUsers(users) }
+    }
+
+    override fun updateAltitude(altitude: Double?) {
+        currentAltitude = altitude
+        post { crosshairView?.invalidate() }
+    }
+
+    override fun setOnLocalSettingsClickListener(listener: (String, Double, Double) -> Unit) {
+        localSettingsClickListener = listener
+    }
+
+    override fun setOnUserListClickListener(listener: (String, User) -> Unit) {
+        userListClickListener = listener
     }
 
     override fun onDestroy() {
@@ -366,7 +387,7 @@ class MapViewImpl @JvmOverloads constructor(
             val (x, y) = pos
             android.util.Log.d("MapDebug", "updateMarker: lat=$lat lng=$lng => ($x, $y)")
             val size = if (isTarget) 60 else 80
-            val h = if (isTarget) 30 else if (isServerPos) 100 else size
+            val h = if (isTarget) 30 else size
             post {
                 view.layoutParams = LayoutParams(size, h).apply {
                     leftMargin = (x - size / 2).toInt()
@@ -416,7 +437,7 @@ class MapViewImpl @JvmOverloads constructor(
             when (key) {
                 "__self__" -> myMarker?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = true) }
                 "__myTarget__" -> myTargetMarker?.let { updateMarkerPosition(it, update.lat, update.lng, 0f, isTarget = true) }
-                "__server__" -> myServerMarker?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = false, isServerPos = true) }
+                "__server__" -> { }  // 已移除
                 else -> {
                     markerViews[key]?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = false, key = key) }
                     // 该用户有 target 时刷新 target 标记和连线
@@ -606,20 +627,49 @@ class MapViewImpl @JvmOverloads constructor(
         }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFF0000.toInt()
-            textSize = 28f
-            textAlign = Paint.Align.CENTER
+            textSize = 24f
+            textAlign = Paint.Align.LEFT
         }
+        private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            style = Paint.Style.FILL
+        }
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFF0000.toInt()
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+
         override fun onDraw(canvas: Canvas) {
             val cx = width / 2f
             val cy = height / 2f
             val size = 40f
+
             // 十字线
+            paint.strokeWidth = 3f
             canvas.drawLine(cx - size, cy, cx + size, cy, paint)
             canvas.drawLine(cx, cy - size, cx, cy + size, paint)
             canvas.drawCircle(cx, cy, 8f, paint)
-            // 坐标文字（在十字线上方）
-            val coordText = String.format("%.4f, %.4f", currentCenterLat, currentCenterLng)
-            canvas.drawText(coordText, cx, cy - size - 8, textPaint)
+
+            // 坐标文字（在十字线上方，三行，位置抬高不挡十字星）
+            val line1 = String.format("经度: %.6f", currentCenterLng)
+            val line2 = String.format("纬度: %.6f", currentCenterLat)
+            val altText = if (currentAltitude != null) String.format("海拔: %.1f m", currentAltitude!!) else "海拔: -- m"
+            val lineH = 28f
+
+            // 背景框在十字星上方，不遮挡
+            val textW = maxOf(textPaint.measureText(line1), textPaint.measureText(line2), textPaint.measureText(altText))
+            val textX = cx - textW / 2 - 8f
+            val textY = cy - size - 120f  // 抬高到十字线上方，不挡中心
+            val bgW = textW + 16f
+            val bgH = lineH * 3 + 12f
+            canvas.drawRect(textX, textY, textX + bgW, textY + bgH, bgPaint)
+            canvas.drawRect(textX, textY, textX + bgW, textY + bgH, borderPaint)
+
+            textPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(line1, textX + 8f, textY + lineH, textPaint)
+            canvas.drawText(line2, textX + 8f, textY + lineH * 2, textPaint)
+            canvas.drawText(altText, textX + 8f, textY + lineH * 3, textPaint)
         }
     }
 
@@ -680,17 +730,31 @@ class MapViewImpl @JvmOverloads constructor(
                 return
             }
 
-            // 箭头"↑"，旋转角度=heading（0°指北，顺时针）
+            // 箭头，旋转角度=heading（0°指北，顺时针）
             canvas.save()
             canvas.rotate(heading, cx, cy)
-            textPaint.color = when {
-                isServerPos -> 0xFF4CAF50.toInt()  // 绿色-服务器位置
-                isSelf -> 0xFFFFD700.toInt()        // 金色-自己本地GPS
-                else -> 0xFF2196F3.toInt()           // 蓝色-队友
+
+            if (isSelf) {
+                // 本地GPS：空心三角 emoji △（X轴压扁变尖）
+                textPaint.color = 0xFFFFD700.toInt()
+                textPaint.textSize = h * 0.9f
+                textPaint.textAlign = Paint.Align.CENTER
+
+                canvas.save()
+                canvas.scale(0.65f, 1f, cx, cy)
+                canvas.drawText("\u25B3", cx, cy + textPaint.textSize / 3, textPaint)
+                canvas.restore()
+            } else {
+                // 服务器位置/其他用户：↑箭头（保持原样）
+                textPaint.color = when {
+                    isServerPos -> 0xFF4CAF50.toInt()  // 绿色
+                    else -> 0xFF2196F3.toInt()           // 蓝色
+                }
+                textPaint.textSize = h * 0.8f
+                textPaint.textAlign = Paint.Align.CENTER
+                canvas.drawText("↑", cx, cy + textPaint.textSize / 3, textPaint)
             }
-            textPaint.textSize = h * 0.8f
-            textPaint.textAlign = Paint.Align.CENTER
-            canvas.drawText("↑", cx, cy + textPaint.textSize / 3, textPaint)
+
             canvas.restore()
 
             // 昵称（箭头下方）
@@ -779,9 +843,7 @@ class MapViewImpl @JvmOverloads constructor(
 
             when (status) {
                 1 -> {
-                    // 绿色: 显示在线人数
-                    textPaint.textSize = 28f
-                    canvas.drawText(onlineCount.toString(), cx, cy + textPaint.textSize / 3 - 1, textPaint)
+                    // 绿色: 纯色圆，仅表示已连接
                 }
                 2 -> {
                     // 红色: 显示警告感叹号
@@ -841,5 +903,196 @@ class MapViewImpl @JvmOverloads constructor(
             val text = if (hasTarget) "已设目标，点我取消" else "未设目标，点我设置"
             canvas.drawText(text, cx, cy + textPaint.textSize / 3 - 2, textPaint)
         }
+    }
+
+    // ─── Local Settings Panel (top-left) ───────────────────────────
+
+    inner class LocalSettingsPanel @JvmOverloads constructor(
+        ctx: Context,
+        attrs: AttributeSet? = null,
+        defStyleAttr: Int = 0
+    ) : View(ctx, attrs, defStyleAttr) {
+        private var hasTarget = false
+        private var onClickListener: ((String) -> Unit)? = null
+        private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xF5FFFFFF.toInt(); style = Paint.Style.FILL
+        }
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x33000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1f
+        }
+        private val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF888888.toInt(); textSize = 26f
+        }
+        private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x22000000 }
+        private val rowBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x0D000000 }
+        private val rowIconPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rowTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF000000.toInt(); textSize = 28f
+        }
+
+        init { setWillNotDraw(false) }
+
+        fun setOnClickListener(listener: (String) -> Unit) { onClickListener = listener }
+        fun setHasTarget(has: Boolean) { hasTarget = has; invalidate() }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            // 标题(dp(30)) + 分隔线(dp(2)) + 2行内容(dp(24)每行) + padding(dp(8))
+            val contentHeight = dp(30) + dp(2) + (dp(24) * 2) + dp(8)
+            setMeasuredDimension(dp(130), contentHeight)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            // solid background + border
+            canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), dp(10).toFloat(), dp(10).toFloat(), bgPaint)
+            canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), dp(10).toFloat(), dp(10).toFloat(), borderPaint)
+
+            // header
+            canvas.drawText("本地", dp(10).toFloat(), dp(20).toFloat(), headerPaint)
+            canvas.drawLine(dp(4).toFloat(), dp(30).toFloat(), (width - dp(4)).toFloat(), dp(30).toFloat(), dividerPaint)
+
+            // rows at y=36, 60 (24dp spacing)
+            val rowY1 = dp(36)
+            val rowY2 = dp(60)
+
+            // 我的位置 row
+            canvas.drawRect(dp(4).toFloat(), rowY1.toFloat() - dp(3), (width - dp(4)).toFloat(), (rowY1 + dp(20)).toFloat(), rowBgPaint)
+            rowIconPaint.color = 0xFFFFD700.toInt()
+            canvas.drawText("⬡", dp(10).toFloat(), (rowY1 + dp(13)).toFloat(), rowIconPaint)
+            canvas.drawText("我的位置", dp(28).toFloat(), (rowY1 + dp(13)).toFloat(), rowTextPaint)
+
+            // 我的目标 row
+            canvas.drawRect(dp(4).toFloat(), rowY2.toFloat() - dp(3), (width - dp(4)).toFloat(), (rowY2 + dp(20)).toFloat(), rowBgPaint)
+            rowIconPaint.color = if (hasTarget) 0xFFFF9800.toInt() else 0xFF2196F3.toInt()
+            canvas.drawText("◎", dp(10).toFloat(), (rowY2 + dp(13)).toFloat(), rowIconPaint)
+            rowTextPaint.color = if (hasTarget) 0xFFFF9800.toInt() else 0xFF2196F3.toInt()
+            canvas.drawText(if (hasTarget) "取消目标" else "设目标", dp(28).toFloat(), (rowY2 + dp(13)).toFloat(), rowTextPaint)
+            rowTextPaint.color = 0xFF000000.toInt()
+        }
+
+        override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+            if (event.action == android.view.MotionEvent.ACTION_UP) {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                val y = event.y
+                val rowY1 = dp(36)
+                val rowY2 = dp(60)
+                when {
+                    y >= (rowY1 - dp(3)) && y <= (rowY1 + dp(20)) -> onClickListener?.invoke("location")
+                    y >= (rowY2 - dp(3)) && y <= (rowY2 + dp(20)) -> onClickListener?.invoke("target")
+                }
+            }
+            return true
+        }
+
+        private fun dp(px: Int): Int = (px * context.resources.displayMetrics.density).toInt()
+    }
+
+    // ─── User List Panel (top-right) ─────────────────────────────────
+
+    inner class UserListPanel @JvmOverloads constructor(
+        ctx: Context,
+        attrs: AttributeSet? = null,
+        defStyleAttr: Int = 0
+    ) : View(ctx, attrs, defStyleAttr) {
+        private var users: List<User> = emptyList()
+        private var selfUsername: String = ""
+        private var onClickListener: ((String, User) -> Unit)? = null
+        private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xF0FFFFFF.toInt(); style = Paint.Style.FILL
+        }
+        private val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF888888.toInt(); textSize = 28f
+        }
+        private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33000000 }
+        private val rowBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x11000000 }
+        private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val namePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF000000.toInt(); textSize = 28f
+        }
+        private val targetPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xCCAAAAAA.toInt(); textSize = 26f
+        }
+        private val targetActivePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFF9800.toInt(); textSize = 26f
+        }
+        private val scrollPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x33000000; strokeWidth = 1f
+        }
+        private val colors = listOf(
+            0xFF2196F3.toInt(), 0xFF9C27B0.toInt(), 0xFF00BCD4.toInt(),
+            0xFFE91E63.toInt(), 0xFF00BCD4.toInt(), 0xFFFF9800.toInt(),
+            0xFF795548.toInt(), 0xFF9E9E9E.toInt()
+        )
+
+        init { setWillNotDraw(false) }
+
+        fun updateUsers(list: List<User>) { users = list; requestLayout(); invalidate() }
+        fun setOnClickListener(listener: (String, User) -> Unit) { onClickListener = listener }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            // 标题区(dp(32)) + 分隔线(dp(4)) + 用户行(n * dp(24)) + 底边距(dp(4))
+            val totalHeight = dp(32) + dp(4) + users.size * dp(24) + dp(4)
+            setMeasuredDimension(dp(120), totalHeight)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), dp(10).toFloat(), dp(10).toFloat(), bgPaint)
+            canvas.drawText("同服人数：${users.size}", dp(8).toFloat(), dp(22).toFloat(), headerPaint)
+            canvas.drawLine(dp(4).toFloat(), dp(32).toFloat(), (width - dp(4)).toFloat(), dp(32).toFloat(), dividerPaint)
+
+            var y = dp(38)
+            for (user in users) {
+                val color = colors[Math.abs(user.username.hashCode()) % colors.size]
+                val hasTarget = user.targetLat != null
+                val name = user.nickname ?: user.username
+                drawRow(canvas, name, color, hasTarget, y)
+                y += dp(24)
+            }
+        }
+
+        private fun drawRow(canvas: Canvas, name: String, color: Int, hasTarget: Boolean, y: Int) {
+            // bg
+            canvas.drawRect(dp(3).toFloat(), (y - dp(3)).toFloat(), (width - dp(3)).toFloat(), (y + dp(20)).toFloat(), rowBgPaint)
+            // dot
+            dotPaint.color = color
+            canvas.drawCircle(dp(12).toFloat(), (y + dp(9)).toFloat(), dp(4).toFloat(), dotPaint)
+            // name
+            namePaint.color = 0xFF000000.toInt()
+            namePaint.textSize = 24f
+            canvas.drawText(name, dp(22).toFloat(), (y + dp(14)).toFloat(), namePaint)
+            // target icon (right side, only if has target)
+            if (hasTarget) {
+                targetActivePaint.textSize = 22f
+                canvas.drawText("⊕", (width - dp(16)).toFloat(), (y + dp(14)).toFloat(), targetActivePaint)
+            }
+        }
+
+        override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+            if (event.action == android.view.MotionEvent.ACTION_UP) {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                val y = event.y
+                var rowY = dp(38)
+                for (user in users) {
+                    if (y >= (rowY - dp(3)) && y <= (rowY + dp(20))) {
+                        val x = event.x
+                        android.util.Log.d("MapDebug", "UserListPanel click: user=${user.username} x=$x width=${width} targetLat=${user.targetLat}")
+                        if (x < width / 2) {
+                            android.util.Log.d("MapDebug", "  -> action=user, fly to ${user.lat},${user.lng}")
+                            onClickListener?.invoke("user", user)
+                        } else if (user.targetLat != null && user.targetLat != 0.0) {
+                            android.util.Log.d("MapDebug", "  -> action=target, fly to target ${user.targetLat},${user.targetLng}")
+                            onClickListener?.invoke("target", user)
+                        } else {
+                            android.util.Log.d("MapDebug", "  -> fallback, fly to ${user.lat},${user.lng}")
+                            onClickListener?.invoke("user", user)
+                        }
+                        break
+                    }
+                    rowY += dp(24)
+                }
+            }
+            return true
+        }
+
+        private fun dp(px: Int): Int = (px * context.resources.displayMetrics.density).toInt()
     }
 }

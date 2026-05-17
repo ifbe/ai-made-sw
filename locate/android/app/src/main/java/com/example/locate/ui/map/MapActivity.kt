@@ -166,18 +166,23 @@ class MapViewModel(
             }
 
             override fun onUserList(users: List<User>) {
-                // 过滤掉坐标无效的用户（比如残留的test用户坐标为0,0）
-                val validUsers = users.filter { !(it.lat == 0.0 && it.lng == 0.0) }
-                _otherUsers.value = validUsers
-                mapViewInterface?.showOtherUsers(validUsers)
-                mapViewInterface?.setConnectionStatus(1, validUsers.size + 1)  // +1=自己
+                // user_list 只用于UI显示，不过滤坐标（坐标为0不影响列表展示）
+                val displayUsers = users  // 不过滤，全部显示
+                android.util.Log.d("MapDebug", "onUserList: total=${users.size} display=${displayUsers.size} _loginUsername=$_loginUsername")
+                for (u in users) { android.util.Log.d("MapDebug", "  user: ${u.username}, lat=${u.lat}, lng=${u.lng}, targetLat=${u.targetLat}") }
+                // 不过滤自己，让自己的服务器位置（蓝色）也显示在列表中
+                val otherUsersList = users
+                _otherUsers.value = users  // 地图上显示的全部用户（包括自己用于坐标）
+                mapViewInterface?.showOtherUsers(otherUsersList)
+                mapViewInterface?.updateUserList(displayUsers)
+                mapViewInterface?.setConnectionStatus(1, displayUsers.size + 1)  // +1=自己
             }
 
             override fun onUserJoined(user: User) {
                 android.util.Log.d("MapDebug", "onUserJoined: ${user.username} lat=${user.lat} lng=${user.lng} target=${user.targetLat}")
-                if (user.username == _loginUsername) return  // 忽略自己的加入事件
                 _otherUsers.value = _otherUsers.value + user
                 mapViewInterface?.showOtherUser(user)
+                mapViewInterface?.updateUserList(_otherUsers.value)
                 mapViewInterface?.setConnectionStatus(1, _otherUsers.value.size + 1)
             }
 
@@ -185,6 +190,7 @@ class MapViewModel(
                 android.util.Log.d("MapDebug", "onUserLeft: $username")
                 _otherUsers.value = _otherUsers.value.filter { it.username != username }
                 mapViewInterface?.removeOtherUser(username)
+                mapViewInterface?.updateUserList(_otherUsers.value)
                 mapViewInterface?.setConnectionStatus(1, _otherUsers.value.size + 1)
             }
 
@@ -197,15 +203,22 @@ class MapViewModel(
                 }
                 // 重新显示
                 mapViewInterface?.showOtherUsers(_otherUsers.value)
+                mapViewInterface?.updateUserList(_otherUsers.value)
             }
 
             override fun onPositionUpdate(username: String, lat: Double, lng: Double, heading: Float) {
                 android.util.Log.d("MapDebug", "onPositionUpdate: username=$username lat=$lat lng=$lng currentUser=$_loginUsername")
                 val currentUser = _loginUsername
                 if (username == currentUser) {
-                    // 自己的位置：本地GPS（金色）和服务器广播（绿色"云"）都显示
+                    // 自己的位置（金色本地 GPS）
                     mapViewInterface?.showUser(lat, lng, heading)
-                    mapViewInterface?.showServerPosition(lat, lng, heading)
+                    // 同时更新自己在 markerViews 中的坐标（蓝色，和其他人一样）
+                    _otherUsers.value = _otherUsers.value.map { user ->
+                        if (user.username == username) user.copy(lat = lat, lng = lng, heading = heading) else user
+                    }
+                    // 显示自己的服务器位置（蓝色箭头），不过滤自己
+                    mapViewInterface?.showOtherUsers(_otherUsers.value)
+                    mapViewInterface?.updateUserList(_otherUsers.value)
                 } else {
                     // 其他用户的位置
                     _otherUsers.value = _otherUsers.value.map { user ->
@@ -214,6 +227,7 @@ class MapViewModel(
                         } else user
                     }
                     mapViewInterface?.showOtherUsers(_otherUsers.value)
+                    mapViewInterface?.updateUserList(_otherUsers.value)
                 }
             }
 
@@ -261,7 +275,7 @@ class MapViewModel(
     fun onMapReady() {
         // 地图就绪后，立即刷新当前位置并移动到我的位置
         locationService?.let { svc ->
-            val pos = svc.getCurrentPosition()
+            val pos = svc.getCurrentGcj02Position()
             if (pos != null) {
                 android.util.Log.d("MapDebug", "onMapReady: got position $pos")
                 mapViewInterface?.showUser(pos.lat, pos.lng, svc.getCurrentHeading())
@@ -276,6 +290,7 @@ class MapViewModel(
         this.mapViewInterface = mapView
         // 恢复已有用户
         mapView.showOtherUsers(_otherUsers.value)
+        mapView.updateUserList(_otherUsers.value)
         // 恢复目标点状态
         val hasTarget = _uiState.value.targetLat != null
         mapView.updateTargetButton(hasTarget)
@@ -285,12 +300,47 @@ class MapViewModel(
                 mapView.showTarget(lat, lng)
             }
         }
-        // 目标按钮点击
+        // 目标按钮点击 → 本地设置面板的"我的目标"
         mapView.setOnTargetButtonClickListener { lat, lng ->
             if (_uiState.value.targetLat != null) {
                 clearTarget()
             } else {
                 onMapClick(lat, lng)
+            }
+        }
+        // 本地设置面板：我的位置
+        mapView.setOnLocalSettingsClickListener { type, lat, lng ->
+            when (type) {
+                "location" -> {
+                    locationService?.let { svc ->
+                        val pos = svc.getCurrentGcj02Position()
+                        android.util.Log.d("MapDebug", "我的位置 tapped: pos=$pos")
+                        if (pos != null) mapViewInterface?.moveTo(pos.lat, pos.lng, 17.0)
+                    } ?: android.util.Log.d("MapDebug", "我的位置 tapped: locationService is null")
+                }
+                "target" -> {
+                    if (_uiState.value.targetLat != null) {
+                        clearTarget()
+                    } else {
+                        onMapClick(lat, lng)
+                    }
+                }
+            }
+        }
+        // 队友列表面板点击
+        mapView.setOnUserListClickListener { action, user ->
+            android.util.Log.d("MapDebug", "MapActivity received: action=$action user=${user.username} lat=${user.lat} lng=${user.lng}")
+            when (action) {
+                "user" -> {
+                    android.util.Log.d("MapDebug", "  -> moveTo user: ${user.lat}, ${user.lng}")
+                    mapViewInterface?.moveTo(user.lat, user.lng, 17.0)
+                }
+                "target" -> {
+                    if (user.targetLat != null && user.targetLng != null) {
+                        android.util.Log.d("MapDebug", "  -> moveTo target: ${user.targetLat}, ${user.targetLng}")
+                        mapViewInterface?.moveTo(user.targetLat, user.targetLng, 17.0)
+                    }
+                }
             }
         }
     }
@@ -388,7 +438,7 @@ fun MapScreen(viewModel: MapViewModel) {
                     mapViewImpl = impl
 
                     impl.setOnMapClickListener { lat, lng ->
-                        viewModel.onMapClick(lat, lng)
+                        // 地图层只显示，不响应点击
                     }
 
                     impl.setOnFirstMapReadyListener {
