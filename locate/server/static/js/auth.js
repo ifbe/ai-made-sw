@@ -83,7 +83,6 @@ function handleLogout() {
         AppState.userMarkers.forEach((marker) => AppState.map.removeLayer(marker));
         AppState.userMarkers.clear();
         if (AppState.selfLocalMarker) AppState.map.removeLayer(AppState.selfLocalMarker);
-        if (AppState.selfServerMarker) AppState.map.removeLayer(AppState.selfServerMarker);
     }
 
     if (AppState.reconnectTimer) {
@@ -101,7 +100,6 @@ function handleLogout() {
     DOM.username.value = '';
     DOM.password.value = '';
     DOM.loginError.innerText = '';
-    DOM.onlineCount.innerText = '0';
     DOM.loginBtn.disabled = false;
     DOM.loginBtn.innerHTML = '登录';
     

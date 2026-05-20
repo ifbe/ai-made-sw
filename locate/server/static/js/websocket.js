@@ -117,7 +117,6 @@ function initSocket() {
                 case 'login_success':
                     debugLog('登录成功:', data);
                     AppState.sessionToken = data.token;
-                    DOM.currentUserDisplay.innerText = `👋 ${data.nickname}`;
 
                     DOM.loginPage.style.display = 'none';
                     DOM.mapPage.style.display = 'block';
@@ -132,8 +131,7 @@ function initSocket() {
                     AppState.userMarkers.forEach((marker) => AppState.map.removeLayer(marker));
                     AppState.userMarkers.clear();
                     if (AppState.selfLocalMarker) AppState.map.removeLayer(AppState.selfLocalMarker);
-                    if (AppState.selfServerMarker) AppState.map.removeLayer(AppState.selfServerMarker);
-                    
+
                     // 清空所有目标线
                     AppState.otherTargets.forEach((target) => {
                         if (target.line) AppState.map.removeLayer(target.line);
@@ -142,7 +140,7 @@ function initSocket() {
                     AppState.otherTargets.clear();
                     clearSelfTarget();
 
-                    updateSelfMarkers();
+                    updateSelfLocalMarker();
                     
                     // 如果有目标，显示目标线
                     if (AppState.targetLat && AppState.targetLng) {
@@ -166,26 +164,38 @@ function initSocket() {
 
                 case 'user_list':
                     debugLog('收到用户列表:', data.users.length, '人');
-                    const selfInList = data.users.find(u => u.username === AppState.currentUser);
-                    if (selfInList) {
-                        AppState.serverLat = selfInList.lat;
-                        AppState.serverLng = selfInList.lng;
-                        AppState.serverHeading = selfInList.heading || 0;
-                        updateSelfMarkers();
-                    }
+
+                    // 存储所有用户（包括自己），用于右上角面板
+                    AppState.otherUsersData.clear();
+                    data.users.forEach(u => {
+                        AppState.otherUsersData.set(u.username, u);
+                    });
                     refreshOtherMarkers(data.users);
+                    updateUserListPanel(data.users); // 传入全部用户，右上角面板自己过滤
                     break;
 
                 case 'update_position':
                     debugLog('位置更新:', data.username);
+
+                    // 更新 otherUsersData（所有人一视同仁，包括自己）
+                    const existingData = AppState.otherUsersData.get(data.username) || {};
+                    AppState.otherUsersData.set(data.username, { ...existingData, lat: data.lat, lng: data.lng, heading: data.heading });
+
+                    // 更新地图上其他用户的标记（不包括自己，自己用 selfLocalMarker）
+                    if (data.username !== AppState.currentUser) {
+                        const marker = AppState.userMarkers.get(data.username);
+                        if (marker) {
+                            const icon = createHeadingIcon(data.heading, data.nickname || data.username, 'other');
+                            marker.setLatLng([data.lat, data.lng]);
+                            marker.setIcon(icon);
+                        }
+                    }
+
+                    // 如果是自己，同时更新服务器坐标和自己的目标（向后兼容）
                     if (data.username === AppState.currentUser) {
-                        // 更新自己的服务器位置
                         AppState.serverLat = data.lat;
                         AppState.serverLng = data.lng;
                         AppState.serverHeading = data.heading;
-                        updateSelfMarkers();
-                        
-                        // 如果位置更新里带了目标（向后兼容）
                         if (data.target_lat !== undefined && data.target_lng !== undefined) {
                             AppState.targetLat = data.target_lat;
                             AppState.targetLng = data.target_lng;
@@ -195,49 +205,45 @@ function initSocket() {
                                 clearSelfTarget();
                             }
                         }
-                    } else {
-                        // 更新其他用户的标记
-                        const marker = AppState.userMarkers.get(data.username);
-                        if (marker) {
-                            const icon = createHeadingIcon(data.heading, data.nickname || data.username, 'other');
-                            marker.setLatLng([data.lat, data.lng]);
-                            marker.setIcon(icon);
-                        }
                     }
+
+                    // 刷新右上角面板
+                    updateUserListPanel([...AppState.otherUsersData.values()]);
                     break;
 
-                // ===== 新增：处理目标更新消息 =====
                 case 'update_target':
                     debugLog('目标更新:', data.username, data.target_lat, data.target_lng);
-                    
+
+                    // 更新数据（所有人一视同仁）
+                    const tgtUserData = AppState.otherUsersData.get(data.username) || {};
+                    AppState.otherUsersData.set(data.username, { ...tgtUserData, target_lat: data.target_lat, target_lng: data.target_lng });
+
+                    // 如果是自己
                     if (data.username === AppState.currentUser) {
-                        // 自己的目标更新
                         if (data.target_lat && data.target_lng) {
                             AppState.targetLat = data.target_lat;
                             AppState.targetLng = data.target_lng;
                             updateSelfTarget();
-                            debugLog('自己的目标已更新');
                         } else {
                             AppState.targetLat = null;
                             AppState.targetLng = null;
                             clearSelfTarget();
-                            debugLog('自己的目标已清除');
                         }
                     } else {
-                        // 其他用户的目标更新
+                        // 其他用户：更新目标线
                         const userMarker = AppState.userMarkers.get(data.username);
                         if (userMarker) {
                             if (data.target_lat && data.target_lng) {
-                                // 获取该用户的当前位置
                                 const userPos = userMarker.getLatLng();
                                 updateOtherTarget(data.username, userPos.lat, userPos.lng, data.target_lat, data.target_lng);
-                                debugLog(`更新用户 ${data.username} 的目标`);
                             } else {
                                 clearOtherTarget(data.username);
-                                debugLog(`清除用户 ${data.username} 的目标`);
                             }
                         }
                     }
+
+                    // 刷新右上角面板
+                    updateUserListPanel([...AppState.otherUsersData.values()]);
                     break;
 
                 case 'user_joined':

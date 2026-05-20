@@ -1,3 +1,14 @@
+// 获取当前 GPS 位置（WGS84 直接返回，不转 GCJ-02）
+function getCurrentPosition() {
+    if (!AppState.lastPosition) return null;
+    return {
+        lat: AppState.lastPosition.lat,
+        lng: AppState.lastPosition.lng,
+        heading: AppState.localHeading,
+        altitude: AppState.currentAltitude
+    };
+}
+
 // ========== GPS功能 ==========
 
 // 发送位置到服务器（只发送位置和朝向，不包含目标）
@@ -42,13 +53,18 @@ function startGPSWatch() {
                 AppState.localHeading = position.coords.heading;
             }
 
+            if (position.coords.altitude !== null) {
+                AppState.currentAltitude = position.coords.altitude;
+            }
+
             if (!AppState.lastPosition ||
                 Math.abs(AppState.localLat - AppState.lastPosition.lat) > 0.00001 ||
                 Math.abs(AppState.localLng - AppState.lastPosition.lng) > 0.00001) {
 
                 debugLog('GPS更新:', AppState.localLat.toFixed(6), AppState.localLng.toFixed(6), AppState.localHeading + '°');
 
-                updateSelfMarkers();
+                updateSelfLocalMarker();
+                updateCrosshairInfo();
                 
                 // 如果有目标，更新自己的目标线（但不发送）
                 if (AppState.targetLat && AppState.targetLng) {

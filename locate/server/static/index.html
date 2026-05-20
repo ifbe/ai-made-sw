@@ -35,22 +35,38 @@
 
     <!-- 地图主界面 -->
     <div id="mapPage">
-        <!-- 顶部状态栏 -->
-        <div class="status-bar">
-            <span>👥 在线人数 <span id="onlineCount" class="online-count">0</span></span>
-            <span id="currentUserDisplay" style="font-weight:600;">未登录</span>
-            <button class="logout-btn" id="logoutBtn">退出</button>
-        </div>
-        
         <!-- 地图容器 -->
         <div id="map"></div>
-        
+
         <!-- 十字星 -->
         <div class="crosshair"></div>
-        
-        <!-- 目标设置按钮 -->
-        <div class="target-btn" id="targetBtn">🎯 点我设置目标</div>
-        
+
+        <!-- 十字星坐标三行 -->
+        <div id="crosshairInfo">
+            <span class="crosshair-line" id="infoLng">经度: --</span>
+            <span class="crosshair-line" id="infoLat">纬度: --</span>
+            <span class="crosshair-line" id="infoAlt">海拔: --</span>
+        </div>
+
+        <!-- 左上角本地设置面板 -->
+        <div id="localSettingsPanel">
+            <div class="settings-title" id="localSettingsTitle">我的信息</div>
+            <div class="settings-row" id="btnMyLocation">
+                <span class="icon">📍</span>
+                <span>我的位置</span>
+            </div>
+            <div class="settings-row" id="btnSetTarget">
+                <span class="icon">🎯</span>
+                <span>设目标</span>
+            </div>
+        </div>
+
+        <!-- 右上角用户列表面板 -->
+        <div id="userListPanel">
+            <div class="user-list-title" id="userListTitle">同服人数: 0</div>
+            <div id="userListContent"></div>
+        </div>
+
         <!-- 底部控件 -->
         <div class="bottom-controls">
             <!-- 左下：调试按钮和面板 -->
@@ -58,7 +74,7 @@
                 <div class="debug-btn" id="debugToggle">🔧 调试日志</div>
                 <div class="debug-panel" id="debugPanel"></div>
             </div>
-            
+
             <!-- 中下：连接状态和重连按钮 -->
             <div class="bottom-center">
                 <div id="connectionStatus" class="connection-status disconnected">⚡ 连接中...</div>
@@ -67,35 +83,12 @@
                     <div class="reconnect-btn manual" id="manualReconnectBtn">👆 手动重连</div>
                 </div>
             </div>
-            
-            <!-- 右下：图例 -->
-            <div class="bottom-right">
-                <div class="legend">
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #ffdf7e;"></div>
-                        <span>自己 (本地GPS)</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #ff7e7e;"></div>
-                        <span>自己 (云端数据)</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #7ec8ff;"></div>
-                        <span>其他队友</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #ffa500;"></div>
-                        <span>目标地点 (橙色虚线)</span>
-                    </div>
-                    <div class="legend-note">🧭 箭头 = 朝向</div>
-                </div>
-            </div>
         </div>
     </div>
 
     <!-- 引入 Leaflet -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
+
     <!-- 引入自定义JS模块 -->
     <script src="/js/config.js"></script>
     <script src="/js/utils.js"></script>

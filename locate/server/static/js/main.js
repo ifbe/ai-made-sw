@@ -8,7 +8,7 @@ DOM.debugToggle.addEventListener('click', () => {
 
 // 登录/登出事件
 DOM.loginBtn.addEventListener('click', handleLogin);
-DOM.logoutBtn.addEventListener('click', handleLogout);
+// DOM.logoutBtn.addEventListener('click', handleLogout);
 
 // 回车登录
 DOM.password.addEventListener('keypress', (e) => {
@@ -18,72 +18,59 @@ DOM.username.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') handleLogin();
 });
 
-// ===== 目标按钮事件 =====
-DOM.targetBtn.addEventListener('click', () => {
+// ===== 左上角"我的位置"按钮 =====
+DOM.btnMyLocation.addEventListener('click', () => {
+    const pos = getCurrentPosition();
+    if (pos && AppState.map) {
+        AppState.map.setView([pos.lat, pos.lng], AppState.map.getZoom());
+        debugLog('飞图到我的位置:', pos.lat, pos.lng);
+    } else {
+        debugLog('无法获取当前位置');
+    }
+});
+
+// ===== 左上角"设目标"按钮（切换模式）=====
+DOM.btnSetTarget.addEventListener('click', () => {
     if (!AppState.currentUser) {
         alert('请先登录');
         return;
     }
-    
-    AppState.targetMode = !AppState.targetMode;
-    
-    if (AppState.targetMode) {
-        // 进入目标设置模式
-        DOM.targetBtn.textContent = '✅ 已设置目标 (点击取消)';
-        DOM.targetBtn.classList.add('set');
-        
-        // 获取十字星位置（地图中心）
-        const center = AppState.map.getCenter();
-        AppState.targetLat = center.lat;
-        AppState.targetLng = center.lng;
-        
-        debugLog('设置目标:', AppState.targetLat, AppState.targetLng);
-        
-        // 显示自己的目标线
-        updateSelfTarget();
-        
-        // 发送目标更新
-        sendTargetUpdate();
-        
-    } else {
-        // 取消目标
-        DOM.targetBtn.textContent = '🎯 点我设置目标';
-        DOM.targetBtn.classList.remove('set');
-        
-        // 清除目标
-        AppState.targetLat = null;
-        AppState.targetLng = null;
-        
-        // 清除自己的目标线
-        clearSelfTarget();
-        
-        // 发送目标更新（清除）
-        sendTargetUpdate();
-        
-        debugLog('取消目标');
-    }
-});
-
-// ===== 专门发送目标更新的函数 =====
-function sendTargetUpdate() {
-    if (!AppState.currentUser || !AppState.socket || AppState.socket.readyState !== WebSocket.OPEN || !AppState.sessionToken) {
-        debugLog('无法发送目标: 连接未就绪');
+    if (!AppState.socket || AppState.socket.readyState !== WebSocket.OPEN || !AppState.sessionToken) {
+        debugLog('无法设置目标: 连接未就绪');
         return;
     }
 
-    const msg = {
-        type: 'update_target',  // 新的消息类型
-        token: AppState.sessionToken,
-        username: AppState.currentUser,
-        target_lat: AppState.targetLat,
-        target_lng: AppState.targetLng
-    };
-    
-    AppState.socket.send(JSON.stringify(msg));
-    debugLog('发送目标更新:', AppState.targetLat, AppState.targetLng);
-}
+    if (AppState.targetLat !== null && AppState.targetLng !== null) {
+        // 已有目标 → 取消
+        AppState.targetLat = null;
+        AppState.targetLng = null;
+        clearSelfTarget();
+        debugLog('取消目标');
+        AppState.socket.send(JSON.stringify({
+            type: 'update_target',
+            token: AppState.sessionToken,
+            username: AppState.currentUser,
+            target_lat: null,
+            target_lng: null
+        }));
+    } else {
+        // 无目标 → 设目标
+        const center = AppState.map.getCenter();
+        AppState.targetLat = center.lat;
+        AppState.targetLng = center.lng;
+        debugLog('设置目标:', AppState.targetLat, AppState.targetLng);
+        updateSelfTarget();
+        AppState.socket.send(JSON.stringify({
+            type: 'update_target',
+            token: AppState.sessionToken,
+            username: AppState.currentUser,
+            target_lat: AppState.targetLat,
+            target_lng: AppState.targetLng
+        }));
+    }
+});
 
-// 重连按钮
+// ===== 重连按钮 =====
 DOM.autoReconnectBtn.addEventListener('click', () => {
     debugLog('开启自动重连');
     AppState.autoReconnectEnabled = true;

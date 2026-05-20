@@ -124,251 +124,118 @@ body, html {
     z-index: 1;
 }
 
-/* 顶部状态栏 */
+/* ========== 顶部状态栏（保留，只是不显示在线人数） ========== */
 .status-bar {
+    display: none;
+}
+
+/* ========== 左上角本地设置面板 ========== */
+#localSettingsPanel {
     position: absolute;
     top: 16px;
     left: 16px;
-    right: 16px;
-    background: rgba(0,0,0,0.6);
-    backdrop-filter: blur(10px);
-    border-radius: 40px;
-    padding: 10px 16px;
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    z-index: 10;
-    border: 1px solid rgba(255,255,255,0.15);
-    font-size: 14px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-}
-
-.online-count {
-    background: #2ecc71;
-    padding: 4px 10px;
-    border-radius: 30px;
-    font-weight: 600;
-    color: black;
-    font-size: 13px;
-}
-
-.logout-btn {
-    background: rgba(255,255,255,0.15);
-    border: 1px solid rgba(255,255,255,0.2);
-    color: white;
-    padding: 6px 14px;
-    border-radius: 30px;
-    cursor: pointer;
-    font-size: 13px;
-}
-
-.logout-btn:hover {
-    background: rgba(255,80,80,0.7);
-}
-
-/* 地图标记样式 */
-.leaflet-div-icon {
-    background: transparent;
-    border: none;
-}
-
-.custom-marker {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    filter: drop-shadow(0 4px 4px rgba(0,0,0,0.5));
-}
-
-.marker-label {
-    background: var(--bg-color, #1e6eb5);
-    color: white;
-    font-weight: bold;
-    font-size: 11px;
-    padding: 2px 6px;
-    border-radius: 16px;
-    white-space: nowrap;
-    border: 2px solid white;
-    margin-bottom: 4px;
-    box-shadow: 0 2px 4px black;
-}
-
-.marker-arrow {
-    font-size: 24px;
-    line-height: 1;
-    color: var(--arrow-color, #7ec8ff);
-    text-shadow: 0 0 8px #000;
-    transform-origin: center;
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-/* 底部控件容器 - 调整为水平排列 */
-.bottom-controls {
-    position: absolute;
-    bottom: 16px;
-    left: 0;
-    right: 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0 12px;
-    z-index: 100;
-    pointer-events: none;
-}
-
-.bottom-left, .bottom-center, .bottom-right {
-    pointer-events: auto;
-    display: flex;
-    align-items: center;
-}
-
-.bottom-center {
-    flex-direction: row;
-    gap: 8px;
-}
-
-/* 调试按钮 - 缩小 */
-.debug-btn {
-    background: rgba(0,0,0,0.5);
-    color: white;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    cursor: pointer;
-    border: 1px solid #666;
-    backdrop-filter: blur(4px);
-    white-space: nowrap;
-}
-
-/* 连接状态 - 缩小 */
-.connection-status {
-    background: rgba(0,0,0,0.5);
-    color: #ffd700;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    backdrop-filter: blur(4px);
-    text-align: center;
-    white-space: nowrap;
-}
-
-.connection-status.connected {
-    color: #2ecc71;
-}
-
-.connection-status.disconnected {
-    color: #e74c3c;
-}
-
-/* 重连按钮容器 - 水平排列 */
-.reconnect-buttons {
-    display: flex;
-    gap: 6px;
-}
-
-.reconnect-btn {
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    cursor: pointer;
-    backdrop-filter: blur(4px);
-    display: none;
-    white-space: nowrap;
-}
-
-.reconnect-btn.show {
-    display: block;
-}
-
-.reconnect-btn.auto {
-    background: rgba(46, 204, 113, 0.8);
-    border: 1px solid #2ecc71;
-    color: white;
-}
-
-.reconnect-btn.manual {
-    background: rgba(255,165,0,0.8);
-    border: 1px solid orange;
-    color: white;
-}
-
-/* 图例 - 缩小 */
-.legend {
-    background: rgba(0,0,0,0.7);
-    color: white;
-    padding: 8px;
-    border-radius: 10px;
-    font-size: 10px;
-    backdrop-filter: blur(4px);
-    border: 1px solid #444;
-    max-width: 160px;
-}
-
-.legend-item {
-    display: flex;
-    align-items: center;
-    margin: 4px 0;
-}
-
-.legend-color {
-    width: 14px;
-    height: 14px;
-    margin-right: 6px;
-    border-radius: 3px;
-}
-
-.legend-note {
-    margin-top: 4px;
-    font-size: 9px;
-    color: #aaa;
-    text-align: center;
-}
-
-/* 调试面板 - 调整位置和大小 */
-.debug-panel {
-    position: absolute;
-    bottom: 70px;
-    left: 12px;
-    right: 12px;
-    background: rgba(0,0,0,0.8);
-    color: #0f0;
-    font-family: monospace;
-    font-size: 9px;
-    padding: 8px;
-    border-radius: 8px;
-    max-height: 120px;
-    overflow-y: auto;
+    background: rgba(245, 245, 245, 0.96);
+    border: 1px solid rgba(200, 200, 200, 0.8);
+    border-radius: 12px;
+    padding: 6px 0;
     z-index: 1000;
-    display: none;
-    border: 1px solid #0f0;
-    line-height: 1.3;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    min-width: 130px;
 }
 
-.debug-panel.show {
-    display: block;
+.settings-row {
+    display: flex;
+    align-items: center;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 11px;
+    color: #333;
+    border-radius: 6px;
+    transition: background 0.15s;
+    white-space: nowrap;
 }
 
-/* 加载动画 */
-.loading {
-    display: inline-block;
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255,255,255,.3);
-    border-radius: 50%;
-    border-top-color: #fff;
-    animation: spin 1s ease-in-out infinite;
+.settings-row:hover {
+    background: rgba(59, 110, 255, 0.1);
 }
 
-@keyframes spin {
-    to { transform: rotate(360deg); }
+.settings-row:active {
+    background: rgba(59, 110, 255, 0.2);
 }
 
-/* 十字星样式 - 缩小 */
+.settings-row .icon {
+    margin-right: 6px;
+    font-size: 13px;
+}
+
+/* ========== 左上角面板标题 ========== */
+.settings-title {
+    font-size: 11px;
+    color: #666;
+    padding: 4px 12px 6px;
+    border-bottom: 1px solid rgba(200,200,200,0.5);
+    margin-bottom: 4px;
+}
+/* ========== 右上角用户列表面板 ========== */
+#userListPanel {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: rgba(245, 245, 245, 0.96);
+    border: 1px solid rgba(200, 200, 200, 0.8);
+    border-radius: 12px;
+    padding: 6px 0;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    min-width: 130px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.user-list-title {
+    font-size: 11px;
+    color: #666;
+    padding: 4px 12px 6px;
+    border-bottom: 1px solid rgba(200,200,200,0.5);
+    margin-bottom: 4px;
+}
+
+.user-list-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-size: 11px;
+    color: #333;
+    border-radius: 6px;
+    transition: background 0.15s;
+}
+
+.user-list-row:hover {
+    background: rgba(59, 110, 255, 0.1);
+}
+
+.user-list-row:active {
+    background: rgba(59, 110, 255, 0.2);
+}
+
+.user-list-row .user-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 80px;
+}
+
+.user-list-row .target-btn-small {
+    font-size: 10px;
+    color: #3b6eff;
+    margin-left: 6px;
+    white-space: nowrap;
+}
+
+/* ========== 十字星 + 坐标三行 ========== */
 .crosshair {
     position: absolute;
     top: 50%;
@@ -402,36 +269,196 @@ body, html {
     top: 14px;
 }
 
-/* 目标设置按钮 - 缩小并调整位置 */
-.target-btn {
+#crosshairInfo {
     position: absolute;
-    bottom: 70px;
+    top: 50%;
     left: 50%;
-    transform: translateX(-50%);
-    background: rgba(59, 110, 255, 0.9);
+    transform: translate(-50%, calc(-50% - 80px));
+    pointer-events: none;
+    z-index: 1001;
+    background: rgba(255,255,255,0.95);
+    border: 1.5px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 10px;
+    color: #333;
+    line-height: 1.5;
+    min-width: 160px;
+    text-align: left;
+}
+
+#crosshairInfo .crosshair-line {
+    display: block;
+}
+
+/* ========== 底部控件（左下调试 + 中下连接状态） ========== */
+.bottom-controls {
+    position: absolute;
+    bottom: 16px;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 12px;
+    z-index: 100;
+    pointer-events: none;
+}
+
+.bottom-left, .bottom-center {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+}
+
+.bottom-center {
+    flex-direction: row;
+    gap: 8px;
+}
+
+/* 调试按钮 */
+.debug-btn {
+    background: rgba(0,0,0,0.5);
     color: white;
-    padding: 8px 16px;
-    border-radius: 30px;
-    font-size: 13px;
-    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
     cursor: pointer;
-    border: 2px solid white;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    z-index: 1000;
-    transition: all 0.3s;
+    border: 1px solid #666;
     backdrop-filter: blur(4px);
     white-space: nowrap;
 }
 
-.target-btn.set {
-    background: rgba(46, 204, 113, 0.9);
+/* 连接状态 */
+.connection-status {
+    background: rgba(0,0,0,0.5);
+    color: #ffd700;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    backdrop-filter: blur(4px);
+    text-align: center;
+    white-space: nowrap;
 }
 
-.target-btn:hover {
-    transform: translateX(-50%) scale(1.05);
+.connection-status.connected {
+    color: #2ecc71;
 }
 
-/* 目标线样式 - 队友的 */
+.connection-status.disconnected {
+    color: #e74c3c;
+}
+
+/* 重连按钮 */
+.reconnect-buttons {
+    display: flex;
+    gap: 6px;
+}
+
+.reconnect-btn {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    display: none;
+    white-space: nowrap;
+}
+
+.reconnect-btn.show {
+    display: block;
+}
+
+.reconnect-btn.auto {
+    background: rgba(46, 204, 113, 0.8);
+    border: 1px solid #2ecc71;
+    color: white;
+}
+
+.reconnect-btn.manual {
+    background: rgba(255,165,0,0.8);
+    border: 1px solid orange;
+    color: white;
+}
+
+/* 调试面板 */
+.debug-panel {
+    position: absolute;
+    bottom: 70px;
+    left: 12px;
+    right: 12px;
+    background: rgba(0,0,0,0.8);
+    color: #0f0;
+    font-family: monospace;
+    font-size: 9px;
+    padding: 8px;
+    border-radius: 8px;
+    max-height: 120px;
+    overflow-y: auto;
+    z-index: 1000;
+    display: none;
+    border: 1px solid #0f0;
+    line-height: 1.3;
+}
+
+.debug-panel.show {
+    display: block;
+}
+
+/* ========== 地图标记样式 ========== */
+.leaflet-div-icon {
+    background: transparent;
+    border: none;
+}
+
+.custom-marker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(0 4px 4px rgba(0,0,0,0.5));
+}
+
+.marker-label {
+    background: var(--bg-color, #1e6eb5);
+    color: white;
+    font-weight: bold;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 16px;
+    white-space: nowrap;
+    border: 2px solid white;
+    margin-bottom: 4px;
+    box-shadow: 0 2px 4px black;
+}
+
+.marker-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-shadow: 0 0 8px #000;
+    transform-origin: center;
+}
+
+.marker-arrow.arrow-up {
+    font-size: 24px;
+    line-height: 1;
+    color: var(--arrow-color, #7ec8ff);
+    width: 20px;
+    height: 20px;
+}
+
+.marker-arrow.arrow-self {
+    font-size: 26px;
+    line-height: 1;
+    color: #FFD700;
+    width: 22px;
+    height: 22px;
+    transform: scaleX(0.65);
+    transform-origin: center center;
+}
+
+/* ========== 目标线样式 ========== */
 .target-line-other {
     stroke: rgba(255, 165, 0, 0.6);
     stroke-width: 2;
@@ -439,7 +466,6 @@ body, html {
     filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
 }
 
-/* 目标线样式 - 自己的 */
 .target-line-self {
     stroke: rgba(255, 165, 0, 0.9);
     stroke-width: 3;
@@ -447,7 +473,7 @@ body, html {
     filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
 }
 
-/* 目标标签 - 队友的 */
+/* 目标标签 */
 .target-label-other {
     background: rgba(255, 165, 0, 0.8);
     color: white;
@@ -460,7 +486,6 @@ body, html {
     box-shadow: 0 2px 4px black;
 }
 
-/* 目标标签 - 自己的 */
 .target-label-self {
     background: rgba(255, 165, 0, 0.9);
     color: white;
@@ -471,4 +496,19 @@ body, html {
     white-space: nowrap;
     border: 2px solid white;
     box-shadow: 0 2px 4px black;
+}
+
+/* ========== 加载动画 ========== */
+.loading {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255,255,255,.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }

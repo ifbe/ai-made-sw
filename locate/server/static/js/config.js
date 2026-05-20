@@ -27,13 +27,13 @@ const AppState = {
     localLat: 32.0455,      // 南京默认
     localLng: 118.7908,
     localHeading: 0,
+    currentAltitude: null,
     serverLat: 32.0455,
     serverLng: 118.7908,
     serverHeading: 0,
     
     // 标记对象
     selfLocalMarker: null,
-    selfServerMarker: null,
     
     // ===== 目标相关 =====
     targetMode: false,           // 是否处于设置目标模式
@@ -42,6 +42,9 @@ const AppState = {
     
     // 存储其他用户的目标线 (username -> {line, marker})
     otherTargets: new Map(),
+
+    // 存储其他用户的数据 (username -> userObj) 用于右上角面板
+    otherUsersData: new Map(),
     
     // 自己的目标线对象
     selfTargetLine: null,
@@ -57,12 +60,18 @@ const DOM = {
     loginBtn: document.getElementById('loginBtn'),
     logoutBtn: document.getElementById('logoutBtn'),
     loginError: document.getElementById('loginError'),
-    onlineCount: document.getElementById('onlineCount'),
-    currentUserDisplay: document.getElementById('currentUserDisplay'),
     connectionStatus: document.getElementById('connectionStatus'),
     debugPanel: document.getElementById('debugPanel'),
     debugToggle: document.getElementById('debugToggle'),
     autoReconnectBtn: document.getElementById('autoReconnectBtn'),
     manualReconnectBtn: document.getElementById('manualReconnectBtn'),
-    targetBtn: document.getElementById('targetBtn')
+    // 左上面板
+    btnMyLocation: document.getElementById('btnMyLocation'),
+    btnSetTarget: document.getElementById('btnSetTarget'),
+    // 右上角面板
+    userListPanel: document.getElementById('userListPanel'),
+    userListTitle: document.getElementById('userListTitle'),
+    userListContent: document.getElementById('userListContent'),
+    // 十字星坐标
+    crosshairInfo: document.getElementById('crosshairInfo')
 };
