@@ -66,10 +66,10 @@ class AxisView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    // 旋转按钮文字继续加大
+    // 旋转按钮文字：x+/x-/y+/y-/z+/z-
     private val btnText = Paint().apply {
         style = Paint.Style.FILL
-        textSize = 48f
+        textSize = 28f
         textAlign = Paint.Align.CENTER
         isAntiAlias = true
     }
@@ -126,7 +126,7 @@ class AxisView @JvmOverloads constructor(
         canvas.drawCircle(bx, cy, btnR, btnFill)
         canvas.drawCircle(bx, cy, btnR, btnStroke)
         btnText.color = xColor
-        canvas.drawText("⟳", bx, cy + btnR * 0.4f, btnText)
+        canvas.drawText("x+", bx, cy + btnR * 0.4f, btnText)
         btnRects[0] = floatArrayOf(bx - btnR, cy - btnR, bx + btnR, cy + btnR)
 
         // X- 按钮
@@ -134,7 +134,7 @@ class AxisView @JvmOverloads constructor(
         canvas.drawCircle(bx2, cy, btnR, btnFill)
         canvas.drawCircle(bx2, cy, btnR, btnStroke)
         btnText.color = xColor
-        canvas.drawText("⟲", bx2, cy + btnR * 0.4f, btnText)
+        canvas.drawText("x-", bx2, cy + btnR * 0.4f, btnText)
         btnRects[1] = floatArrayOf(bx2 - btnR, cy - btnR, bx2 + btnR, cy + btnR)
 
         // === Y轴（绿）===
@@ -149,7 +149,7 @@ class AxisView @JvmOverloads constructor(
         canvas.drawCircle(cx, by, btnR, btnFill)
         canvas.drawCircle(cx, by, btnR, btnStroke)
         btnText.color = yColor
-        canvas.drawText("⟳", cx, by + btnR * 0.4f, btnText)
+        canvas.drawText("y+", cx, by + btnR * 0.4f, btnText)
         btnRects[2] = floatArrayOf(cx - btnR, by - btnR, cx + btnR, by + btnR)
 
         // Y- 按钮
@@ -157,7 +157,7 @@ class AxisView @JvmOverloads constructor(
         canvas.drawCircle(cx, by2, btnR, btnFill)
         canvas.drawCircle(cx, by2, btnR, btnStroke)
         btnText.color = yColor
-        canvas.drawText("⟲", cx, by2 + btnR * 0.4f, btnText)
+        canvas.drawText("y-", cx, by2 + btnR * 0.4f, btnText)
         btnRects[3] = floatArrayOf(cx - btnR, by2 - btnR, cx + btnR, by2 + btnR)
 
         // === Z轴（蓝）：斜向 45度 ===
@@ -174,7 +174,7 @@ class AxisView @JvmOverloads constructor(
         canvas.drawCircle(bzx, bzy, btnR, btnFill)
         canvas.drawCircle(bzx, bzy, btnR, btnStroke)
         btnText.color = zColor
-        canvas.drawText("⟲", bzx, bzy + btnR * 0.4f, btnText)
+        canvas.drawText("z+", bzx, bzy + btnR * 0.4f, btnText)
         btnRects[4] = floatArrayOf(bzx - btnR, bzy - btnR, bzx + btnR, bzy + btnR)
 
         // Z- 按钮
@@ -183,7 +183,7 @@ class AxisView @JvmOverloads constructor(
         canvas.drawCircle(bzx2, bzy2, btnR, btnFill)
         canvas.drawCircle(bzx2, bzy2, btnR, btnStroke)
         btnText.color = zColor
-        canvas.drawText("⟳", bzx2, bzy2 + btnR * 0.4f, btnText)
+        canvas.drawText("z-", bzx2, bzy2 + btnR * 0.4f, btnText)
         btnRects[5] = floatArrayOf(bzx2 - btnR, bzy2 - btnR, bzx2 + btnR, bzy2 + btnR)
 
         // 轴标签

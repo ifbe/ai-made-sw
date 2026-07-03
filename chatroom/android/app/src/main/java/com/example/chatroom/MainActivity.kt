@@ -1,11 +1,16 @@
 package com.example.chatroom
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import androidx.fragment.app.FragmentActivity
 import androidx.viewpager2.widget.ViewPager2
 import com.example.chatroom.core.SessionManager
+import com.example.chatroom.service.TcpForegroundService
 import com.example.chatroom.ui.chat.ChatFragment
 import com.example.chatroom.ui.common.SessionPagerAdapter
 import com.example.chatroom.ui.common.SessionTabBar
@@ -23,9 +28,24 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // TcpForegroundService 使用的通知 channel（API 26+ 必填）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                TcpForegroundService.CHANNEL_ID,
+                "Chatroom TCP 后台",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "TCP 连接后台保持运行时的常驻通知"
+                setShowBadge(false)
+            }
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(channel)
+        }
+
         pagerAdapter = SessionPagerAdapter(this)
 
         viewPager = ViewPager2(this).apply {
+            isUserInputEnabled = false    // 禁用左右滑切换会话，只通过 tabbar 切
             adapter = pagerAdapter
             offscreenPageLimit = 2
             layoutParams = LinearLayout.LayoutParams(
@@ -79,6 +99,9 @@ class MainActivity : FragmentActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            // 避开状态栏和导航栏（targetSdk=35 默认全面屏内容会延伸到屏幕边缘）
+            // 系统会给 root 加 padding = status bar top + nav bar bottom
+            fitsSystemWindows = true
             addView(viewPager)
             addView(tabBar)
         }

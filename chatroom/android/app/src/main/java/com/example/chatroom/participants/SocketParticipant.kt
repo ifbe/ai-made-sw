@@ -53,8 +53,11 @@ class SocketParticipant(
     private fun connectTcp() {
         try {
             mainHandler.post { postMessage("🔗 TCP 正在连接 $ip:$port...", true) }
-            socket = Socket(ip, port)
-            socket!!.soTimeout = 0
+            socket = Socket(ip, port).apply {
+                soTimeout = 0
+                keepAlive = true       // OS 层 keepalive，零污染（不发任何数据，靠 OS 探针）
+                tcpNoDelay = true      // 关 Nagle
+            }
             reader = BufferedReader(InputStreamReader(socket!!.getInputStream()))
             writer = OutputStreamWriter(socket!!.getOutputStream())
             writer!!.flush()
