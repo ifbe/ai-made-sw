@@ -39,18 +39,21 @@ struct Message: Identifiable, Equatable {
     }
 }
 
-/// 输入模式
+/// 输入模式（顺序与 Android ChatFragment.kt 保持一致）
 enum ChatInputMode: Int, CaseIterable, Identifiable {
-    case text = 0
-    case remote = 1
-    case dim3 = 2
-    case voice = 3
-    case file = 4
+    case empty = 0
+    case text = 1
+    case remote = 2
+    case dim3 = 3
+    case voice = 4
+    case file = 5
 
     var id: Int { rawValue }
 
+    /// spinner / 菜单里的 emoji
     var icon: String {
         switch self {
+        case .empty: return "⬜"
         case .text: return "📝"
         case .remote: return "🎮"
         case .dim3: return "📐"
@@ -59,8 +62,10 @@ enum ChatInputMode: Int, CaseIterable, Identifiable {
         }
     }
 
+    /// emoji 后跟的 2 字 label（统一 2 字显示：⬜空白 / 📝文字 / 🎮遥控 / 📐三维 / 🎤语音 / 📁文件）
     var label: String {
         switch self {
+        case .empty: return "空白"
         case .text: return "文字"
         case .remote: return "遥控"
         case .dim3: return "三维"
@@ -69,6 +74,7 @@ enum ChatInputMode: Int, CaseIterable, Identifiable {
         }
     }
 
+    /// 菜单触发器的全显示 = icon + label
     var displayName: String {
         "\(icon)\(label)"
     }

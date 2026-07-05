@@ -53,7 +53,16 @@ final class SocketParticipant: Participant {
             host: NWEndpoint.Host(ip),
             port: NWEndpoint.Port(integerLiteral: UInt16(port))
         )
-        tcpConnection = NWConnection(to: endpoint, using: .tcp)
+        // TCP keep-alive（OS 层 socket option，不是 app 层心跳字节）——
+        // 让系统代发 TCP keep-alive probe，跟 Android `socket.keepAlive=true` 等价。
+        // 不污染数据流（用户明确拒绝过 \n / OOB 心跳）。
+        // iOS 上对非 Background Modes app 这可能被 OS 覆盖，但设上不亏。
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.keepaliveIdle = 30       // 30s 空闲后开始发 keep-alive probe
+        tcpOptions.keepaliveCount = 3       // 3 个未应答 probe 后放弃
+        tcpOptions.keepaliveInterval = 10   // probe 间隔 10s
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
+        tcpConnection = NWConnection(to: endpoint, using: parameters)
 
         tcpConnection?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }

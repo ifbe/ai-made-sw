@@ -14,24 +14,27 @@ struct MainContainerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 页面内容
-            TabView(selection: $selectedTab) {
+            // 页面内容：所有页面都常驻 view 树，只显示选中的那个。
+            // 不需要 TabView：
+            //   - TabView(.page) 有横向 swipe—误触
+            //   - TabView 默认 .automatic 有底部系统 tab bar—多出一块灰白区域
+            // ZStack + opacity/allowsHitTesting 是最干净的纯 SwiftUI 做法。
+            ZStack {
                 // 首页
                 HomeView(onSessionCreated: { sessionId in
                     openSession(sessionId)
                 })
-                .tag("home")
-                .onReceive(sessionManager.$sessions) { _ in
-                    // 监听 session 变化
-                }
+                .opacity(selectedTab == "home" ? 1 : 0)
+                .allowsHitTesting(selectedTab == "home")
 
-                // 各 Chat 分页
+                // 各 Chat 会话
                 ForEach(chatSessions, id: \.self) { sessionId in
                     ChatView(sessionId: sessionId)
-                        .tag(sessionId)
+                        .opacity(selectedTab == sessionId ? 1 : 0)
+                        .allowsHitTesting(selectedTab == sessionId)
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
