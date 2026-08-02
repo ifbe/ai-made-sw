@@ -284,7 +284,7 @@
 
             </LinearLayout>
 
-            <!-- 文件模式（TODO） -->
+            <!-- 文件模式：选择本地图片发送到当前会话 -->
             <LinearLayout
                 android:id="@+id/inputBarFile"
                 android:layout_width="match_parent"
@@ -295,12 +295,12 @@
                 android:gravity="center"
                 android:visibility="gone">
 
-                <TextView
+                <Button
+                    android:id="@+id/btnPickImage"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="文件模式（TODO）"
-                    android:textColor="#999999"
-                    android:textSize="14sp" />
+                    android:text="📷 选择图片发送"
+                    android:textSize="16sp" />
 
             </LinearLayout>
 

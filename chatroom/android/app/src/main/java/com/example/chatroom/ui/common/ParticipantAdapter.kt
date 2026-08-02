@@ -88,6 +88,8 @@ class ParticipantAdapter(
         private val layoutSocketIp: View = v.findViewById(R.id.layoutSocketIp)
         private val layoutSocketPort: View = v.findViewById(R.id.layoutSocketPort)
         private val inputSocketPort: EditText = v.findViewById(R.id.inputSocketPort)
+        private val layoutSocketPath: View = v.findViewById(R.id.layoutSocketPath)
+        private val inputSocketPath: EditText = v.findViewById(R.id.inputSocketPath)
         private val layoutSockType: View = v.findViewById(R.id.layoutSockType)
         private val spinnerSockType: Spinner = v.findViewById(R.id.spinnerSockType)
         private val inputPtyDevice: EditText = v.findViewById(R.id.inputPtyDevice)
@@ -144,12 +146,13 @@ class ParticipantAdapter(
             // 恢复类型选择
             val pos = cardData.type?.let { ParticipantType.entries.indexOf(it) } ?: -1
             if (pos >= 0) typeSpinner.setSelection(pos, false)
-            updateFieldsVisibility(cardData.type)
+            updateFieldsVisibility(cardData)
 
             // 恢复内容
             paramsInput.setText(cardData.params)
             inputSocketIp.setText(cardData.socketIp)
             inputSocketPort.setText(cardData.socketPort)
+            inputSocketPath.setText(cardData.socketPath)
             inputPtyDevice.setText(cardData.ptyDevice)
             inputPtyShell.setText(cardData.ptyShell)
             inputSerialDevice.setText(cardData.serialDevice)
@@ -189,7 +192,7 @@ class ParticipantAdapter(
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, selPos: Int, id: Long) {
                     val t = ParticipantType.entries[selPos]
                     cardData.type = t
-                    updateFieldsVisibility(t)
+                    updateFieldsVisibility(cardData)
                 }
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
@@ -221,8 +224,17 @@ class ParticipantAdapter(
                 }
             })
 
+            // SOCKET 路径
+            inputSocketPath.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.socketPath = s.toString()
+                }
+            })
+
             // SOCKET 协议类型
-            val sockTypes = listOf("TCP", "UDP")
+            val sockTypes = listOf("TCP", "UDP", "WS")
             val sockAdapter = android.widget.ArrayAdapter(itemView.context, android.R.layout.simple_spinner_dropdown_item, sockTypes)
             spinnerSockType.adapter = sockAdapter
             val selPos = sockTypes.indexOf(cardData.sockType).coerceAtLeast(0)
@@ -230,6 +242,7 @@ class ParticipantAdapter(
             spinnerSockType.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
                     cardData.sockType = sockTypes[pos]
+                    updateFieldsVisibility(cardData)
                 }
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
@@ -466,7 +479,8 @@ class ParticipantAdapter(
             }
         }
 
-        private fun updateFieldsVisibility(type: ParticipantType?) {
+        private fun updateFieldsVisibility(cardData: EditingCardData) {
+            val type = cardData.type
             val isSocket = type == ParticipantType.SOCKET
             val isPty = type == ParticipantType.PTY
             val isSerial = type == ParticipantType.SERIAL
@@ -474,9 +488,12 @@ class ParticipantAdapter(
             val isTelnet = type == ParticipantType.TELNET
             val isAi = type == ParticipantType.AI
             val isBluetooth = type == ParticipantType.BLUETOOTH
+            // 路径仅 WS 协议时才显示
+            val isWsPath = isSocket && cardData.sockType == "WS"
             layoutParams.visibility = if (isSocket || isPty || isSerial || isSsh || isTelnet || isAi || isBluetooth) View.GONE else View.VISIBLE
             layoutSocketIp.visibility = if (isSocket) View.VISIBLE else View.GONE
             layoutSocketPort.visibility = if (isSocket) View.VISIBLE else View.GONE
+            layoutSocketPath.visibility = if (isWsPath) View.VISIBLE else View.GONE
             layoutSockType.visibility = if (isSocket) View.VISIBLE else View.GONE
             layoutPtyDevice.visibility = if (isPty) View.VISIBLE else View.GONE
             layoutPtyShell.visibility = if (isPty) View.VISIBLE else View.GONE

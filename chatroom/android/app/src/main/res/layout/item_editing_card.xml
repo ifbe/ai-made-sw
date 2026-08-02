@@ -76,6 +76,31 @@
 
         </LinearLayout>
 
+        <!-- SOCKET：协议类型 -->
+        <LinearLayout
+            android:id="@+id/layoutSockType"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="协议："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerSockType"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
+
+        </LinearLayout>
+
         <!-- SOCKET：IP -->
         <LinearLayout
             android:id="@+id/layoutSocketIp"
@@ -140,10 +165,9 @@
 
         </LinearLayout>
 
-        <!-- PTY：设备路径 -->
-        <!-- SOCKET：协议类型 -->
+        <!-- SOCKET：路径（仅 WS 用） -->
         <LinearLayout
-            android:id="@+id/layoutSockType"
+            android:id="@+id/layoutSocketPath"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
@@ -154,17 +178,26 @@
             <TextView
                 android:layout_width="56dp"
                 android:layout_height="wrap_content"
-                android:text="协议："
+                android:text="路径："
                 android:textSize="13sp"
                 android:textColor="#666666" />
 
-            <Spinner
-                android:id="@+id/spinnerSockType"
+            <EditText
+                android:id="@+id/inputSocketPath"
                 android:layout_width="0dp"
                 android:layout_height="32dp"
-                android:layout_weight="1" />
+                android:layout_weight="1"
+                android:hint="/ws"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
 
         </LinearLayout>
+
+        <!-- PTY：设备路径 -->
 
         <LinearLayout
             android:id="@+id/layoutPtyDevice"

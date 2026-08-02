@@ -1,5 +1,6 @@
 package com.example.chatroom.ui.chat
 
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.style.BackgroundColorSpan
@@ -61,7 +62,19 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
         }
 
         private fun bindContent(msg: Message) {
-            if (msg.imageUri != null) {
+            val bytes = msg.imageBytes
+            if (bytes != null) {
+                // 图片消息：隐藏文本，显示图片气泡（layout 里 maxWidth+adjustViewBounds 限制最大宽度）
+                textContent.visibility = View.GONE
+                imgContent.visibility = View.VISIBLE
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bmp != null) {
+                    imgContent.setImageBitmap(bmp)
+                } else {
+                    // 解码失败：保留 ImageView 可见但不显示 bitmap，让用户看出"有图但解析失败"
+                    imgContent.setImageDrawable(null)
+                }
+            } else if (msg.imageUri != null) {
                 textContent.visibility = View.GONE
                 imgContent.visibility = View.VISIBLE
             } else {
@@ -98,7 +111,17 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
         private val imgContent: ImageView = v.findViewById(R.id.imgContent)
 
         fun bind(msg: Message) {
-            if (msg.imageUri != null) {
+            val bytes = msg.imageBytes
+            if (bytes != null) {
+                textContent.visibility = View.GONE
+                imgContent.visibility = View.VISIBLE
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bmp != null) {
+                    imgContent.setImageBitmap(bmp)
+                } else {
+                    imgContent.setImageDrawable(null)
+                }
+            } else if (msg.imageUri != null) {
                 textContent.visibility = View.GONE
                 imgContent.visibility = View.VISIBLE
             } else {

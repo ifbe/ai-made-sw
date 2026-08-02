@@ -28,6 +28,7 @@ data class EditingCardData(
     var params: String = "",
     var socketIp: String = "",
     var socketPort: String = "",
+    var socketPath: String = "/",
     var sockType: String = "TCP",
     var ptyDevice: String = "/dev/ptmx",
     var ptyShell: String = "/system/bin/sh",
@@ -93,6 +94,7 @@ class HomeFragment : Fragment() {
                         val m = mutableMapOf<String, String>()
                         if (card.socketIp.isNotBlank()) m["ip"] = card.socketIp
                         if (card.socketPort.isNotBlank()) m["port"] = card.socketPort
+                        if (card.socketPath.isNotBlank()) m["path"] = card.socketPath
                         if (card.sockType.isNotBlank()) m["sockType"] = card.sockType
                         m
                     }

@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
 import android.view.LayoutInflater
@@ -13,17 +14,20 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.children
 import androidx.core.view.updateLayoutParams
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.chatroom.R
+import com.example.chatroom.core.BlobSniffer
 import com.example.chatroom.core.Message
 import com.example.chatroom.core.ParticipantType
 import com.example.chatroom.core.SessionManager
@@ -32,6 +36,7 @@ import com.example.chatroom.participants.PtyParticipant
 import com.example.chatroom.participants.SerialParticipant
 import com.example.chatroom.participants.SocketParticipant
 import com.example.chatroom.participants.SocketType
+import com.example.chatroom.participants.WsParticipant
 import com.example.chatroom.service.TcpForegroundService
 import com.example.chatroom.ui.common.AxisView
 import com.google.android.material.button.MaterialButton
@@ -70,6 +75,17 @@ class ChatFragment : Fragment() {
     private lateinit var inputBarDim3: View
     private lateinit var inputBarEmpty: View
     private lateinit var emptyText: TextView
+    private lateinit var btnPickImage: Button
+
+    /**
+     * 系统图片选择器 launcher。mime filter 限制为图片。
+     * 走 GetContent 而不是 PickVisualMedia：不需要运行时权限，不需要额外依赖。
+     */
+    private val pickImageLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) handlePickedImage(uri)
+    }
 
     // ===== 新结构相关 =====
     /** 整个输入区（顶部 handle + 5 种 inputBar 区域），高度由 drag / maximize 调整 */
@@ -194,6 +210,10 @@ class ChatFragment : Fragment() {
         inputBarDim3 = view.findViewById(R.id.inputBarDim3)
         inputBarEmpty = view.findViewById(R.id.inputBarEmpty)
         emptyText = view.findViewById(R.id.emptyText)
+        btnPickImage = view.findViewById(R.id.btnPickImage)
+        btnPickImage.setOnClickListener {
+            pickImageLauncher.launch("image/*")
+        }
 
         adapter = MessageAdapter()
         recyclerView.layoutManager = LinearLayoutManager(requireContext())
@@ -503,26 +523,38 @@ class ChatFragment : Fragment() {
                     val sockTypeStr = config.params["sockType"] ?: "TCP"
                     val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
                     if (ip.isNotBlank() && port > 0) {
-                        if (sockType == SocketType.TCP) {
-                            // TCP 走 TcpForegroundService：切到后台后保持 socket 不断
-                            val svc = tcpService
-                            if (svc != null) {
-                                svc.addTcpParticipant(config.id, sessionId, ip, port) { msg ->
+                        when (sockType) {
+                            SocketType.TCP -> {
+                                // TCP 走 TcpForegroundService：切到后台后保持 socket 不断
+                                val svc = tcpService
+                                if (svc != null) {
+                                    svc.addTcpParticipant(config.id, sessionId, ip, port) { msg ->
+                                        recyclerView.post { appendMessage(msg) }
+                                    }
+                                } else {
+                                    // service 还没连上，先缓存等 onServiceConnected
+                                    pendingTcpConfigs.add(
+                                        PendingTcpConfig(config.id, sessionId, ip, port, sockType)
+                                    )
+                                }
+                            }
+                            SocketType.UDP -> {
+                                // UDP 暂不进 service（无连接无 NAT 问题）
+                                val socket = SocketParticipant(sessionId, ip, port, sockType) { msg ->
                                     recyclerView.post { appendMessage(msg) }
                                 }
-                            } else {
-                                // service 还没连上，先缓存等 onServiceConnected
-                                pendingTcpConfigs.add(
-                                    PendingTcpConfig(config.id, sessionId, ip, port, sockType)
-                                )
+                                socket.connect()
+                                activeParticipants[config.id] = socket
                             }
-                        } else {
-                            // UDP 暂不进 service（无连接无 NAT 问题）
-                            val socket = SocketParticipant(sessionId, ip, port, sockType) { msg ->
-                                recyclerView.post { appendMessage(msg) }
+                            SocketType.WS -> {
+                                // WS 暂不进 service（自带 ping/pong 心跳）
+                                val path = config.params["path"] ?: "/"
+                                val ws = WsParticipant(sessionId, ip, port, path) { msg ->
+                                    recyclerView.post { appendMessage(msg) }
+                                }
+                                ws.connect()
+                                activeParticipants[config.id] = ws
                             }
-                            socket.connect()
-                            activeParticipants[config.id] = socket
                         }
                     } else {
                         appendMessage(
@@ -599,6 +631,85 @@ class ChatFragment : Fragment() {
         }
     }
 
+    private fun broadcastBinaryToParticipants(bytes: ByteArray) {
+        // 当前只给 WS 走二进制（WS binary frame 语义最干净）；TCP/UDP 如果以后要传图，可以在这里加
+        // 同样的 broadcast 调用，但 socket.send(bytes) 在 SocketParticipant 里还没暴露，先不加
+        val configs = SessionManager.getParticipants(sessionId)
+        configs.forEach { config ->
+            if (config.type != ParticipantType.SOCKET) return@forEach
+            val sockTypeStr = config.params["sockType"] ?: "TCP"
+            val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
+            when (sockType) {
+                SocketType.WS -> (activeParticipants[config.id] as? WsParticipant)?.sendBinary(bytes)
+                SocketType.TCP, SocketType.UDP -> { /* TODO: TCP/UDP 二进制发送后面接 */ }
+            }
+        }
+    }
+
+    /**
+     * 用户从系统选择器选完图片后的处理：
+     * 1) 读取全部字节
+     * 2) 贴一个自己发出去的 imageBytes 气泡
+     * 3) 打印一条 📤 发送 info 行（带上嗅探出的 type + 尺寸）
+     * 4) 广播给所有 WS participant
+     */
+    private fun handlePickedImage(uri: Uri) {
+        try {
+            val resolver = requireContext().contentResolver
+            val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+            if (bytes == null) {
+                appendMessage(
+                    Message(
+                        senderId = "system",
+                        senderType = ParticipantType.SOCKET,
+                        senderName = "系统",
+                        content = "❌ 图片读取失败：openInputStream 返回 null",
+                        isInfo = true
+                    )
+                )
+                return
+            }
+
+            // self image bubble（内存版，后面如加 disk cache 可改为 imageUri）
+            appendMessage(
+                Message(
+                    senderId = "self",
+                    senderType = ParticipantType.USER,
+                    senderName = "我",
+                    content = "",
+                    imageBytes = bytes
+                )
+            )
+
+            // info 行：type + size + len
+            val detected = BlobSniffer.detectType(bytes)
+            val size = BlobSniffer.decodeImageSize(bytes)
+            val sizeStr = if (size != null) " size=${size.first}x${size.second}" else ""
+            appendMessage(
+                Message(
+                    senderId = "self",
+                    senderType = ParticipantType.USER,
+                    senderName = "我",
+                    content = "📤 发送 type=$detected$sizeStr len=${bytes.size}",
+                    isInfo = true
+                )
+            )
+
+            broadcastBinaryToParticipants(bytes)
+        } catch (e: Exception) {
+            val detail = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
+            appendMessage(
+                Message(
+                    senderId = "system",
+                    senderType = ParticipantType.SOCKET,
+                    senderName = "系统",
+                    content = "❌ 图片处理失败: $detail",
+                    isInfo = true
+                )
+            )
+        }
+    }
+
     private fun broadcastToParticipants(text: String) {
         val configs = SessionManager.getParticipants(sessionId)
         configs.forEach { config ->
@@ -607,12 +718,24 @@ class ChatFragment : Fragment() {
                     (activeParticipants[config.id] as? PtyParticipant)?.sendInput(text)
                 }
                 ParticipantType.SOCKET -> {
-                    // TCP 走 service；UDP 还在 activeParticipants
-                    val tcpSvc = tcpService
-                    if (tcpSvc != null && tcpSvc.hasTcpParticipants()) {
-                        tcpSvc.sendInput(config.id, text)
-                    } else {
-                        (activeParticipants[config.id] as? SocketParticipant)?.sendInput(text)
+                    val sockTypeStr = config.params["sockType"] ?: "TCP"
+                    val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
+                    when (sockType) {
+                        SocketType.TCP -> {
+                            // TCP 走 service
+                            val tcpSvc = tcpService
+                            if (tcpSvc != null && tcpSvc.hasTcpParticipants()) {
+                                tcpSvc.sendInput(config.id, text)
+                            } else {
+                                (activeParticipants[config.id] as? SocketParticipant)?.sendInput(text)
+                            }
+                        }
+                        SocketType.UDP -> {
+                            (activeParticipants[config.id] as? SocketParticipant)?.sendInput(text)
+                        }
+                        SocketType.WS -> {
+                            (activeParticipants[config.id] as? WsParticipant)?.sendInput(text)
+                        }
                     }
                 }
                 ParticipantType.SERIAL -> {

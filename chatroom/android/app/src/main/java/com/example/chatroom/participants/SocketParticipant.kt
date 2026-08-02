@@ -12,7 +12,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.Socket
 
-enum class SocketType { TCP, UDP }
+enum class SocketType { TCP, UDP, WS }
 
 /**
  * Socket participant: TCP or UDP client.
@@ -46,6 +46,7 @@ class SocketParticipant(
             when (sockType) {
                 SocketType.TCP -> connectTcp()
                 SocketType.UDP -> connectUdp()
+                SocketType.WS -> { /* WS 走 WsParticipant，不会到这里 */ }
             }
         }, "SocketConnector").start()
     }
@@ -142,6 +143,7 @@ class SocketParticipant(
                 when (sockType) {
                     SocketType.TCP -> sendTcp(text)
                     SocketType.UDP -> sendUdp(text)
+                    SocketType.WS -> { /* WS 走 WsParticipant，不会到这里 */ }
                 }
             } catch (e: Exception) {
                 val detail = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
