@@ -49,6 +49,33 @@
                 android:scaleType="centerInside"
                 android:visibility="gone" />
 
+            <!-- 语音气泡：imageBytes 嗅探为 audio/* 时显示，image 视图保持 GONE -->
+            <LinearLayout
+                android:id="@+id/audioContent"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:visibility="gone">
+
+                <Button
+                    android:id="@+id/btnAudioPlay"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="▶ 播放"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/textAudioDuration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:textSize="13sp"
+                    android:textColor="#333333"
+                    android:text="0.000ms" />
+
+            </LinearLayout>
+
         </LinearLayout>
 
     </LinearLayout>

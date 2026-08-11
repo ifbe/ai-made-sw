@@ -6,6 +6,7 @@ import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.Spinner
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
@@ -92,6 +93,8 @@ class ParticipantAdapter(
         private val inputSocketPath: EditText = v.findViewById(R.id.inputSocketPath)
         private val layoutSockType: View = v.findViewById(R.id.layoutSockType)
         private val spinnerSockType: Spinner = v.findViewById(R.id.spinnerSockType)
+        private val spinnerAiSubType: Spinner = v.findViewById(R.id.spinnerAiSubType)
+        private val layoutAiSubType: LinearLayout = v.findViewById(R.id.layoutAiSubType)
         private val inputPtyDevice: EditText = v.findViewById(R.id.inputPtyDevice)
         private val layoutPtyDevice: View = v.findViewById(R.id.layoutPtyDevice)
         private val inputPtyShell: EditText = v.findViewById(R.id.inputPtyShell)
@@ -243,6 +246,23 @@ class ParticipantAdapter(
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
                     cardData.sockType = sockTypes[pos]
                     updateFieldsVisibility(cardData)
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+
+            // AI 子类型：display label → stored value
+            val subTypesDisplay = listOf("文本", "语音转文字")
+            val subTypesValue = listOf("text", "stt")
+            spinnerAiSubType.adapter = android.widget.ArrayAdapter(
+                itemView.context,
+                android.R.layout.simple_spinner_dropdown_item,
+                subTypesDisplay
+            )
+            val subSelPos = subTypesValue.indexOf(cardData.aiSubType).coerceAtLeast(0)
+            spinnerAiSubType.setSelection(subSelPos, false)
+            spinnerAiSubType.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    cardData.aiSubType = subTypesValue[pos]
                 }
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
@@ -505,6 +525,7 @@ class ParticipantAdapter(
             layoutAiPort.visibility = if (isAi) View.VISIBLE else View.GONE
             layoutAiApiKey.visibility = if (isAi) View.VISIBLE else View.GONE
             layoutAiModel.visibility = if (isAi) View.VISIBLE else View.GONE
+            layoutAiSubType.visibility = if (isAi) View.VISIBLE else View.GONE
             layoutAiModels.visibility = View.GONE
             layoutSshIp.visibility = if (isSsh) View.VISIBLE else View.GONE
             layoutSshPort.visibility = if (isSsh) View.VISIBLE else View.GONE

@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 录音（语音输入 mode 用，固定 PCM 16 kHz / mono / 16-bit） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 前台服务（保活 TCP 连接） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

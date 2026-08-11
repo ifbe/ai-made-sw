@@ -46,6 +46,8 @@ data class EditingCardData(
     var aiPort: String = "",
     var aiApiKey: String = "",
     var aiModel: String = "",
+    /** "text"（默认，OpenAI chat completions）/ "stt"（OpenAI audio transcriptions） */
+    var aiSubType: String = "text",
     var bluetoothDevice: String = "",
     var bluetoothProtocol: String = "SPP"
 )
@@ -131,6 +133,8 @@ class HomeFragment : Fragment() {
                         if (card.aiPort.isNotBlank()) m["port"] = card.aiPort
                         if (card.aiApiKey.isNotBlank()) m["apiKey"] = card.aiApiKey
                         if (card.aiModel.isNotBlank()) m["model"] = card.aiModel
+                        // subType 为默认值 "text" 时不写入（保持与旧 config 兼容）
+                        if (card.aiSubType.isNotBlank() && card.aiSubType != "text") m["subType"] = card.aiSubType
                         m
                     }
                     ParticipantType.BLUETOOTH -> {

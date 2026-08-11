@@ -264,7 +264,7 @@
 
             </LinearLayout>
 
-            <!-- 语音模式（TODO） -->
+            <!-- 语音模式：默认显示开始按钮；录音中切到「取消 / 发送」双按钮 -->
             <LinearLayout
                 android:id="@+id/inputBarVoice"
                 android:layout_width="match_parent"
@@ -275,12 +275,42 @@
                 android:gravity="center"
                 android:visibility="gone">
 
-                <TextView
+                <!-- 空闲态：单个开始按钮 -->
+                <Button
+                    android:id="@+id/btnVoiceStart"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="语音模式（TODO）"
-                    android:textColor="#999999"
-                    android:textSize="14sp" />
+                    android:text="未在录音，点我开始"
+                    android:textSize="16sp" />
+
+                <!-- 录音态：横向「取消 / 发送」两个按钮 -->
+                <LinearLayout
+                    android:id="@+id/voiceRecordingBar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center"
+                    android:visibility="gone">
+
+                    <Button
+                        android:id="@+id/btnVoiceCancel"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginHorizontal="8dp"
+                        android:text="取消"
+                        android:textSize="16sp" />
+
+                    <Button
+                        android:id="@+id/btnVoiceSend"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginHorizontal="8dp"
+                        android:text="发送"
+                        android:textSize="16sp" />
+
+                </LinearLayout>
 
             </LinearLayout>
 
@@ -299,7 +329,7 @@
                     android:id="@+id/btnPickImage"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="📷 选择图片发送"
+                    android:text="📁 选择文件发送"
                     android:textSize="16sp" />
 
             </LinearLayout>

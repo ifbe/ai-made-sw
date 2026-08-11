@@ -1,10 +1,12 @@
 package com.example.chatroom.ui.chat
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
@@ -21,6 +23,7 @@ import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.view.children
 import androidx.core.view.updateLayoutParams
 import androidx.fragment.app.Fragment
@@ -31,6 +34,7 @@ import com.example.chatroom.core.BlobSniffer
 import com.example.chatroom.core.Message
 import com.example.chatroom.core.ParticipantType
 import com.example.chatroom.core.SessionManager
+import com.example.chatroom.core.VoiceRecorder
 import com.example.chatroom.participants.AiParticipant
 import com.example.chatroom.participants.PtyParticipant
 import com.example.chatroom.participants.SerialParticipant
@@ -40,6 +44,7 @@ import com.example.chatroom.participants.WsParticipant
 import com.example.chatroom.service.TcpForegroundService
 import com.example.chatroom.ui.common.AxisView
 import com.google.android.material.button.MaterialButton
+import java.util.Locale
 
 enum class ChatInputMode { EMPTY, TEXT, REMOTE, DIM3, VOICE, FILE }
 
@@ -77,14 +82,37 @@ class ChatFragment : Fragment() {
     private lateinit var emptyText: TextView
     private lateinit var btnPickImage: Button
 
+    // ===== 语音（VOICE mode）相关 =====
+    private lateinit var btnVoiceStart: Button
+    private lateinit var btnVoiceCancel: Button
+    private lateinit var btnVoiceSend: Button
+    private lateinit var voiceRecordingBar: View
+    private var voiceRecorder: VoiceRecorder? = null
+    private enum class VoiceState { IDLE, RECORDING }
+    private var voiceState = VoiceState.IDLE
+
     /**
-     * 系统图片选择器 launcher。mime filter 限制为图片。
+     * 系统文件选择器 launcher。mime filter 改为 * 通配，允许所有文件类型。
      * 走 GetContent 而不是 PickVisualMedia：不需要运行时权限，不需要额外依赖。
      */
     private val pickImageLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) handlePickedImage(uri)
+    }
+
+    /**
+     * RECORD_AUDIO 权限申请 launcher。
+     * 进入 VOICE mode 时检查；缺权限就 launch 申请，通过 → initVoiceRecorder()。
+     */
+    private val requestAudioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            initVoiceRecorder()
+        } else {
+            showVoiceUnavailable("未授权麦克风")
+        }
     }
 
     // ===== 新结构相关 =====
@@ -176,6 +204,9 @@ class ChatFragment : Fragment() {
 
     override fun onStop() {
         super.onStop()
+        if (currentInputMode == ChatInputMode.VOICE) {
+            releaseVoiceRecorder()
+        }
         if (tcpServiceBound) {
             tcpService?.unregisterCallback(sessionId)
             try {
@@ -211,8 +242,17 @@ class ChatFragment : Fragment() {
         inputBarEmpty = view.findViewById(R.id.inputBarEmpty)
         emptyText = view.findViewById(R.id.emptyText)
         btnPickImage = view.findViewById(R.id.btnPickImage)
+
+        // 语音模式按钮
+        btnVoiceStart = view.findViewById(R.id.btnVoiceStart)
+        btnVoiceCancel = view.findViewById(R.id.btnVoiceCancel)
+        btnVoiceSend = view.findViewById(R.id.btnVoiceSend)
+        voiceRecordingBar = view.findViewById(R.id.voiceRecordingBar)
+        btnVoiceStart.setOnClickListener { onClickStartVoice() }
+        btnVoiceCancel.setOnClickListener { onClickCancelVoice() }
+        btnVoiceSend.setOnClickListener { onClickSendVoice() }
         btnPickImage.setOnClickListener {
-            pickImageLauncher.launch("image/*")
+            pickImageLauncher.launch("*/*")
         }
 
         adapter = MessageAdapter()
@@ -260,6 +300,14 @@ class ChatFragment : Fragment() {
             override fun onItemSelected(parent: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 val pickedMode = ChatInputMode.entries[pos]
                 if (pickedMode != currentInputMode) {
+                    // 离开 VOICE：丢掉进行中的录音，释放 AudioRecord
+                    if (currentInputMode == ChatInputMode.VOICE) {
+                        releaseVoiceRecorder()
+                    }
+                    // 进入 VOICE：检查权限（缺就弹 launcher）
+                    if (pickedMode == ChatInputMode.VOICE) {
+                        requestAudioPermissionIfNeeded()
+                    }
                     currentInputMode = pickedMode
                     applyInputModeVisibility()
                     // 切到新模式时，如果当前输入区高度不足，吸附回该模式最小值
@@ -594,8 +642,9 @@ class ChatFragment : Fragment() {
                     val port = config.params["port"] ?: ""
                     val apiKey = config.params["apiKey"] ?: ""
                     val model = config.params["model"] ?: ""
+                    val subType = config.params["subType"] ?: "text"
                     if (ip.isNotBlank() && port.isNotBlank()) {
-                        val ai = AiParticipant(sessionId, ip, port, apiKey, model) { msg ->
+                        val ai = AiParticipant(sessionId, ip, port, apiKey, model, subType) { msg ->
                             recyclerView.post { appendMessage(msg) }
                         }
                         ai.connect()
@@ -631,25 +680,39 @@ class ChatFragment : Fragment() {
         }
     }
 
+    /**
+     * 把 binary bytes 派发给所有相关参与者：
+     * - SOCKET/WS → 发 binary frame
+     * - AI(subType=="stt") → 当作语音发给 STT API（/v1/audio/transcriptions）
+     * - 其他（SOCKET/TCP/UDP、TEXT AI、PTY、SERIAL 等）→ no-op
+     */
     private fun broadcastBinaryToParticipants(bytes: ByteArray) {
-        // 当前只给 WS 走二进制（WS binary frame 语义最干净）；TCP/UDP 如果以后要传图，可以在这里加
-        // 同样的 broadcast 调用，但 socket.send(bytes) 在 SocketParticipant 里还没暴露，先不加
         val configs = SessionManager.getParticipants(sessionId)
         configs.forEach { config ->
-            if (config.type != ParticipantType.SOCKET) return@forEach
-            val sockTypeStr = config.params["sockType"] ?: "TCP"
-            val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
-            when (sockType) {
-                SocketType.WS -> (activeParticipants[config.id] as? WsParticipant)?.sendBinary(bytes)
-                SocketType.TCP, SocketType.UDP -> { /* TODO: TCP/UDP 二进制发送后面接 */ }
+            when (config.type) {
+                ParticipantType.SOCKET -> {
+                    val sockTypeStr = config.params["sockType"] ?: "TCP"
+                    val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
+                    when (sockType) {
+                        SocketType.WS -> (activeParticipants[config.id] as? WsParticipant)?.sendBinary(bytes)
+                        SocketType.TCP, SocketType.UDP -> { /* TODO: TCP/UDP 二进制发送后面接 */ }
+                    }
+                }
+                ParticipantType.AI -> {
+                    val subType = config.params["subType"] ?: "text"
+                    if (subType == "stt") {
+                        (activeParticipants[config.id] as? AiParticipant)?.sendVoice(bytes)
+                    }
+                }
+                else -> { /* PTY/SERIAL/SSH/TELNET/BLUETOOTH 等：binary no-op */ }
             }
         }
     }
 
     /**
-     * 用户从系统选择器选完图片后的处理：
+     * 用户从系统文件选择器选完文件后的处理：
      * 1) 读取全部字节
-     * 2) 贴一个自己发出去的 imageBytes 气泡
+     * 2) 贴一个自己发出去的 imageBytes 气泡（adapter 用 BlobSniffer 分流：image 走图片，audio 走音频，其他走文本 fallback）
      * 3) 打印一条 📤 发送 info 行（带上嗅探出的 type + 尺寸）
      * 4) 广播给所有 WS participant
      */
@@ -708,6 +771,132 @@ class ChatFragment : Fragment() {
                 )
             )
         }
+    }
+
+    // ===== 语音模式 helpers =====
+
+    /** 进入 VOICE mode 时调用：有权限就 init，没有就 launch 申请 */
+    private fun requestAudioPermissionIfNeeded() {
+        val ctx = requireContext()
+        val perm = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+        if (perm == PackageManager.PERMISSION_GRANTED) {
+            initVoiceRecorder()
+        } else {
+            requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    /** 创建 VoiceRecorder（如还没），调 init；失败则禁用按钮 + 显示原因 */
+    private fun initVoiceRecorder() {
+        val recorder = voiceRecorder ?: VoiceRecorder().also { voiceRecorder = it }
+        val ok = recorder.init(requireContext())
+        if (!ok) {
+            showVoiceUnavailable("麦克风不可用")
+            return
+        }
+        showVoiceIdle()
+    }
+
+    /** 释放 VoiceRecorder；UI 复位到空闲态 */
+    private fun releaseVoiceRecorder() {
+        voiceRecorder?.release()
+        voiceRecorder = null
+        showVoiceIdle()
+    }
+
+    /** 「未在录音，点我开始」按钮点击：开始录音 */
+    private fun onClickStartVoice() {
+        val recorder = voiceRecorder
+        if (recorder == null) {
+            // 还没初始化（多半是因为权限被拒或麦克风不可用），重试
+            requestAudioPermissionIfNeeded()
+            return
+        }
+        if (!recorder.start()) {
+            showVoiceUnavailable("录音启动失败")
+            return
+        }
+        voiceState = VoiceState.RECORDING
+        showVoiceRecording()
+    }
+
+    /** 「取消」按钮点击：丢弃本次录音，回到空闲态 */
+    private fun onClickCancelVoice() {
+        voiceRecorder?.cancel()
+        voiceState = VoiceState.IDLE
+        showVoiceIdle()
+    }
+
+    /** 「发送」按钮点击：停录音 → 贴气泡 + info → 广播 binary */
+    private fun onClickSendVoice() {
+        val recorder = voiceRecorder ?: return
+        val result = recorder.stop()
+        voiceState = VoiceState.IDLE
+        showVoiceIdle()
+        if (result == null) {
+            // 空录音
+            appendMessage(
+                Message(
+                    senderId = "system",
+                    senderType = ParticipantType.SOCKET,
+                    senderName = "系统",
+                    content = "🎤 录音为空，未发送",
+                    isInfo = true
+                )
+            )
+            return
+        }
+        val wavBytes = result.wavBytes
+        val durationMs = result.durationMs
+        // self audio bubble（imageBytes 字段复用，adapter 用 BlobSniffer 分流到 audio 气泡）
+        appendMessage(
+            Message(
+                senderId = "self",
+                senderType = ParticipantType.USER,
+                senderName = "我",
+                content = "",
+                imageBytes = wavBytes
+            )
+        )
+        // info 小灰字：📤 发送 type=audio/wav len=N duration=X.XXXs（秒，3 位小数）
+        appendMessage(
+            Message(
+                senderId = "self",
+                senderType = ParticipantType.USER,
+                senderName = "我",
+                content = String.format(
+                    Locale.US,
+                    "📤 发送 type=audio/wav len=%d duration=%.3fs",
+                    wavBytes.size,
+                    durationMs / 1000.0
+                ),
+                isInfo = true
+            )
+        )
+        broadcastBinaryToParticipants(wavBytes)
+    }
+
+    /** UI 切到空闲态：开始按钮可见、录音 bar 隐藏、按钮启用且文案恢复 */
+    private fun showVoiceIdle() {
+        voiceState = VoiceState.IDLE
+        btnVoiceStart.visibility = View.VISIBLE
+        btnVoiceStart.isEnabled = true
+        btnVoiceStart.text = "未在录音，点我开始"
+        voiceRecordingBar.visibility = View.GONE
+    }
+
+    /** UI 切到录音态：开始按钮隐藏、录音 bar 显示 */
+    private fun showVoiceRecording() {
+        btnVoiceStart.visibility = View.GONE
+        voiceRecordingBar.visibility = View.VISIBLE
+    }
+
+    /** 显示「麦克风不可用」状态：禁用按钮，文案改成原因 */
+    private fun showVoiceUnavailable(reason: String) {
+        btnVoiceStart.text = reason
+        btnVoiceStart.isEnabled = false
+        btnVoiceStart.visibility = View.VISIBLE
+        voiceRecordingBar.visibility = View.GONE
     }
 
     private fun broadcastToParticipants(text: String) {

@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
@@ -18,9 +19,12 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.example.chatroom.R
+import com.example.chatroom.core.BlobSniffer
 import com.example.chatroom.core.Message
 import com.example.chatroom.core.ParticipantType
+import com.example.chatroom.core.VoiceRecorder
 import com.example.chatroom.core.Vt100Parser
+import java.util.Locale
 
 class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff()) {
 
@@ -55,6 +59,9 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
         private val textSender: TextView = v.findViewById(R.id.textSender)
         private val textContent: TextView = v.findViewById(R.id.textContent)
         private val imgContent: ImageView = v.findViewById(R.id.imgContent)
+        private val audioContent: View = v.findViewById(R.id.audioContent)
+        private val btnAudioPlay: Button = v.findViewById(R.id.btnAudioPlay)
+        private val textAudioDuration: TextView = v.findViewById(R.id.textAudioDuration)
 
         fun bind(msg: Message) {
             textSender.text = "${msg.senderType.icon} ${msg.senderName}"
@@ -64,26 +71,65 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
         private fun bindContent(msg: Message) {
             val bytes = msg.imageBytes
             if (bytes != null) {
-                // 图片消息：隐藏文本，显示图片气泡（layout 里 maxWidth+adjustViewBounds 限制最大宽度）
-                textContent.visibility = View.GONE
-                imgContent.visibility = View.VISIBLE
-                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                if (bmp != null) {
-                    imgContent.setImageBitmap(bmp)
-                } else {
-                    // 解码失败：保留 ImageView 可见但不显示 bitmap，让用户看出"有图但解析失败"
-                    imgContent.setImageDrawable(null)
+                // 先嗅探 mime，决定走图片还是音频气泡
+                val mime = BlobSniffer.detectType(bytes)
+                when {
+                    mime.startsWith("image/") -> {
+                        // 原图片分支（完全不动）
+                        textContent.visibility = View.GONE
+                        imgContent.visibility = View.VISIBLE
+                        audioContent.visibility = View.GONE
+                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bmp != null) {
+                            imgContent.setImageBitmap(bmp)
+                        } else {
+                            // 解码失败：保留 ImageView 可见但不显示 bitmap，让用户看出"有图但解析失败"
+                            imgContent.setImageDrawable(null)
+                        }
+                    }
+                    mime.startsWith("audio/") -> {
+                        // 新音频分支
+                        textContent.visibility = View.GONE
+                        imgContent.visibility = View.GONE
+                        audioContent.visibility = View.VISIBLE
+                        bindAudio(bytes)
+                    }
+                    else -> {
+                        // 未知 binary：当文本显示
+                        textContent.visibility = View.VISIBLE
+                        imgContent.visibility = View.GONE
+                        audioContent.visibility = View.GONE
+                        textContent.text = applyVt100Style(msg.content, msg.style)
+                        textContent.typeface = Typeface.MONOSPACE
+                        // PTY/SSH 终端用 7sp 字体以容纳 80 字符
+                        textContent.textSize = if (msg.senderType == ParticipantType.PTY || msg.senderType == ParticipantType.SSH) 7f else 15f
+                    }
                 }
             } else if (msg.imageUri != null) {
                 textContent.visibility = View.GONE
                 imgContent.visibility = View.VISIBLE
+                audioContent.visibility = View.GONE
             } else {
                 textContent.visibility = View.VISIBLE
                 imgContent.visibility = View.GONE
+                audioContent.visibility = View.GONE
                 textContent.text = applyVt100Style(msg.content, msg.style)
                 textContent.typeface = Typeface.MONOSPACE
                 // PTY/SSH 终端用 7sp 字体以容纳 80 字符
                 textContent.textSize = if (msg.senderType == ParticipantType.PTY || msg.senderType == ParticipantType.SSH) 7f else 15f
+            }
+        }
+
+        /**
+         * 渲染音频气泡：时长从 WAV header 推算（44 字节 header + PCM bytes），
+         * 点击播放调 AudioMessagePlayer。
+         */
+        private fun bindAudio(bytes: ByteArray) {
+            val pcmSize = (bytes.size - VoiceRecorder.WAV_HEADER_SIZE).coerceAtLeast(0)
+            val durationSec = pcmSize.toDouble() / VoiceRecorder.BYTES_PER_SECOND.toDouble()
+            textAudioDuration.text = String.format(Locale.US, "%.3fs", durationSec)
+            btnAudioPlay.setOnClickListener { v ->
+                AudioMessagePlayer.play(bytes, v.context.cacheDir) { /* no-op */ }
             }
         }
 
@@ -109,24 +155,53 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
     class SelfViewHolder(v: View) : RecyclerView.ViewHolder(v) {
         private val textContent: TextView = v.findViewById(R.id.textContent)
         private val imgContent: ImageView = v.findViewById(R.id.imgContent)
+        private val audioContent: View = v.findViewById(R.id.audioContent)
+        private val btnAudioPlay: Button = v.findViewById(R.id.btnAudioPlay)
+        private val textAudioDuration: TextView = v.findViewById(R.id.textAudioDuration)
 
         fun bind(msg: Message) {
             val bytes = msg.imageBytes
             if (bytes != null) {
-                textContent.visibility = View.GONE
-                imgContent.visibility = View.VISIBLE
-                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                if (bmp != null) {
-                    imgContent.setImageBitmap(bmp)
-                } else {
-                    imgContent.setImageDrawable(null)
+                val mime = BlobSniffer.detectType(bytes)
+                when {
+                    mime.startsWith("image/") -> {
+                        // 原图片分支（完全不动）
+                        textContent.visibility = View.GONE
+                        imgContent.visibility = View.VISIBLE
+                        audioContent.visibility = View.GONE
+                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bmp != null) {
+                            imgContent.setImageBitmap(bmp)
+                        } else {
+                            imgContent.setImageDrawable(null)
+                        }
+                    }
+                    mime.startsWith("audio/") -> {
+                        textContent.visibility = View.GONE
+                        imgContent.visibility = View.GONE
+                        audioContent.visibility = View.VISIBLE
+                        val pcmSize = (bytes.size - VoiceRecorder.WAV_HEADER_SIZE).coerceAtLeast(0)
+                        val durationSec = pcmSize.toDouble() / VoiceRecorder.BYTES_PER_SECOND.toDouble()
+                        textAudioDuration.text = String.format(Locale.US, "%.3fs", durationSec)
+                        btnAudioPlay.setOnClickListener { v ->
+                            AudioMessagePlayer.play(bytes, v.context.cacheDir) { /* no-op */ }
+                        }
+                    }
+                    else -> {
+                        textContent.visibility = View.VISIBLE
+                        imgContent.visibility = View.GONE
+                        audioContent.visibility = View.GONE
+                        textContent.text = applyVt100Style(msg.content, msg.style)
+                    }
                 }
             } else if (msg.imageUri != null) {
                 textContent.visibility = View.GONE
                 imgContent.visibility = View.VISIBLE
+                audioContent.visibility = View.GONE
             } else {
                 textContent.visibility = View.VISIBLE
                 imgContent.visibility = View.GONE
+                audioContent.visibility = View.GONE
                 textContent.text = applyVt100Style(msg.content, msg.style)
             }
         }

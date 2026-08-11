@@ -617,6 +617,31 @@
 
         </LinearLayout>
 
+        <!-- AI：子类型（text=OpenAI chat completions / stt=OpenAI audio transcriptions） -->
+        <LinearLayout
+            android:id="@+id/layoutAiSubType"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="子类型："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerAiSubType"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
+
+        </LinearLayout>
+
         <!-- BLUETOOTH：设备选择 -->
         <LinearLayout
             android:id="@+id/layoutBluetoothDevice"
