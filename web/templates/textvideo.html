@@ -1,0 +1,474 @@
+<!-- textvideo.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文本视频互转 - AI模型集成平台</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/textvideo.css">
+    <style>
+        /* 媒体文件列表栏 */
+        #mediaList {
+            width: 100%;
+            max-height: 30vh;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #fff;
+            margin-bottom: 0.5rem;
+        }
+        .media-item {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.85rem;
+            font-family: ui-monospace, Menlo, monospace;
+            color: #333;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f0f0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .media-item:hover { background: #e3f2fd; }
+        .media-item.selected { background: #3498db; color: #fff; }
+        .media-empty { padding: 1rem; color: #999; text-align: center; }
+
+        /* 转换按钮矩形卡片：上矩形中心 (50%,25%)，下矩形中心 (50%,75%) */
+        .media-rect {
+            position: fixed;
+            cursor: move;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            padding: 1.2rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.8rem;
+            z-index: 1000;
+            min-width: 230px;
+        }
+        #rectTop { top: 25%; }
+        #rectBottom { top: 75%; }
+        .media-rect .action-btn { transform: none; }
+        .media-rect select {
+            width: 100%;
+            padding: 0.5rem 0.6rem;
+            border: 1px solid #ddd;
+            border-radius: 25px;
+            font-size: 0.9rem;
+            background: #fff;
+            color: #333;
+            cursor: pointer;
+        }
+        /* 矩形内状态文本框 */
+        .rect-status {
+            width: 100%;
+            min-height: 1.2em;
+            max-height: 90px;
+            overflow-y: auto;
+            font-size: 0.78rem;
+            font-family: ui-monospace, Menlo, monospace;
+            line-height: 1.5;
+            color: #666;
+            text-align: left;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        @media (max-width: 768px) {
+            .media-rect { position: static; transform: none; margin: 0.6rem auto; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/">主页</a>
+        <a href="/text">文本对话</a>
+        <a href="/textaudio">文本语音互转</a>
+        <a href="/textimage">文本图像互转</a>
+        <a href="/textvideo" class="active">文本视频互转</a>
+    </nav>
+
+    <div class="split-container">
+        <div class="left-panel">
+            <textarea id="promptText" placeholder="请输入视频描述，建议包含：主体、动作、场景、镜头、光线风格、声音&#10;示例：一只红狐在雪松林中走过，中景跟拍，自然冬季光线，逼真皮毛，轻柔脚步声和风声。" class="text-input"></textarea>
+            <div class="video-params">
+                <div class="param-row">
+                    <label for="resolution">分辨率</label>
+                    <select id="resolution">
+                        <option value="256x256">256×256（快速预览）</option>
+                        <option value="512x512" selected>512×512（推荐）</option>
+                        <option value="768x768">768×768</option>
+                        <option value="1024x768">1024×768（横屏 4:3）</option>
+                        <option value="768x1024">768×1024（竖屏 3:4）</option>
+                        <option value="1344x768">1344×768（横屏 768p）</option>
+                        <option value="768x1344">768×1344（竖屏 768p）</option>
+                    </select>
+                </div>
+                <div class="param-row">
+                    <label for="duration">帧数/时长</label>
+                    <input type="number" id="duration" min="22" max="362" step="1" placeholder="默认 56 帧 ≈ 2.3 秒" title="h3 输出 24fps：秒数 ≈ 帧数 ÷ 24；实际帧数会自动向上对齐到 5+17n（如 23 帧 → 39 帧）。范围 22~362 帧">
+                </div>
+                <div class="param-row">
+                    <label for="quality">画质</label>
+                    <select id="quality">
+                        <option value="4,50,1">快速预览（4 步去噪）</option>
+                        <option value="20,45,2" selected>平衡（20 步）</option>
+                        <option value="50,50,1">高质量（50 步）</option>
+                    </select>
+                </div>
+                <div class="param-row">
+                    <label for="seed">随机种子</label>
+                    <input type="number" id="seed" value="42" min="0" max="2147483647">
+                </div>
+                <div class="param-row">
+                    <label class="checkbox-label" title="内存不足时勾选：模型权重按需从 SSD 读取，显著降低显存/内存占用，速度变慢">
+                        <input type="checkbox" id="ssdStreaming"> 低内存模式（SSD 流式加载）
+                    </label>
+                </div>
+            </div>
+        </div>
+        <div class="right-panel">
+            <div class="preview-area">
+                <!-- 视频文件列表栏：点击选中预览；点击空白处上传 -->
+                <div id="mediaList"><div class="media-empty">加载中...</div></div>
+                <div id="videoPreview" style="width: 100%;">
+                    <video id="videoPlayer" controls style="width: 100%;">
+                        您的浏览器不支持视频播放
+                    </video>
+                    <div id="placeholderText">生成的视频将在这里播放（含音轨）</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 转换按钮矩形：上矩形=文本转视频；下矩形=视频转文本（占位） -->
+    <div class="media-rect" id="rectTop">
+        <select id="videoMethod" title="选择文本转视频使用的模型"></select>
+        <div id="videoParams" style="display:none;"></div>
+        <button id="textToVideo" class="action-btn primary">文本转视频→</button>
+        <div id="videoStatus" class="rect-status"></div>
+    </div>
+    <div class="media-rect" id="rectBottom">
+        <select id="v2tMethod" title="选择视频转文本使用的模型"></select>
+        <div id="v2tParams" style="display:none;"></div>
+        <button id="videoToText" class="action-btn primary">←视频转文本</button>
+        <div id="v2tStatus" class="rect-status"></div>
+    </div>
+
+    <!-- 隐藏的文件上传输入框 -->
+    <input type="file" id="videoFile" accept="video/*" style="display: none;">
+
+    <script src="/script.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const promptText = document.getElementById('promptText');
+            const videoPlayer = document.getElementById('videoPlayer');
+            const placeholderText = document.getElementById('placeholderText');
+            const videoFile = document.getElementById('videoFile');
+            const mediaListEl = document.getElementById('mediaList');
+            const statusVideoEl = document.getElementById('videoStatus');
+            const statusV2tEl = document.getElementById('v2tStatus');
+
+            const MEDIA_TYPE = 'video';
+            let currentFile = null;   // 当前选中的文件名
+
+            // 加载可选转换方法（来自配置区），记住上次选择
+            initMethodParams('videoMethod', 'videoParams', 'video');
+            initMethodParams('v2tMethod', 'v2tParams', 'v2t');
+
+            function showError(message) {
+                statusVideoEl.textContent = '❌ ' + message;
+                statusVideoEl.style.color = '#e74c3c';
+                statusVideoEl.scrollTop = statusVideoEl.scrollHeight;
+            }
+
+            function showHint(message) {
+                statusVideoEl.textContent = message;
+                statusVideoEl.style.color = message.startsWith('✅') ? '#2ecc71' : '#666';
+                statusVideoEl.scrollTop = statusVideoEl.scrollHeight;
+            }
+
+            // ===== 进度显示：h3 原始输出轻微清理后逐行显示（不依赖阶段名/顺序）=====
+            const progressLines = [];   // 每行一个元素 {text: 清理后的原始行}
+            let pollTimer = null;       // 状态轮询定时器
+            let videoSet = false;       // 本页是否已设置过视频（避免重复播放历史结果）
+
+            function renderProgress() {
+                statusVideoEl.textContent = progressLines.map(l => '⏳ ' + l.text).join('\n');
+                statusVideoEl.style.color = '#666';
+                statusVideoEl.scrollTop = statusVideoEl.scrollHeight;   // 自动滚动显示尾部（最新进度）
+            }
+
+            function updateProgressFromLines(rawLines) {
+                progressLines.length = 0;
+                for (const raw of rawLines) {
+                    const segs = raw.split('\r');
+                    const last = segs[segs.length - 1]
+                        .replace(/\x1b\[[0-9;]*m/g, '')
+                        .trim();
+                    if (last) progressLines.push({text: last});
+                }
+                renderProgress();
+            }
+
+            // ===== 状态轮询（后台线程 + 服务端状态，页面刷新/切换后也能恢复）=====
+            function stopPolling() {
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            }
+
+            function startPolling() {
+                stopPolling();
+                pollTimer = setInterval(pollStatus, 1500);
+            }
+
+            async function pollStatus() {
+                let s;
+                try {
+                    const res = await fetch('/api/text-to-video/status');
+                    if (!res.ok) return;
+                    s = await res.json();
+                } catch (e) { return; }
+
+                if (s.lines && s.lines.length) {
+                    updateProgressFromLines(s.lines);
+                }
+
+                if (s.error) {
+                    showError('生成失败：' + s.error);
+                    stopPolling();
+                } else if (s.url && !videoSet) {
+                    // 完成：刷新列表并选中新视频
+                    videoSet = true;
+                    placeholderText.style.display = 'none';
+                    stopPolling();
+                    refreshMediaList(decodeURIComponent(s.url.split('/').pop()));
+                } else if (!s.running && !s.url && !s.error) {
+                    stopPolling();
+                }
+            }
+
+            // ===== 文件列表：拉取 -> 渲染 -> 默认选中最新（或指定文件）=====
+            async function refreshMediaList(selectName) {
+                try {
+                    const res = await fetch('/api/media/list/' + MEDIA_TYPE);
+                    const data = await res.json();
+                    const files = data.files || [];
+                    mediaListEl.innerHTML = '';
+                    if (!files.length) {
+                        mediaListEl.innerHTML = '<div class="media-empty">暂无文件，点击或拖拽上传视频</div>';
+                        return;
+                    }
+                    for (const f of files) {
+                        const item = document.createElement('div');
+                        item.className = 'media-item' + (f === currentFile ? ' selected' : '');
+                        item.textContent = f;
+                        item.title = f;
+                        item.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            selectFile(f);
+                        });
+                        mediaListEl.appendChild(item);
+                    }
+                    if (selectName && files.includes(selectName)) {
+                        selectFile(selectName);
+                    } else if (!currentFile || !files.includes(currentFile)) {
+                        selectFile(files[0]);
+                    }
+                } catch (e) {
+                    mediaListEl.innerHTML = '<div class="media-empty">加载失败</div>';
+                }
+            }
+
+            function selectFile(name) {
+                currentFile = name;
+                document.querySelectorAll('.media-item').forEach(el => {
+                    el.classList.toggle('selected', el.textContent === name);
+                });
+                videoPlayer.src = '/video/' + encodeURIComponent(name);
+                videoPlayer.load();
+                placeholderText.style.display = 'none';
+            }
+
+            // ===== 上传：真的传到服务器 video/ 文件夹，然后刷新列表并选中 =====
+            async function uploadVideoFile(file) {
+                const fd = new FormData();
+                fd.append('file', file);
+                try {
+                    const res = await fetch('/api/media/upload/' + MEDIA_TYPE, {method: 'POST', body: fd});
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || '上传失败');
+                    showHint('✅ 已上传：' + data.name);
+                    await refreshMediaList(data.name);
+                } catch (e) {
+                    alert('上传失败：' + e.message);
+                }
+            }
+
+            // 点击右侧空白区域 -> 打开文件选择框
+            document.querySelector('.right-panel').addEventListener('click', (e) => {
+                if (e.target.closest('#mediaList') || e.target.closest('video')) return;
+                videoFile.click();
+            });
+
+            // 拖拽上传
+            document.querySelector('.right-panel').addEventListener('dragover', (e) => {
+                e.preventDefault();
+                document.querySelector('.right-panel').style.backgroundColor = '#e3f2fd';
+            });
+            document.querySelector('.right-panel').addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                document.querySelector('.right-panel').style.backgroundColor = '#f9f9f9';
+            });
+            document.querySelector('.right-panel').addEventListener('drop', (e) => {
+                e.preventDefault();
+                document.querySelector('.right-panel').style.backgroundColor = '#f9f9f9';
+                const file = e.dataTransfer.files[0];
+                if (file && file.type.startsWith('video/')) {
+                    uploadVideoFile(file);
+                } else {
+                    alert('请上传视频文件');
+                }
+            });
+
+            videoFile.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) uploadVideoFile(file);
+                e.target.value = '';
+            });
+
+            document.getElementById('textToVideo').addEventListener('click', async function() {
+                const text = promptText.value.trim();
+                if (!text) {
+                    alert('请输入视频描述文本');
+                    return;
+                }
+
+                const [rw, rh] = document.getElementById('resolution').value.split('x').map(Number);
+                let frames = parseInt(document.getElementById('duration').value, 10);
+                if (!frames || frames < 22) frames = 56;
+                if (frames > 362) frames = 362;
+                const [steps, layers, reuse] = document.getElementById('quality').value.split(',').map(Number);
+                const seed = parseInt(document.getElementById('seed').value, 10) || 42;
+                const ssdStreaming = document.getElementById('ssdStreaming').checked;
+
+                const originalText = this.textContent;
+                this.textContent = '生成中...（可能需要几分钟）';
+                this.disabled = true;
+                videoSet = false;
+                progressLines.length = 0;
+                progressLines.push({text: '正在启动生成...'});
+                renderProgress();
+
+                try {
+                    const response = await fetch('/api/text-to-video', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(Object.assign({
+                            text: text,
+                            method: document.getElementById('videoMethod').value,
+                            width: rw,
+                            height: rh,
+                            frames: frames,
+                            steps: steps,
+                            layers: layers,
+                            reuse: reuse,
+                            seed: seed,
+                            ssd_streaming: ssdStreaming
+                        }, collectMethodParams('videoParams')))
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.error || '启动失败');
+                    }
+                    if (!data.started) {
+                        throw new Error('任务未启动');
+                    }
+
+                    pollStatus();
+                    startPolling();
+
+                } catch (error) {
+                    showError('生成失败：' + error.message);
+                } finally {
+                    this.textContent = originalText;
+                    this.disabled = false;
+                }
+            });
+
+            // 视频转文本：对 video/ 文件夹中选中的文件识别（后台任务 + 轮询）
+            document.getElementById('videoToText').addEventListener('click', async function() {
+                if (!currentFile) {
+                    alert('请先选择视频文件（右侧列表选中）');
+                    return;
+                }
+
+                const originalText = this.textContent;
+                this.textContent = '识别中...';
+                this.disabled = true;
+                statusV2tEl.textContent = '⏳ 正在启动视频识别：' + currentFile;
+                statusV2tEl.style.color = '#666';
+
+                try {
+                    const response = await fetch('/api/video-to-text', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(Object.assign({
+                            name: currentFile,
+                            method: document.getElementById('v2tMethod').value
+                        }, collectMethodParams('v2tParams')))
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok || data.error) throw new Error(data.error || '识别失败');
+                    if (!data.started) throw new Error('任务未启动');
+
+                    // 轮询识别任务，完成后显示结果
+                    const timer = setInterval(async () => {
+                        let s;
+                        try {
+                            const res = await fetch('/api/task-status/v2t');
+                            s = await res.json();
+                        } catch (e) { return; }
+                        if (!s.running) {
+                            clearInterval(timer);
+                            if (s.result) {
+                                // 模型回复填入左侧文本区（与语音/图像识别一致），右侧只显示状态
+                                promptText.value = s.result;
+                                statusV2tEl.textContent = '✅ 视频识别完成，结果已填入左侧文本区';
+                                statusV2tEl.style.color = '#2ecc71';
+                            } else if (s.error) {
+                                statusV2tEl.textContent = '❌ 识别失败：' + s.error;
+                                statusV2tEl.style.color = '#e74c3c';
+                            }
+                        }
+                    }, 1200);
+
+                } catch (error) {
+                    statusV2tEl.textContent = '❌ 识别失败：' + error.message;
+                    statusV2tEl.style.color = '#e74c3c';
+                } finally {
+                    this.textContent = originalText;
+                    this.disabled = false;
+                }
+            });
+
+            // 页面加载（含刷新/从其他页面切回）时恢复：任务状态 + 文件列表
+            startPolling();
+            refreshMediaList();
+
+            // 清理对象URL避免内存泄漏
+            window.addEventListener('beforeunload', function() {
+                if (videoPlayer.src && videoPlayer.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(videoPlayer.src);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,109 @@
+/* textvideo.css
+ * 文本转视频页面的补充样式（与 style.css 配合使用，不修改 style.css）
+ */
+
+/* 左侧参数面板 */
+.video-params {
+    margin-top: 1rem;
+    padding: 1rem;
+    background-color: #fafafa;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
+
+.param-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.param-row label {
+    flex: 0 0 72px;
+    color: #555;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.param-row select,
+.param-row input[type="number"] {
+    flex: 1;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.95rem;
+    background-color: white;
+    color: #333;
+}
+
+.param-row select:focus,
+.param-row input[type="number"]:focus {
+    outline: none;
+    border-color: #3498db;
+}
+
+.param-row .checkbox-label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: normal;
+    color: #555;
+    cursor: pointer;
+}
+
+/* 视频预览区域 */
+#videoPlayer {
+    width: 100%;
+    margin: 1rem 0;
+    background-color: #000;
+    border-radius: 4px;
+}
+
+#placeholderText {
+    color: #999;
+    padding: 1.2rem 1.5rem;
+    border: 2px dashed #ccc;
+    border-radius: 4px;
+    text-align: left;
+    white-space: pre-wrap;        /* 支持多行历史（\n 换行） */
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    max-height: calc(100vh / 3);
+    overflow-y: auto;
+}
+
+/* 单按钮悬浮容器：只有"文本转视频"一个按钮时，保持在画面中央 */
+.action-buttons {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.action-buttons .action-btn.primary {
+    transform: none;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+    .action-buttons {
+        position: static;
+        transform: none;
+        margin: 1rem auto;
+    }
+
+    .param-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.3rem;
+    }
+
+    .param-row label {
+        flex: none;
+    }
+}

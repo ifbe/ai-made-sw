@@ -1,1 +1,4 @@
-outputs
+audio/
+image/
+video/
+__pycache__/

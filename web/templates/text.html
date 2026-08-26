@@ -6,6 +6,163 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文本对话 - AI模型集成平台</title>
     <link rel="stylesheet" href="/style.css">
+    <style>
+        /* 2x2 四等分布局 */
+        .chat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            height: calc(100vh - 60px);
+            gap: 1px;
+            background: #ddd;
+        }
+        .chat-panel {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            padding: 0.4rem;
+            background: #fff;
+        }
+        .panel-header {
+            font-weight: bold;
+            color: #2c3e50;
+            padding: 0.25rem 0.2rem 0.4rem;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .panel-body {
+            flex: 1;
+            overflow: auto;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            background: #fafafa;
+        }
+        /* 左上：气泡历史 / JSON 编辑器 */
+        #historyView { padding: 0.5rem; }
+        #jsonEditor {
+            width: 100%;
+            height: 100%;
+            border: none;
+            resize: none;
+            font-family: ui-monospace, Menlo, monospace;
+            font-size: 0.8rem;
+            padding: 0.5rem;
+            background: #fafafa;
+            color: #333;
+        }
+        .chat-msg {
+            margin-bottom: 0.4rem;
+            padding: 0.4rem 0.7rem;
+            border-radius: 10px;
+            max-width: 92%;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+        .msg-user { background: #3498db; color: #fff; margin-left: auto; }
+        .msg-ai { background: #e9ecef; color: #333; margin-right: auto; }
+        .msg-tool { background: #fff3cd; color: #333; margin-right: auto; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; }
+        .msg-system { background: #f0f0f0; color: #888; margin-right: auto; font-style: italic; }
+        .msg-ai .ai-think { color: #888; font-style: italic; }
+        .msg-ai .ai-think * { color: #888 !important; }
+        /* 右上：响应 body */
+        #rightEditor {
+            width: 100%;
+            height: 100%;
+            border: none;
+            resize: none;
+            font-family: ui-monospace, Menlo, monospace;
+            font-size: 0.8rem;
+            padding: 0.5rem;
+            background: #fafafa;
+            color: #333;
+        }
+        /* 左下：输入 */
+        #inputText2 {
+            width: 100%;
+            flex: 1;
+            resize: none;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 0.5rem;
+            font-size: 0.9rem;
+            font-family: inherit;
+            background: #fff;
+            box-sizing: border-box;
+        }
+        /* 右下：解析结果 */
+        .think-block {
+            color: #888;
+            font-style: italic;
+            background: #f5f5f5;
+            border-left: 3px solid #ccc;
+            padding: 0.5rem 0.7rem;
+            border-radius: 4px;
+            margin-bottom: 0.6rem;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+        }
+        #contentBlock {
+            white-space: pre-wrap;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            color: #333;
+        }
+        /* 悬浮矩形（同 textvideo 格式，位置：中上） */
+        .media-rect {
+            position: fixed;
+            cursor: move;
+            left: 50%;
+            top: 40%;
+            transform: translate(-50%, -50%);
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            padding: 1rem 1.2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            z-index: 1000;
+            min-width: 320px;
+        }
+        .media-rect .cfg-row {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            width: 100%;
+            justify-content: center;
+        }
+        .media-rect input, .media-rect select {
+            padding: 0.4rem 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.82rem;
+            background: #fff;
+            color: #333;
+        }
+        .rect-status {
+            width: 100%;
+            min-height: 1.2em;
+            max-height: 80px;
+            overflow-y: auto;
+            font-size: 0.78rem;
+            font-family: ui-monospace, Menlo, monospace;
+            line-height: 1.5;
+            color: #666;
+            text-align: left;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        @media (max-width: 900px) {
+            .chat-grid { grid-template-columns: 1fr; grid-template-rows: repeat(4, 1fr); height: auto; min-height: 100vh; }
+            .media-rect { position: static; transform: none; margin: 0.6rem auto; }
+        }
+    </style>
 </head>
 <body>
     <nav class="top-nav">
@@ -13,130 +170,457 @@
         <a href="/text" class="active">文本对话</a>
         <a href="/textaudio">文本语音互转</a>
         <a href="/textimage">文本图像互转</a>
+        <a href="/textvideo">文本视频互转</a>
     </nav>
 
-    <div class="chat-container">
-        <!-- 对话历史区域 - 占60%高度 -->
-        <div class="chat-history" id="chatHistory"></div>
-        
-        <!-- 底部区域 - 占40%高度，分为三部分 -->
-        <div class="bottom-area">
-            <!-- 左边：我的输入 -->
-            <div class="input-section">
-                <textarea id="inputText" placeholder="请输入您的消息..." class="chat-input"></textarea>
+    <div class="chat-grid">
+        <!-- 左上：对话历史 / JSON 预览编辑（可切换） -->
+        <div class="chat-panel">
+            <div class="panel-header">
+                <button id="toggleView" class="chat-btn primary" style="padding:0.25rem 0.8rem; border-radius:15px; font-size:0.78rem;">切换：JSON</button>
+                <button id="clearLeft" class="chat-btn secondary" style="padding:0.25rem 0.8rem; border-radius:15px; font-size:0.78rem;">清空</button>
+                <span id="panelTLTitle">对话历史</span>
             </div>
-            
-            <!-- 中间：按钮区域 -->
-            <div class="chat-buttons">
-                <button id="textToText" class="chat-btn primary">发送消息</button>
-                <button id="clearChat" class="chat-btn secondary">清空对话</button>
-            </div>
-            
-            <!-- 右边：AI输出预览 -->
-            <div class="output-section">
-                <div class="output-header">AI回复预览</div>
-                <div class="output-content" id="responseContent"></div>
+            <div class="panel-body">
+                <div id="historyView" style="display:block;"></div>
+                <textarea id="jsonEditor" style="display:none;" spellcheck="false" placeholder="{...}"></textarea>
             </div>
         </div>
+
+        <!-- 右上：服务器回复 body（气泡/JSON 可切换、可编辑） -->
+        <div class="chat-panel">
+            <div class="panel-header">
+                <button id="toggleRight" class="chat-btn primary" style="padding:0.25rem 0.8rem; border-radius:15px; font-size:0.78rem;">切换：气泡</button>
+                <button id="clearRight" class="chat-btn secondary" style="padding:0.25rem 0.8rem; border-radius:15px; font-size:0.78rem;">清空</button>
+                <span>响应 Body</span>
+            </div>
+            <div class="panel-body">
+                <div id="rightBubbles" style="display:none; padding:0.5rem;"></div>
+                <textarea id="rightEditor" style="display:block;" spellcheck="false" placeholder="服务器回复的完整 HTTP body（可编辑）..."></textarea>
+            </div>
+        </div>
+
+        <!-- 左下：文本输入 + 确认按钮 -->
+        <div class="chat-panel">
+            <div class="panel-header">输入</div>
+            <div class="panel-body" style="display:flex; flex-direction:column; padding:0.5rem; border:1px solid #eee; border-radius:4px; background:#fafafa;">
+                <textarea id="inputText2" placeholder="输入消息，点确认后包装为 user 消息加入左上 JSON，并自动发送"></textarea>
+                <button id="confirmBtn" class="chat-btn primary" style="margin-top:0.5rem;">确认（追加并发送）</button>
+            </div>
+        </div>
+
+        <!-- 右下：解析结果（think 标灰 + 普通回复） -->
+        <div class="chat-panel">
+            <div class="panel-header">解析结果</div>
+            <div class="panel-body" style="padding:0.5rem; overflow:auto;">
+                <div class="think-block" id="thinkBlock" style="display:none;"></div>
+                <div id="contentBlock"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 中上悬浮矩形：参数设置 + 发送按钮 + 状态 -->
+    <div class="media-rect">
+        <div class="cfg-row">
+            <input type="text" id="cfgAddr" value="127.0.0.1" title="服务地址" style="width:85px;">
+            <input type="text" id="cfgPort" value="11434" title="服务端口" style="width:55px;">
+            <select id="cfgApiPath" title="API 路径" style="flex:1; min-width:200px;">
+                <option value="/v1/chat/completions" selected>/v1/chat/completions（OpenAI）</option>
+                <option value="/api/chat">/api/chat（ollama 聊天）</option>
+                <option value="/api/generate">/api/generate（ollama 生成）</option>
+            </select>
+        </div>
+        <div class="cfg-row">
+            <input type="password" id="cfgPassword" value="" placeholder="密码/Key" title="可选，作为 Bearer token 发送" style="width:120px;">
+            <input type="text" id="cfgModel" value="glm-4.7-flash:latest" title="模型名（body 无 model 时自动补上）" style="flex:1; min-width:160px;">
+        </div>
+        <button id="sendBtn" class="chat-btn primary">发送（把左上 JSON 原样发给服务器）</button>
+        <div id="chatStatus" class="rect-status"></div>
     </div>
 
     <script src="/script.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const inputText = document.getElementById('inputText');
-            const responseContent = document.getElementById('responseContent');
-            const chatHistory = document.getElementById('chatHistory');
-            
-            // 处理AI回复，将思考部分标灰
+            const historyView = document.getElementById('historyView');
+            const jsonEditor = document.getElementById('jsonEditor');
+            const toggleViewBtn = document.getElementById('toggleView');
+            const panelTLTitle = document.getElementById('panelTLTitle');
+            const inputText2 = document.getElementById('inputText2');
+            const confirmBtn = document.getElementById('confirmBtn');
+            const sendBtn = document.getElementById('sendBtn');
+            const rightBubbles = document.getElementById('rightBubbles');
+            const rightEditor = document.getElementById('rightEditor');
+            const toggleRightBtn = document.getElementById('toggleRight');
+            const clearLeftBtn = document.getElementById('clearLeft');
+            const clearRightBtn = document.getElementById('clearRight');
+            const thinkBlock = document.getElementById('thinkBlock');
+            const contentBlock = document.getElementById('contentBlock');
+            const chatStatus = document.getElementById('chatStatus');
+
+            // 状态
+            let jsonBody = {};        // 左上：当前编辑的 JSON body（默认空）
+            let bubbleMode = true;    // 左上视图：true=气泡，false=JSON 编辑
+            let rightBody = null;     // 右上：解析后的响应 body（dict 或 null）
+            let rightRaw = '';        // 右上：JSON 模式显示的原始文本（可编辑）
+            let rightBubbleMode = false; // 右上视图：true=气泡，false=JSON
+            let pollTimer = null;
+
+            // ===== 连接配置（localStorage 记忆，默认值在 HTML 里）=====
+            const CFG_FIELDS = [
+                ['cfgAddr', 'addr'], ['cfgPort', 'port'], ['cfgPassword', 'password'],
+                ['cfgApiPath', 'api_path'], ['cfgModel', 'model']
+            ];
+            function loadChatConfig() {
+                try {
+                    const saved = JSON.parse(localStorage.getItem('chatCfg') || '{}');
+                    for (const [id, key] of CFG_FIELDS) {
+                        const el = document.getElementById(id);
+                        if (el && saved[key] !== undefined) el.value = saved[key];
+                    }
+                } catch (e) { /* 忽略 */ }
+            }
+            function saveChatConfig() {
+                const cfg = {};
+                for (const [id, key] of CFG_FIELDS) {
+                    cfg[key] = document.getElementById(id).value.trim();
+                }
+                localStorage.setItem('chatCfg', JSON.stringify(cfg));
+            }
+            loadChatConfig();
+
+            // ===== 状态框 =====
+            function setStatus(msg) {
+                if (msg) {
+                    chatStatus.textContent = msg;
+                    chatStatus.style.color = msg.startsWith('❌') ? '#e74c3c' : msg.startsWith('✅') ? '#2ecc71' : '#666';
+                    chatStatus.scrollTop = chatStatus.scrollHeight;
+                } else {
+                    chatStatus.textContent = '';
+                }
+            }
+
+            // ===== 渲染：气泡 / JSON =====
             function formatAIResponse(text) {
                 if (!text) return '';
-                
-                // 处理 "Thinking..." 到 "...done thinking." 之间的内容
                 const thinkPattern = /Thinking\.\.\.([\s\S]*?)\.\.\.done thinking\./gi;
                 let formattedText = text.replace(thinkPattern, function(match, thinkContent) {
                     return '<div class="ai-think">💭 Thinking...' + thinkContent + '...done thinking.</div>';
                 });
-                
-                // 处理其他可能的思考标记
                 formattedText = formattedText.replace(/<think>([\s\S]*?)<\/think>/gi, '<div class="ai-think">💭 $1</div>');
                 formattedText = formattedText.replace(/```think([\s\S]*?)```/gi, '<div class="ai-think">💭 $1</div>');
-                
-                // 将剩余内容按段落处理
                 const paragraphs = formattedText.split('\n\n');
                 const processedParagraphs = paragraphs.map(p => {
-                    if (p.trim() && !p.includes('ai-think')) {
-                        return `<p>${p}</p>`;
-                    }
+                    if (p.trim() && !p.includes('ai-think')) return `<p>${p}</p>`;
                     return p;
                 });
-                
                 return processedParagraphs.join('\n');
             }
-            
-            document.getElementById('textToText').addEventListener('click', async function() {
-                const text = inputText.value.trim();
-                if (!text) return;
-                
-                // 添加用户消息到历史
-                const userMsg = document.createElement('div');
-                userMsg.className = 'chat-message user-message';
-                userMsg.textContent = text;
-                chatHistory.appendChild(userMsg);
-                
-                responseContent.innerHTML = '<div class="thinking-indicator">🤔 正在思考...</div>';
-                
-                // 禁用按钮防止重复点击
-                this.disabled = true;
-                
+
+            function renderBubbles() {
+                historyView.innerHTML = '';
+                const msgs = (jsonBody.messages || []);
+                if (!msgs.length) {
+                    historyView.innerHTML = '<div style="color:#999; padding:1rem;">暂无消息，在左下输入后点"确认"</div>';
+                    return;
+                }
+                for (const m of msgs) {
+                    const div = document.createElement('div');
+                    const role = m.role || 'user';
+                    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+                    if (role === 'user') {
+                        div.className = 'chat-msg msg-user';
+                        div.textContent = content;
+                    } else if (role === 'assistant') {
+                        div.className = 'chat-msg msg-ai';
+                        div.innerHTML = formatAIResponse(content);
+                        // 消息里的思考内容（reasoning_content）标灰显示，与右上气泡一致
+                        if (m.reasoning_content) {
+                            const t = document.createElement('div');
+                            t.className = 'think-block';
+                            t.textContent = '💭 ' + m.reasoning_content;
+                            div.prepend(t);
+                        }
+                    } else if (role === 'tool') {
+                        div.className = 'chat-msg msg-tool';
+                        div.textContent = content;
+                    } else {
+                        div.className = 'chat-msg msg-system';
+                        div.textContent = content;
+                    }
+                    historyView.appendChild(div);
+                }
+                historyView.scrollTop = historyView.scrollHeight;
+            }
+
+            function extractMessages(body) {
+                if (!body) return [];
+                const msgs = [];
+                if (body.choices && Array.isArray(body.choices)) {
+                    for (const c of body.choices) {
+                        if (c && c.message) msgs.push(c.message);
+                    }
+                } else if (body.message) {
+                    msgs.push(body.message);
+                } else if (body.messages && Array.isArray(body.messages)) {
+                    return body.messages;
+                }
+                return msgs;
+            }
+
+            function renderRightBubbles() {
+                rightBubbles.innerHTML = '';
+                const msgs = extractMessages(rightBody);
+                if (!msgs.length) {
+                    rightBubbles.innerHTML = '<div style="color:#999; padding:1rem;">暂无内容</div>';
+                    return;
+                }
+                for (const m of msgs) {
+                    const div = document.createElement('div');
+                    div.className = 'chat-msg msg-ai';
+                    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+                    div.innerHTML = formatAIResponse(content);
+                    if (m.reasoning_content) {
+                        const t = document.createElement('div');
+                        t.className = 'think-block';
+                        t.textContent = '💭 ' + m.reasoning_content;
+                        div.prepend(t);
+                    }
+                    rightBubbles.appendChild(div);
+                }
+                rightBubbles.scrollTop = rightBubbles.scrollHeight;
+            }
+
+            function renderRightAll() {
+                if (rightBubbleMode) {
+                    rightEditor.style.display = 'none';
+                    rightBubbles.style.display = 'block';
+                    renderRightBubbles();
+                } else {
+                    rightBubbles.style.display = 'none';
+                    rightEditor.style.display = 'block';
+                    rightEditor.value = rightRaw;
+                }
+            }
+
+            function renderAll() {
+                if (bubbleMode) {
+                    jsonEditor.style.display = 'none';
+                    historyView.style.display = 'block';
+                    renderBubbles();
+                } else {
+                    historyView.style.display = 'none';
+                    jsonEditor.style.display = 'block';
+                    jsonEditor.value = JSON.stringify(jsonBody, null, 2);
+                }
+            }
+
+            // 切换视图：气泡 ⇄ JSON 预览/编辑
+            toggleViewBtn.addEventListener('click', function() {
+                if (!bubbleMode) {
+                    // 从 JSON 编辑切回气泡：先解析编辑器内容
+                    try {
+                        jsonBody = JSON.parse(jsonEditor.value);
+                    } catch (e) {
+                        setStatus('❌ JSON 格式错误，无法切换：' + e.message);
+                        return;
+                    }
+                }
+                bubbleMode = !bubbleMode;
+                this.textContent = bubbleMode ? '切换：JSON' : '切换：气泡';
+                panelTLTitle.textContent = bubbleMode ? '对话历史' : 'JSON 预览/编辑';
+                renderAll();
+            });
+
+            // 右上切换：气泡 ⇄ JSON（JSON 可编辑）
+            toggleRightBtn.addEventListener('click', function() {
+                if (rightBubbleMode) {
+                    // 气泡 -> JSON：把当前 body 序列化到编辑器
+                    rightRaw = rightBody ? JSON.stringify(rightBody, null, 2) : rightRaw;
+                } else {
+                    // JSON -> 气泡：解析编辑器内容
+                    try {
+                        rightBody = JSON.parse(rightEditor.value);
+                        rightRaw = rightEditor.value;
+                    } catch (e) {
+                        setStatus('❌ 右上 JSON 格式错误，无法切换：' + e.message);
+                        return;
+                    }
+                }
+                rightBubbleMode = !rightBubbleMode;
+                this.textContent = rightBubbleMode ? '切换：JSON' : '切换：气泡';
+                renderRightAll();
+            });
+
+            // 左上清空
+            clearLeftBtn.addEventListener('click', async function() {
+                jsonBody = {};
+                renderAll();
+                try { await fetch('/api/text-edit/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({left:true})}); } catch(e){}
+            });
+
+            // 右上清空
+            clearRightBtn.addEventListener('click', async function() {
+                rightBody = null;
+                rightRaw = '';
+                renderRightAll();
+                try { await fetch('/api/text-edit/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({right:true})}); } catch(e){}
+            });
+
+            // ===== 左下确认：左上 + 右上 + 左下文本 合并拼接，并自动发送 =====
+            confirmBtn.addEventListener('click', async function() {
+                const text = inputText2.value.trim();
+                if (!text) { alert('请输入文本'); return; }
+                // 若在编辑模式，先解析各自编辑器内容
+                if (!bubbleMode) {
+                    try { jsonBody = JSON.parse(jsonEditor.value); }
+                    catch (e) { setStatus('❌ 左上 JSON 格式错误：' + e.message); return; }
+                }
+                if (!rightBubbleMode && rightEditor.value.trim()) {
+                    try { rightBody = JSON.parse(rightEditor.value); }
+                    catch (e) { setStatus('❌ 右上 JSON 格式错误：' + e.message); return; }
+                }
+                saveChatConfig();
                 try {
-                    const response = await fetch('/api/text-chat', {
+                    const res = await fetch('/api/text-edit/append', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({message: text})
+                        body: JSON.stringify({
+                            json_body: jsonBody,
+                            recv_body: rightBody,   // 右上数据（assistant 回复合并进历史）
+                            text: text,
+                            model: document.getElementById('cfgModel').value.trim()
+                        })
                     });
-                    
-                    const data = await response.json();
-                    
-                    if (data.error) {
-                        throw new Error(data.error);
+                    const data = await res.json();
+                    if (!res.ok || data.error) throw new Error(data.error || '追加失败');
+                    jsonBody = data.body;
+                    inputText2.value = '';
+                    // 右上数据已合并消费，清空
+                    rightBody = null;
+                    rightRaw = '';
+                    renderAll();
+                    renderRightAll();
+                    sendBtn.click();   // 自动触发发送
+                } catch (e) {
+                    setStatus('❌ ' + e.message);
+                }
+            });
+
+            // ===== 中上发送：把左上 JSON 原样发给服务器 =====
+            sendBtn.addEventListener('click', async function() {
+                // 若在 JSON 编辑模式，先解析编辑器内容
+                if (!bubbleMode) {
+                    try {
+                        jsonBody = JSON.parse(jsonEditor.value);
+                    } catch (e) {
+                        setStatus('❌ JSON 格式错误：' + e.message);
+                        return;
                     }
-                    
-                    // 格式化AI回复
-                    const formattedResponse = formatAIResponse(data.response);
-                    
-                    // 显示在右侧预览区
-                    responseContent.innerHTML = formattedResponse;
-                    
-                    // 添加AI回复到历史
-                    const aiMsg = document.createElement('div');
-                    aiMsg.className = 'chat-message ai-message';
-                    aiMsg.innerHTML = formattedResponse;
-                    chatHistory.appendChild(aiMsg);
-                    
-                    // 滚动到底部
-                    chatHistory.scrollTop = chatHistory.scrollHeight;
-                    
-                } catch (error) {
-                    responseContent.innerHTML = '❌ 请求失败：' + error.message;
-                } finally {
-                    this.disabled = false;
+                    renderAll();
                 }
-                
-                inputText.value = '';
-            });
-            
-            document.getElementById('clearChat').addEventListener('click', function() {
-                chatHistory.innerHTML = '';
-                responseContent.innerHTML = '';
-            });
-            
-            // 支持回车发送
-            inputText.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    document.getElementById('textToText').click();
+                saveChatConfig();
+                setStatus('⏳ 发送中...');
+                try {
+                    const res = await fetch('/api/text-edit/send', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            json_body: jsonBody,
+                            addr: document.getElementById('cfgAddr').value.trim(),
+                            port: document.getElementById('cfgPort').value.trim(),
+                            password: document.getElementById('cfgPassword').value.trim(),
+                            api_path: document.getElementById('cfgApiPath').value.trim(),
+                            model: document.getElementById('cfgModel').value.trim()
+                        })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.error) throw new Error(data.error || '发送失败');
+                    if (!data.started) throw new Error('任务未启动');
+                    startPolling();
+                } catch (e) {
+                    setStatus('❌ ' + e.message);
                 }
             });
+
+            // ===== 轮询任务状态 =====
+            function startPolling() {
+                stopPolling();
+                pollTimer = setInterval(pollStatus, 1000);
+            }
+            function stopPolling() {
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            }
+            async function pollStatus() {
+                let s;
+                try {
+                    const r = await fetch('/api/task-status/chat');
+                    s = await r.json();
+                } catch (e) { return; }
+                if (s.running) {
+                    setStatus('⏳ 请求处理中...');
+                    return;
+                }
+                stopPolling();
+                if (s.error) { setStatus('❌ ' + s.error); return; }
+                if (s.recv_raw) {
+                    rightRaw = s.recv_raw;
+                    try { rightBody = JSON.parse(s.recv_raw); }
+                    catch (e) { rightBody = null; }
+                    renderRightAll();
+                    parseAndShow(s.recv_raw);
+                    setStatus('✅ 完成');
+                } else {
+                    setStatus('⚠️ 无响应内容');
+                }
+            }
+
+            // ===== 解析响应：think（reasoning_content）标灰 + 普通回复 =====
+            function parseAndShow(raw) {
+                let d;
+                try { d = JSON.parse(raw); }
+                catch (e) {
+                    thinkBlock.style.display = 'none';
+                    contentBlock.textContent = raw;
+                    return;
+                }
+                let msg = null;
+                if (d.choices && d.choices[0] && d.choices[0].message) msg = d.choices[0].message;
+                else if (d.message) msg = d.message;
+                if (!msg) {
+                    thinkBlock.style.display = 'none';
+                    contentBlock.textContent = raw;
+                    return;
+                }
+                const think = msg.reasoning_content || '';
+                const content = msg.content || '';
+                if (think) {
+                    thinkBlock.style.display = 'block';
+                    thinkBlock.textContent = '💭 ' + think;
+                } else {
+                    thinkBlock.style.display = 'none';
+                }
+                contentBlock.innerHTML = formatAIResponse(content);
+            }
+
+            // ===== 刷新/切页恢复：最后一次发送 body + 最后一次接收 body =====
+            (async function restore() {
+                try {
+                    const r = await fetch('/api/task-status/chat');
+                    const s = await r.json();
+                    if (s.sent_body) { jsonBody = s.sent_body; renderAll(); }
+                    if (s.recv_raw) {
+                        rightRaw = s.recv_raw;
+                        try { rightBody = JSON.parse(s.recv_raw); }
+                        catch (e) { rightBody = null; }
+                        renderRightAll();
+                        parseAndShow(s.recv_raw);
+                    }
+                    if (s.running) startPolling();
+                } catch (e) { /* 忽略 */ }
+            })();
+
+            renderAll();
+            renderRightAll();
         });
     </script>
 </body>

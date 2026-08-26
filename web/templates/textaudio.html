@@ -6,6 +6,81 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文本语音互转 - AI模型集成平台</title>
     <link rel="stylesheet" href="/style.css">
+    <style>
+        /* 媒体文件列表栏 */
+        #mediaList {
+            width: 100%;
+            max-height: 30vh;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #fff;
+            margin-bottom: 0.5rem;
+        }
+        .media-item {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.85rem;
+            font-family: ui-monospace, Menlo, monospace;
+            color: #333;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f0f0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .media-item:hover { background: #e3f2fd; }
+        .media-item.selected { background: #3498db; color: #fff; }
+        .media-empty { padding: 1rem; color: #999; text-align: center; }
+
+        /* 转换按钮矩形卡片：上矩形中心 (50%,25%)，下矩形中心 (50%,75%) */
+        .media-rect {
+            position: fixed;
+            cursor: move;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            padding: 1.2rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.8rem;
+            z-index: 1000;
+            min-width: 230px;
+        }
+        #rectTop { top: 25%; }
+        #rectBottom { top: 75%; }
+        .media-rect .action-btn { transform: none; }
+        .media-rect select {
+            width: 100%;
+            padding: 0.5rem 0.6rem;
+            border: 1px solid #ddd;
+            border-radius: 25px;
+            font-size: 0.9rem;
+            background: #fff;
+            color: #333;
+            cursor: pointer;
+        }
+        /* 矩形内状态文本框 */
+        .rect-status {
+            width: 100%;
+            min-height: 1.2em;
+            max-height: 90px;
+            overflow-y: auto;
+            font-size: 0.78rem;
+            font-family: ui-monospace, Menlo, monospace;
+            line-height: 1.5;
+            color: #666;
+            text-align: left;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        @media (max-width: 768px) {
+            .media-rect { position: static; transform: none; margin: 0.6rem auto; }
+        }
+    </style>
 </head>
 <body>
     <nav class="top-nav">
@@ -13,6 +88,7 @@
         <a href="/text">文本对话</a>
         <a href="/textaudio" class="active">文本语音互转</a>
         <a href="/textimage">文本图像互转</a>
+        <a href="/textvideo">文本视频互转</a>
     </nav>
 
     <div class="split-container">
@@ -21,6 +97,8 @@
         </div>
         <div class="right-panel">
             <div class="preview-area">
+                <!-- 音频文件列表栏：点击选中预览；点击空白处上传 -->
+                <div id="mediaList"><div class="media-empty">加载中...</div></div>
                 <div id="audioPreview" style="width: 100%;">
                     <audio id="audioPlayer" controls style="width: 100%;">
                         您的浏览器不支持音频播放
@@ -30,9 +108,18 @@
         </div>
     </div>
 
-    <div class="action-buttons">
+    <!-- 转换按钮矩形：上矩形=文本转语音；下矩形=语音转文本 + 识别方法（按钮下方） -->
+    <div class="media-rect" id="rectTop">
+        <select id="ttsMethod" title="选择文本转语音使用的模型"></select>
+        <div id="ttsParams" style="display:none;"></div>
         <button id="textToAudio" class="action-btn primary">文本转语音→</button>
-        <button id="audioToText" class="action-btn secondary">←语音转文本</button>
+        <div id="ttsStatus" class="rect-status"></div>
+    </div>
+    <div class="media-rect" id="rectBottom">
+        <select id="asrMethod" title="选择语音转文本使用的模型"></select>
+        <div id="asrParams" style="display:none;"></div>
+        <button id="audioToText" class="action-btn primary">←语音转文本</button>
+        <div id="asrStatus" class="rect-status"></div>
     </div>
 
     <!-- 隐藏的文件上传输入框 -->
@@ -44,141 +131,269 @@
             const inputText = document.getElementById('inputText');
             const audioFile = document.getElementById('audioFile');
             const audioPlayer = document.getElementById('audioPlayer');
-            
-            // 点击播放器区域上传文件
-            document.querySelector('.right-panel').addEventListener('click', () => audioFile.click());
-            
-            // 拖拽上传到播放器区域
+            const ttsStatusEl = document.getElementById('ttsStatus');
+            const asrStatusEl = document.getElementById('asrStatus');
+            const mediaListEl = document.getElementById('mediaList');
+
+            const MEDIA_TYPE = 'audio';
+            let currentFile = null;   // 当前选中的文件名
+
+            // ===== 加载可选转换方法（来自配置区），记住上次选择 =====
+            const asrMethodSelect = document.getElementById('asrMethod');
+            initMethodParams('ttsMethod', 'ttsParams', 'tts');
+            initMethodParams('asrMethod', 'asrParams', 'asr');
+
+            // ===== 状态显示（进度历史 / 结果提示），显示在对应矩形内 =====
+            function setStatus(el, msg) {
+                if (msg) {
+                    el.textContent = msg;
+                    el.style.color = msg.startsWith('❌') ? '#e74c3c' : msg.startsWith('✅') ? '#2ecc71' : '#666';
+                    el.scrollTop = el.scrollHeight;   // 自动滚动显示尾部（最新进度）
+                } else {
+                    el.textContent = '';
+                }
+            }
+
+            function setStatusFromLines(el, lines) {
+                if (!lines || !lines.length) return;
+                const texts = [];
+                for (const raw of lines) {
+                    const last = raw.split('\r').pop()
+                        .replace(/\x1b\[[0-9;]*m/g, '')
+                        .trim();
+                    if (last) texts.push('⏳ ' + last);
+                }
+                setStatus(el, texts.join('\n'));
+            }
+
+            async function fetchTask(task) {
+                try {
+                    const res = await fetch('/api/task-status/' + task);
+                    if (!res.ok) return null;
+                    return await res.json();
+                } catch (e) { return null; }
+            }
+
+            function pollUntil(task, onTick, onDone) {
+                const timer = setInterval(async () => {
+                    const s = await fetchTask(task);
+                    if (!s) return;
+                    if (onTick) onTick(s);
+                    if (!s.running) {
+                        clearInterval(timer);
+                        if (onDone) onDone(s);
+                    }
+                }, 1200);
+            }
+
+            // ===== 文件列表：拉取 -> 渲染 -> 默认选中最新（或指定文件）=====
+            async function refreshMediaList(selectName) {
+                try {
+                    const res = await fetch('/api/media/list/' + MEDIA_TYPE);
+                    const data = await res.json();
+                    const files = data.files || [];
+                    mediaListEl.innerHTML = '';
+                    if (!files.length) {
+                        mediaListEl.innerHTML = '<div class="media-empty">暂无文件，点击或拖拽上传音频</div>';
+                        return;
+                    }
+                    for (const f of files) {
+                        const item = document.createElement('div');
+                        item.className = 'media-item' + (f === currentFile ? ' selected' : '');
+                        item.textContent = f;
+                        item.title = f;
+                        item.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            selectFile(f);
+                        });
+                        mediaListEl.appendChild(item);
+                    }
+                    // 选中规则：指定文件 > 当前选中仍在列表 > 最新一个
+                    if (selectName && files.includes(selectName)) {
+                        selectFile(selectName);
+                    } else if (!currentFile || !files.includes(currentFile)) {
+                        selectFile(files[0]);
+                    }
+                } catch (e) {
+                    mediaListEl.innerHTML = '<div class="media-empty">加载失败</div>';
+                }
+            }
+
+            function selectFile(name) {
+                currentFile = name;
+                document.querySelectorAll('.media-item').forEach(el => {
+                    el.classList.toggle('selected', el.textContent === name);
+                });
+                audioPlayer.src = '/audio/' + encodeURIComponent(name);
+                audioPlayer.load();
+            }
+
+            // ===== 上传：真的传到服务器 audio/ 文件夹，然后刷新列表并选中 =====
+            async function uploadAudioFile(file) {
+                const fd = new FormData();
+                fd.append('file', file);
+                try {
+                    const res = await fetch('/api/media/upload/' + MEDIA_TYPE, {method: 'POST', body: fd});
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || '上传失败');
+                    setStatus(asrStatusEl, '✅ 已上传：' + data.name);
+                    await refreshMediaList(data.name);
+                } catch (e) {
+                    alert('上传失败：' + e.message);
+                }
+            }
+
+            // 点击右侧空白区域 -> 打开文件选择框
+            document.querySelector('.right-panel').addEventListener('click', (e) => {
+                if (e.target.closest('#mediaList') || e.target.closest('audio')) return;
+                audioFile.click();
+            });
+
+            // 拖拽上传
             document.querySelector('.right-panel').addEventListener('dragover', (e) => {
                 e.preventDefault();
                 document.querySelector('.right-panel').style.backgroundColor = '#e3f2fd';
             });
-            
             document.querySelector('.right-panel').addEventListener('dragleave', (e) => {
                 e.preventDefault();
                 document.querySelector('.right-panel').style.backgroundColor = '#f9f9f9';
             });
-            
             document.querySelector('.right-panel').addEventListener('drop', (e) => {
                 e.preventDefault();
                 document.querySelector('.right-panel').style.backgroundColor = '#f9f9f9';
                 const file = e.dataTransfer.files[0];
                 if (file && file.type.startsWith('audio/')) {
-                    handleAudioFile(file);
+                    uploadAudioFile(file);
                 } else {
                     alert('请上传音频文件');
                 }
             });
-            
+
             audioFile.addEventListener('change', (e) => {
                 const file = e.target.files[0];
-                if (file) handleAudioFile(file);
+                if (file) uploadAudioFile(file);
+                e.target.value = '';
             });
-            
-            function handleAudioFile(file) {
-                const url = URL.createObjectURL(file);
-                audioPlayer.src = url;
-                audioPlayer.load();
-                // 可选：自动播放
-                // audioPlayer.play().catch(e => console.log('自动播放失败'));
-            }
-            
-            // 文本转语音
+
+            // 文本转语音（后台任务 + 轮询；完成后刷新列表并选中新文件）
             document.getElementById('textToAudio').addEventListener('click', async function() {
                 const text = inputText.value.trim();
                 if (!text) {
                     alert('请输入文本');
                     return;
                 }
-                
-                // 显示加载状态
+
                 const originalText = this.textContent;
                 this.textContent = '生成中...';
                 this.disabled = true;
-                
+                setStatus(ttsStatusEl, '⏳ 正在启动语音生成...');
+
                 try {
                     const response = await fetch('/api/text-to-audio', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({text: text})
+                        body: JSON.stringify(Object.assign({
+                            text: text,
+                            method: document.getElementById('ttsMethod').value
+                        }, collectMethodParams('ttsParams')))
                     });
-                    
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(errorData.error || '生成失败');
-                    }
-                    
-                    const blob = await response.blob();
-                    const url = URL.createObjectURL(blob);
-                    
-                    // 加载到播放器
-                    audioPlayer.src = url;
-                    audioPlayer.load();
-                    
-                } catch (error) {
-                    alert('生成失败：' + error.message);
-                } finally {
-                    this.textContent = originalText;
-                    this.disabled = false;
-                }
-            });
-            
-            // 语音转文本
-            document.getElementById('audioToText').addEventListener('click', async function() {
-                // 获取当前播放器的音频
-                if (!audioPlayer.src) {
-                    alert('请先上传或生成音频文件');
-                    return;
-                }
-                
-                // 从blob URL获取文件
-                let audioBlob;
-                if (audioPlayer.src.startsWith('blob:')) {
-                    const response = await fetch(audioPlayer.src);
-                    audioBlob = await response.blob();
-                } else {
-                    alert('请先上传或生成音频文件');
-                    return;
-                }
-                
-                // 显示加载状态
-                const originalText = this.textContent;
-                this.textContent = '识别中...';
-                this.disabled = true;
-                
-                const formData = new FormData();
-                formData.append('audio', audioBlob, 'audio.wav');
-                
-                try {
-                    const response = await fetch('/api/audio-to-text', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(errorData.error || '识别失败');
-                    }
-                    
+
                     const data = await response.json();
-                    
-                    // 将识别结果填入文本框
-                    inputText.value = data.text;
-                    
+                    if (!response.ok || data.error) throw new Error(data.error || '生成失败');
+                    if (!data.started) throw new Error('任务未启动');
+
+                    pollUntil('tts',
+                        (s) => setStatusFromLines(ttsStatusEl, s.lines),
+                        (s) => {
+                            if (s.url) {
+                                setStatus(ttsStatusEl, '✅ 语音生成完成');
+                                refreshMediaList(decodeURIComponent(s.url.split('/').pop()));
+                            } else if (s.error) {
+                                setStatus(ttsStatusEl, '❌ 生成失败：' + s.error);
+                            }
+                        }
+                    );
+
                 } catch (error) {
-                    alert('识别失败：' + error.message);
+                    setStatus(ttsStatusEl, '❌ 生成失败：' + error.message);
                 } finally {
                     this.textContent = originalText;
                     this.disabled = false;
                 }
             });
 
-            // 清理对象URL避免内存泄漏
-            window.addEventListener('beforeunload', function() {
-                if (audioPlayer.src && audioPlayer.src.startsWith('blob:')) {
-                    URL.revokeObjectURL(audioPlayer.src);
+            // 语音转文本：识别当前选中的文件（文件已在服务器 audio/ 文件夹）
+            document.getElementById('audioToText').addEventListener('click', async function() {
+                if (!currentFile) {
+                    alert('请先上传或生成音频文件（右侧列表选中）');
+                    return;
+                }
+
+                const originalText = this.textContent;
+                this.textContent = '识别中...';
+                this.disabled = true;
+                setStatus(asrStatusEl, '⏳ 正在启动语音识别：' + currentFile);
+
+                try {
+                    const response = await fetch('/api/audio-to-text', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(Object.assign({
+                            name: currentFile,
+                            method: asrMethodSelect.value
+                        }, collectMethodParams('asrParams')))
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok || data.error) throw new Error(data.error || '识别失败');
+                    if (!data.started) throw new Error('任务未启动');
+
+                    pollUntil('asr', null, (s) => {
+                        if (s.result) {
+                            inputText.value = s.result;
+                            setStatus(asrStatusEl, '✅ 语音识别完成');
+                        } else if (s.error) {
+                            setStatus(asrStatusEl, '❌ 识别失败：' + s.error);
+                        }
+                    });
+
+                } catch (error) {
+                    setStatus(asrStatusEl, '❌ 识别失败：' + error.message);
+                } finally {
+                    this.textContent = originalText;
+                    this.disabled = false;
                 }
             });
+
+            // ===== 页面加载：拉取文件列表（默认选中最新）+ 恢复进行中任务 =====
+            (async function restore() {
+                const tts = await fetchTask('tts');
+                if (tts) {
+                    if (tts.running) {
+                        setStatusFromLines(ttsStatusEl, tts.lines);
+                        pollUntil('tts',
+                            (s) => setStatusFromLines(ttsStatusEl, s.lines),
+                            (s) => {
+                                if (s.url) { setStatus(ttsStatusEl, '✅ 语音生成完成'); refreshMediaList(decodeURIComponent(s.url.split('/').pop())); }
+                                else if (s.error) { setStatus(ttsStatusEl, '❌ 生成失败：' + s.error); }
+                            }
+                        );
+                    } else if (tts.url) {
+                        refreshMediaList(decodeURIComponent(tts.url.split('/').pop()));
+                    }
+                }
+
+                const asr = await fetchTask('asr');
+                if (asr && asr.running) {
+                    setStatus(asrStatusEl, '⏳ 语音识别进行中...');
+                    pollUntil('asr', null, (s) => {
+                        if (s.result) { inputText.value = s.result; setStatus(asrStatusEl, '✅ 语音识别完成'); }
+                        else if (s.error) { setStatus(asrStatusEl, '❌ 识别失败：' + s.error); }
+                    });
+                }
+
+                await refreshMediaList();
+            })();
         });
     </script>
 </body>
