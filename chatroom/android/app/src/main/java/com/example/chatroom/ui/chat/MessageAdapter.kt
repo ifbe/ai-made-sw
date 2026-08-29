@@ -86,6 +86,10 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
                             // 解码失败：保留 ImageView 可见但不显示 bitmap，让用户看出"有图但解析失败"
                             imgContent.setImageDrawable(null)
                         }
+                        // 点击图片 → 全屏查看（再点回到聊天）
+                        imgContent.setOnClickListener { v ->
+                            FullscreenImageActivity.launch(v.context, bytes)
+                        }
                     }
                     mime.startsWith("audio/") -> {
                         // 新音频分支
@@ -174,6 +178,10 @@ class MessageAdapter : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiff
                             imgContent.setImageBitmap(bmp)
                         } else {
                             imgContent.setImageDrawable(null)
+                        }
+                        // 点击图片 → 全屏查看（再点回到聊天）
+                        imgContent.setOnClickListener { v ->
+                            FullscreenImageActivity.launch(v.context, bytes)
                         }
                     }
                     mime.startsWith("audio/") -> {

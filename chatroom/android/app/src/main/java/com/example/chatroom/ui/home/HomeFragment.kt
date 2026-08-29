@@ -46,8 +46,18 @@ data class EditingCardData(
     var aiPort: String = "",
     var aiApiKey: String = "",
     var aiModel: String = "",
-    /** "text"（默认，OpenAI chat completions）/ "stt"（OpenAI audio transcriptions） */
+    /** "text"（默认，OpenAI chat completions）/ "stt"（OpenAI audio transcriptions） / "tts"（OpenAI audio speech） */
     var aiSubType: String = "text",
+    /** TTS 专用的 voice 字段，仅 subType=tts 时使用，默认 "alloy" */
+    var aiVoice: String = "alloy",
+    /** "openclaw"（默认）/ "codex" / "claude" / "gemini" / "copilot" */
+    var agentSubType: String = "openclaw",
+    var agentAddr: String = "",
+    var agentPort: String = "",
+    var agentUsername: String = "",
+    var agentPassword: String = "",
+    /** ECHO 专用：延迟秒数（默认 0.5，可输入浮点） */
+    var echoDelay: Float = 0.5f,
     var bluetoothDevice: String = "",
     var bluetoothProtocol: String = "SPP"
 )
@@ -135,12 +145,34 @@ class HomeFragment : Fragment() {
                         if (card.aiModel.isNotBlank()) m["model"] = card.aiModel
                         // subType 为默认值 "text" 时不写入（保持与旧 config 兼容）
                         if (card.aiSubType.isNotBlank() && card.aiSubType != "text") m["subType"] = card.aiSubType
+                        // voice 仅在 tts 子类型且非默认值时写入（不写默认 "alloy" 避免冗余）
+                        if (card.aiSubType == "tts" && card.aiVoice.isNotBlank() && card.aiVoice != "alloy") {
+                            m["voice"] = card.aiVoice
+                        }
+                        m
+                    }
+                    ParticipantType.AGENT -> {
+                        val m = mutableMapOf<String, String>()
+                        if (card.agentAddr.isNotBlank()) m["addr"] = card.agentAddr
+                        if (card.agentPort.isNotBlank()) m["port"] = card.agentPort
+                        if (card.agentUsername.isNotBlank()) m["username"] = card.agentUsername
+                        if (card.agentPassword.isNotBlank()) m["password"] = card.agentPassword
+                        // subType 为默认值 "openclaw" 时不写入
+                        if (card.agentSubType.isNotBlank() && card.agentSubType != "openclaw") m["subType"] = card.agentSubType
                         m
                     }
                     ParticipantType.BLUETOOTH -> {
                         val m = mutableMapOf<String, String>()
                         if (card.bluetoothDevice.isNotBlank()) m["device"] = card.bluetoothDevice
                         if (card.bluetoothProtocol.isNotBlank()) m["protocol"] = card.bluetoothProtocol
+                        m
+                    }
+                    ParticipantType.ECHO -> {
+                        // 仅在用户改过默认 0.5 才写入，保持 params 简洁
+                        val m = mutableMapOf<String, String>()
+                        if (card.echoDelay != 0.5f && card.echoDelay >= 0f) {
+                            m["delay"] = card.echoDelay.toString()
+                        }
                         m
                     }
                     else -> parseParams(card.params)

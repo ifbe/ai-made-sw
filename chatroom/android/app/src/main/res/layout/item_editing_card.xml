@@ -592,31 +592,6 @@
 
         </LinearLayout>
 
-        <!-- AI：模型列表（查询后显示） -->
-        <LinearLayout
-            android:id="@+id/layoutAiModels"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="6dp"
-            android:gravity="center_vertical"
-            android:visibility="gone">
-
-            <TextView
-                android:layout_width="56dp"
-                android:layout_height="wrap_content"
-                android:text="模型列表："
-                android:textSize="13sp"
-                android:textColor="#666666" />
-
-            <Spinner
-                android:id="@+id/spinnerAiModels"
-                android:layout_width="0dp"
-                android:layout_height="32dp"
-                android:layout_weight="1" />
-
-        </LinearLayout>
-
         <!-- AI：子类型（text=OpenAI chat completions / stt=OpenAI audio transcriptions） -->
         <LinearLayout
             android:id="@+id/layoutAiSubType"
@@ -639,6 +614,223 @@
                 android:layout_width="0dp"
                 android:layout_height="32dp"
                 android:layout_weight="1" />
+
+        </LinearLayout>
+
+        <!-- AI：voice（TTS 专用，仅 subType=tts 时显示） -->
+        <LinearLayout
+            android:id="@+id/layoutAiVoice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="voice："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAiVoice"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="alloy"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- ECHO：延迟（秒，默认 0.5，仅 ECHO 类型显示） -->
+        <LinearLayout
+            android:id="@+id/layoutEchoDelay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="延迟(s)："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputEchoDelay"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="0.5"
+                android:inputType="numberDecimal"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AGENT：子类型（openclaw / codex / claude / gemini / copilot） -->
+        <LinearLayout
+            android:id="@+id/layoutAgentSubType"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="子类型："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <Spinner
+                android:id="@+id/spinnerAgentSubType"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1" />
+
+        </LinearLayout>
+
+        <!-- AGENT：地址 -->
+        <LinearLayout
+            android:id="@+id/layoutAgentAddr"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="地址："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAgentAddr"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="host 或 IP"
+                android:inputType="textUri"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AGENT：端口 -->
+        <LinearLayout
+            android:id="@+id/layoutAgentPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="端口："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAgentPort"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="22"
+                android:inputType="number"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AGENT：用户名 -->
+        <LinearLayout
+            android:id="@+id/layoutAgentUsername"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="用户："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAgentUsername"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="username"
+                android:inputType="text"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
+
+        </LinearLayout>
+
+        <!-- AGENT：密码 -->
+        <LinearLayout
+            android:id="@+id/layoutAgentPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="密码："
+                android:textSize="13sp"
+                android:textColor="#666666" />
+
+            <EditText
+                android:id="@+id/inputAgentPassword"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:hint="password"
+                android:inputType="textPassword"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textColorHint="#999999"
+                android:background="@drawable/bg_input"
+                android:paddingHorizontal="10dp" />
 
         </LinearLayout>
 

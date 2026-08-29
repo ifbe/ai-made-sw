@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.chatroom.R
 import com.example.chatroom.core.ParticipantConfig
 import com.example.chatroom.core.ParticipantType
+import com.example.chatroom.participants.AiParticipant
 import com.example.chatroom.ui.home.EditingCardData
 
 sealed class ParticipantListItem {
@@ -95,6 +96,10 @@ class ParticipantAdapter(
         private val spinnerSockType: Spinner = v.findViewById(R.id.spinnerSockType)
         private val spinnerAiSubType: Spinner = v.findViewById(R.id.spinnerAiSubType)
         private val layoutAiSubType: LinearLayout = v.findViewById(R.id.layoutAiSubType)
+        private val layoutAiVoice: View = v.findViewById(R.id.layoutAiVoice)
+        private val inputAiVoice: EditText = v.findViewById(R.id.inputAiVoice)
+        private val layoutEchoDelay: View = v.findViewById(R.id.layoutEchoDelay)
+        private val inputEchoDelay: EditText = v.findViewById(R.id.inputEchoDelay)
         private val inputPtyDevice: EditText = v.findViewById(R.id.inputPtyDevice)
         private val layoutPtyDevice: View = v.findViewById(R.id.layoutPtyDevice)
         private val inputPtyShell: EditText = v.findViewById(R.id.inputPtyShell)
@@ -112,8 +117,16 @@ class ParticipantAdapter(
         private val layoutAiModel: View = v.findViewById(R.id.layoutAiModel)
         private val inputAiModel: EditText = v.findViewById(R.id.inputAiModel)
         private val btnQueryModels: android.widget.Button = v.findViewById(R.id.btnQueryModels)
-        private val layoutAiModels: View = v.findViewById(R.id.layoutAiModels)
-        private val spinnerAiModels: Spinner = v.findViewById(R.id.spinnerAiModels)
+        private val spinnerAgentSubType: Spinner = v.findViewById(R.id.spinnerAgentSubType)
+        private val layoutAgentSubType: LinearLayout = v.findViewById(R.id.layoutAgentSubType)
+        private val layoutAgentAddr: View = v.findViewById(R.id.layoutAgentAddr)
+        private val inputAgentAddr: EditText = v.findViewById(R.id.inputAgentAddr)
+        private val layoutAgentPort: View = v.findViewById(R.id.layoutAgentPort)
+        private val inputAgentPort: EditText = v.findViewById(R.id.inputAgentPort)
+        private val layoutAgentUsername: View = v.findViewById(R.id.layoutAgentUsername)
+        private val inputAgentUsername: EditText = v.findViewById(R.id.inputAgentUsername)
+        private val layoutAgentPassword: View = v.findViewById(R.id.layoutAgentPassword)
+        private val inputAgentPassword: EditText = v.findViewById(R.id.inputAgentPassword)
         private val layoutSshIp: View = v.findViewById(R.id.layoutSshIp)
         private val inputSshIp: EditText = v.findViewById(R.id.inputSshIp)
         private val layoutSshPort: View = v.findViewById(R.id.layoutSshPort)
@@ -143,7 +156,7 @@ class ParticipantAdapter(
             typeSpinner.adapter = ArrayAdapter(
                 itemView.context,
                 android.R.layout.simple_spinner_dropdown_item,
-                ParticipantType.entries.filter { it != ParticipantType.USER }.map { "${it.icon} ${it.name}" }
+                ParticipantType.entries.map { "${it.icon} ${it.name}" }
             )
 
             // 恢复类型选择
@@ -172,6 +185,12 @@ class ParticipantAdapter(
             inputAiPort.setText(cardData.aiPort)
             inputAiApiKey.setText(cardData.aiApiKey)
             inputAiModel.setText(cardData.aiModel)
+            inputAiVoice.setText(cardData.aiVoice)
+            inputEchoDelay.setText(if (cardData.echoDelay == 0.5f) "0.5" else cardData.echoDelay.toString())
+            inputAgentAddr.setText(cardData.agentAddr)
+            inputAgentPort.setText(cardData.agentPort)
+            inputAgentUsername.setText(cardData.agentUsername)
+            inputAgentPassword.setText(cardData.agentPassword)
 
             // 蓝牙协议 Spinner
             spinnerBluetoothProtocol.adapter = ArrayAdapter(
@@ -251,8 +270,8 @@ class ParticipantAdapter(
             }
 
             // AI 子类型：display label → stored value
-            val subTypesDisplay = listOf("文本", "语音转文字")
-            val subTypesValue = listOf("text", "stt")
+            val subTypesDisplay = listOf("文本", "语音转文字", "文字转语音")
+            val subTypesValue = listOf("text", "stt", "tts")
             spinnerAiSubType.adapter = android.widget.ArrayAdapter(
                 itemView.context,
                 android.R.layout.simple_spinner_dropdown_item,
@@ -263,6 +282,24 @@ class ParticipantAdapter(
             spinnerAiSubType.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
                     cardData.aiSubType = subTypesValue[pos]
+                    // 切了子类型后，voice 字段可能需要显示/隐藏
+                    updateFieldsVisibility(cardData)
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+
+            // AGENT 子类型（openclaw / codex / claude / gemini / copilot）
+            val agentSubTypes = listOf("openclaw", "codex", "claude", "gemini", "copilot")
+            spinnerAgentSubType.adapter = android.widget.ArrayAdapter(
+                itemView.context,
+                android.R.layout.simple_spinner_dropdown_item,
+                agentSubTypes
+            )
+            val agentSubSelPos = agentSubTypes.indexOf(cardData.agentSubType).coerceAtLeast(0)
+            spinnerAgentSubType.setSelection(agentSubSelPos, false)
+            spinnerAgentSubType.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    cardData.agentSubType = agentSubTypes[pos]
                 }
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
@@ -366,7 +403,62 @@ class ParticipantAdapter(
                 }
             })
 
-            // 查询模型按钮
+            // AI voice（TTS 专用）
+            inputAiVoice.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.aiVoice = s.toString()
+                }
+            })
+
+            // ECHO 延迟（秒）
+            inputEchoDelay.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    val raw = s.toString().trim()
+                    cardData.echoDelay = raw.toFloatOrNull() ?: 0.5f
+                }
+            })
+
+            // AGENT 地址
+            inputAgentAddr.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.agentAddr = s.toString()
+                }
+            })
+
+            // AGENT 端口
+            inputAgentPort.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.agentPort = s.toString()
+                }
+            })
+
+            // AGENT 用户名
+            inputAgentUsername.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.agentUsername = s.toString()
+                }
+            })
+
+            // AGENT 密码
+            inputAgentPassword.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    cardData.agentPassword = s.toString()
+                }
+            })
+
+            // 查询模型按钮（HTTP + 解析委托给 AiParticipant.fetchModels）
             btnQueryModels.setOnClickListener {
                 val ip = cardData.aiIp
                 val port = cardData.aiPort
@@ -377,60 +469,32 @@ class ParticipantAdapter(
                 }
                 btnQueryModels.isEnabled = false
                 btnQueryModels.text = "查询中..."
-                Thread({
-                    try {
-                        val url = java.net.URL("http://" + ip + ":" + port + "/v1/models")
-                        val conn = url.openConnection() as java.net.HttpURLConnection
-                        conn.requestMethod = "GET"
-                        conn.setRequestProperty("Authorization", "Bearer " + apiKey)
-                        conn.connectTimeout = 5000
-                        conn.readTimeout = 10000
-                        val code = conn.responseCode
-                        val body = if (code == 200) java.io.BufferedReader(java.io.InputStreamReader(conn.inputStream)).readText() else ""
-                        conn.disconnect()
-
-                        val models = mutableListOf<String>()
-                        if (code == 200) {
-                            val json = org.json.JSONObject(body)
-                            val data = json.optJSONArray("data")
-                            if (data != null) {
-                                for (i in 0 until data.length()) {
-                                    val m = data.getJSONObject(i).optString("id", "")
-                                    if (m.isNotBlank()) models.add(m)
+                AiParticipant.fetchModels(ip, port, apiKey) { code, models, errorMsg ->
+                    btnQueryModels.isEnabled = true
+                    btnQueryModels.text = "查询模型"
+                    when {
+                        errorMsg != null -> {
+                            // 网络/IO 异常
+                            android.widget.Toast.makeText(it.context, "查询失败: $errorMsg", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        code != 200 || models.isEmpty() -> {
+                            // HTTP 错误 或 200 但没模型：仅 Toast，不弹框
+                            android.widget.Toast.makeText(it.context, "未查到模型（code=$code）", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        else -> {
+                            // 查到：弹 AlertDialog，点选后回填到 inputAiModel
+                            android.app.AlertDialog.Builder(it.context)
+                                .setTitle("选择模型")
+                                .setItems(models.toTypedArray()) { _, which ->
+                                    val picked = models[which]
+                                    cardData.aiModel = picked
+                                    inputAiModel.setText(picked)
                                 }
-                            }
-                        }
-
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            btnQueryModels.isEnabled = true
-                            btnQueryModels.text = "查询模型"
-                            if (models.isEmpty()) {
-                                android.widget.Toast.makeText(it.context, "未查到模型（code=" + code + ")", android.widget.Toast.LENGTH_SHORT).show()
-                                layoutAiModels.visibility = View.GONE
-                            } else {
-                                val adapter = android.widget.ArrayAdapter(it.context, android.R.layout.simple_spinner_dropdown_item, models)
-                                spinnerAiModels.adapter = adapter
-                                layoutAiModels.visibility = View.VISIBLE
-                            }
-                        }
-                    } catch (e: Exception) {
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            btnQueryModels.isEnabled = true
-                            btnQueryModels.text = "查询模型"
-                            android.widget.Toast.makeText(it.context, "查询失败: " + e.message, android.widget.Toast.LENGTH_SHORT).show()
+                                .setNegativeButton("取消", null)
+                                .show()
                         }
                     }
-                }, "QueryModels").start()
-            }
-
-            // 模型 Spinner 选择
-            spinnerAiModels.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                    val model = parent?.getItemAtPosition(pos) as? String ?: return
-                    cardData.aiModel = model
-                    inputAiModel.setText(model)
                 }
-                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
 
             // SSH 密码
@@ -508,9 +572,11 @@ class ParticipantAdapter(
             val isTelnet = type == ParticipantType.TELNET
             val isAi = type == ParticipantType.AI
             val isBluetooth = type == ParticipantType.BLUETOOTH
+            val isAgent = type == ParticipantType.AGENT
+            val isEcho = type == ParticipantType.ECHO
             // 路径仅 WS 协议时才显示
             val isWsPath = isSocket && cardData.sockType == "WS"
-            layoutParams.visibility = if (isSocket || isPty || isSerial || isSsh || isTelnet || isAi || isBluetooth) View.GONE else View.VISIBLE
+            layoutParams.visibility = if (isSocket || isPty || isSerial || isSsh || isTelnet || isAi || isBluetooth || isAgent || isEcho) View.GONE else View.VISIBLE
             layoutSocketIp.visibility = if (isSocket) View.VISIBLE else View.GONE
             layoutSocketPort.visibility = if (isSocket) View.VISIBLE else View.GONE
             layoutSocketPath.visibility = if (isWsPath) View.VISIBLE else View.GONE
@@ -526,7 +592,15 @@ class ParticipantAdapter(
             layoutAiApiKey.visibility = if (isAi) View.VISIBLE else View.GONE
             layoutAiModel.visibility = if (isAi) View.VISIBLE else View.GONE
             layoutAiSubType.visibility = if (isAi) View.VISIBLE else View.GONE
-            layoutAiModels.visibility = View.GONE
+            // voice 仅在 AI + tts 时显示
+            layoutAiVoice.visibility = if (isAi && cardData.aiSubType == "tts") View.VISIBLE else View.GONE
+            // ECHO 延迟仅在 ECHO 时显示
+            layoutEchoDelay.visibility = if (isEcho) View.VISIBLE else View.GONE
+            layoutAgentSubType.visibility = if (isAgent) View.VISIBLE else View.GONE
+            layoutAgentAddr.visibility = if (isAgent) View.VISIBLE else View.GONE
+            layoutAgentPort.visibility = if (isAgent) View.VISIBLE else View.GONE
+            layoutAgentUsername.visibility = if (isAgent) View.VISIBLE else View.GONE
+            layoutAgentPassword.visibility = if (isAgent) View.VISIBLE else View.GONE
             layoutSshIp.visibility = if (isSsh) View.VISIBLE else View.GONE
             layoutSshPort.visibility = if (isSsh) View.VISIBLE else View.GONE
             layoutSshUser.visibility = if (isSsh) View.VISIBLE else View.GONE

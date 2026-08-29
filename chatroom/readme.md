@@ -12,7 +12,7 @@
 | **TELNET** | 📡 | ✅ 完整实现 | ✅ 完整实现 | TELNET 连接 |
 | **SOCKET** | 🌐 | ✅ 完整实现 | ✅ 完整实现 | TCP/UDP socket 客户端 |
 | **BBS** | 💬 | ⚠️ UI 配置 | ⚠️ UI 配置 | 论坛/BBS |
-| **AI** | 🤖 | ✅ 完整实现 | ✅ 完整实现 | OpenAI 兼容 API |
+| **AI** | 🤖 | ✅ 完整实现 | ✅ 完整实现 | OpenAI 兼容 API；subType `text`（chat）/ `stt`（audio transcriptions） |
 | **OPENCLAW** | 🦞 | ⚠️ UI 配置 | ⚠️ UI 配置 | 本地 OpenClaw gateway |
 | **BLUETOOTH** | 📱 | ⚠️ UI stub（Android Central） | ⚠️ UI stub（iOS Peripheral） | BLE 直接通信（无中转） |
 | **INFRARED** | 💡 | ⚠️ UI 配置 | ⚠️ UI 配置 | 红外遥控 |
@@ -54,7 +54,13 @@
 
 **Info 灰字格式**（调试关键）：
 - 收到消息：`📥 接收 len=X hex=XX XX XX...`（hex 只显示前 8 字节）
-- 发送消息：`📤 发送: xxx`
+- 收到 WS binary blob：`📥 接收 type=blob len=N hex=XX XX XX...`，紧跟 `🔍 检测 type=<mime> size=<W>x<H>`（image/* 才有 size），最后 image/audio/* 额外贴气泡
+- 发送文本：`📤 发送: xxx`
+- 发送音频（含录音 / 选 wav 文件）：`📤 发送 type=audio/wav len=N duration=X.XXXs`（**单位是秒，3 位小数**；之前是 ms，去掉 ms 单位是用户要求）
+- STT 流式响应（每个 chunk 一条）：`📥 STT: <chunk>`（`<asr_text>...</asr_text>` 是 Qwen3-ASR 服务端 marker，不去它，原样显示）
+- TTS 合成中（用户发文本 → AI 走 /v1/audio/speech）：`🔄 TTS 合成中...` → 服务端响应后 `📥 TTS 接收 type=<detected> len=N hex=...` → 音频气泡
+- ECHO 自测复读机：`🔁 Echo 已连接（自测模式 · 延迟 <label>）`，`<label>` 是 `默认 0.5s` 或 `Ns`（默认 0.5 简化显示）；binary 接收同 WS 那两条
+- 发送图片（含其他 binary）：`📤 发送 type=<detected> size=<W>x<H> len=N`
 - **系统错误**（Service 启动失败 / onDestroy / OEM 强杀）:
   - `❌ 前台服务启动失败: SecurityException: ...`
   - `❌ TcpForegroundService.onDestroy count=1 原因=前台服务被系统强杀（startedFlag=true）→ TCP 连接被主动断开`
@@ -81,7 +87,8 @@ ios/chatroom/
 │   ├── Participant.swift           # 参与者协议
 │   ├── SocketParticipant.swift    # TCP/UDP socket（NWConnection + TCP keep-alive）
 │   ├── TelnetParticipant.swift    # TELNET + 自动登录
-│   ├── AiParticipant.swift        # HTTP OpenAI API
+│   ├── AiParticipant.swift        # HTTP OpenAI API（text/stt/tts 三 subType）+ static queryModels(GET /v1/models) + ModelQueryError
+│   ├── EchoParticipant.swift      # 自测复读机（纯客户端 + delaySeconds）
 │   └── BluetoothParticipant.swift # 蓝牙（stub）
 └── UI/
     ├── MainContainerView.swift    # 主容器（ZStack + opacity + 自定义 TabBar）
@@ -121,6 +128,25 @@ ios/chatroom/
 - HTTP POST `/v1/chat/completions`
 - `choices[0].message.content` 读取回复
 - 收到响应先显示 hex debug info，再显示内容
+- **subType 三选一**（2026-08-26）：`text`（chat completions）/ `stt`（`/v1/audio/transcriptions` SSE 流式 ASR）/ `tts`（`/v1/audio/speech` 返回 audio bytes 走 audio 气泡）
+- `tts` 模式多一个 `voice` 构造参数（默认 `alloy`，可配）
+- **static `queryModels(ip:port:apiKey:)`**（2026-08-27）：GET `/v1/models` 拉模型列表，无状态、供主页编辑卡片弹框选模型用。错误走 `ModelQueryError: LocalizedError`
+
+**ECHO 复读机**（2026-08-26）：`EchoParticipant.swift`
+- 纯客户端、无网络 / 无 fd / 无需配置
+- `sendInput(text)` / `sendBinary(data)` 都原样回一条 ECHO 类型的镜像消息
+- `delaySeconds: Float = 0.5`（DispatchQueue.main.asyncAfter），可设 0 即时回吐
+- 用于测试 chat 页面 + 消息广播链路时不用起真实服务
+
+**WS binary audio 气泡**（2026-08-26）：`WsParticipant.swift`
+- 原来 `dispatchBinary` 只给 `image/*` 贴气泡，audio/* 只贴 info
+- 改为 image/audio 都贴 imageBytes 气泡（adapter 用 BlobSniffer 嗅探 mime）
+
+**图片全屏查看器**（2026-08-26）：`MessageRowView.swift` 内嵌 `FullscreenImageView`
+- SwiftUI 原生 `.fullScreenCover(isPresented:)` 实现，点图片 → 黑底 scaledToFit → 点任意位置 → dismiss
+- 不需 Info.plist 额外配置
+
+**Emoji / 头像**：🔁（ECHO / 复读 loop）/ 🪞（echo 镜像）备选
 
 **消息列表排序**：`ChatView.MessagesListView`
 - iOS 17+：`ScrollView.defaultScrollAnchor(.bottom)`原生 sticky-bottom
@@ -206,11 +232,12 @@ android/app/src/main/java/com/example/chatroom/
 │   ├── SerialNative.kt / serial.c      # JNI /dev/tty*
 │   ├── SocketParticipant.kt
 │   ├── TelnetParticipant.kt
-│   ├── AiParticipant.kt
+│   ├── AiParticipant.kt                # HTTP OpenAI API（text/stt/tts 三 subType）+ companion.fetchModels(GET /v1/models)
+│   ├── EchoParticipant.kt              # 自测复读机（postDelayed）
 │   └── BluetoothParticipant.kt
 ├── ui/
 │   ├── home/HomeFragment.kt + EditingCardData.kt
-│   ├── chat/ChatFragment.kt + MessageAdapter.kt
+│   ├── chat/ChatFragment.kt + MessageAdapter.kt + FullscreenImageActivity.kt
 │   └── common/SessionPagerAdapter.kt + SessionTabBar.kt + ParticipantAdapter.kt
 └── vt100/Vt100Parser.kt
 ```
@@ -243,8 +270,8 @@ android/app/src/main/java/com/example/chatroom/
 | `TEXT` | `📝文` | `EditText`（多行 `maxLines=6` + `gravity=top`）+ 发送按钮 |
 | `REMOTE` | `🎮遥` | 左 9 宫格字母键 `q w e / a s d / z x c` + 中间 1dp 灰线 + 右 9 宫格数字 `1-9` |
 | `DIM3` | `📐三` | 油门 `±` + 中央 9 宫格方向键 + 中间 1dp 线 + 右 `AxisView`（6 轴） |
-| `VOICE` | `🎤语` | TODO 占位 |
-| `FILE` | `📁文` | TODO 占位 |
+| `VOICE` | `🎤语` | 单按钮"未在录音，点我开始"→ 录音中切"取消/发送"双按钮；16 kHz / mono / 16-bit PCM |
+| `FILE` | `📁文` | `📁 选择文件发送`按钮（任意文件，SAF `*/*` mime 通配；API 33+ 起步位置为 `/sdcard/`，旧版本 fallback 默认） |
 
 ### 拖拽上下限（per mode）
 
@@ -343,6 +370,165 @@ adapter.submitList(messageList.toList()) {
 
 切回前台时 `onStart` 会调 `loadMessages()`，所以 service 在后台写的 `❌` 灰色诊断消息切回 app 后会出现在聊天区。
 
+## VOICE mode（Android + iOS 同步）
+
+切到 VOICE mode 时立刻申请 `RECORD_AUDIO` 权限；权限通过后初始化 `VoiceRecorder`，离开 mode 或 `onStop/onDisappear` 时 release。
+
+### 固定录音参数
+
+- 采样率 16000 Hz
+- 声道：单声道
+- 采样位深：16-bit PCM
+- 每秒字节数 = 32000
+
+### Android `core/VoiceRecorder.kt`
+
+- `AudioRecord`（API 24+ 走 `MediaRecorder.AudioSource.VOICE_RECOGNITION`，关闭 AGC/NS；低版本回退 `MIC`）
+- 后台线程持续读 PCM 到 `ByteArrayOutputStream`
+- `stop()` 把 PCM 包成 WAV（44 字节 RIFF/fmt/data header，little-endian）
+- `release()` 释放 `AudioRecord` + 反激活 `AVAudioSession`
+- `Manifest.permission.RECORD_AUDIO` 检查 + `ContextCompat.checkSelfPermission`
+
+### iOS `Core/VoiceRecorder.swift`
+
+- `AVAudioRecorder` 写到 `cacheDir/voice_{uuid}.wav` 临时文件
+- iOS 17+ 走 `AVAudioApplication.requestRecordPermission`，低版本（项目 deployment target = 15.6）走 `AVAudioSession.requestRecordPermission` + continuation 桥接
+- Session 类别 `.playAndRecord`（options: `.defaultToSpeaker`, `.allowBluetooth`）
+- Info.plist 加 `INFOPLIST_KEY_NSMicrophoneUsageDescription`（**唯一允许的 pbxproj 改动**，其它配置一字不动）
+
+### 播放（气泡点击）
+
+- Android：`AudioMessagePlayer`（单例 `MediaPlayer` + cacheDir 临时 WAV）
+- iOS：`AudioMessagePlayer.shared`（单例 `AVAudioPlayer` + `AVAudioPlayerDelegate` 驱动 cleanup）
+- 气泡渲染用 `BlobSniffer.detectType` 嗅探 mime：image/* 走图片，audio/* 走音频气泡（▶ 播放 + 时长 `%.3fs` 秒）
+
+### duration 单位约定
+
+- 气泡内时长显示：`%.3fs`（秒，3 位小数），从 PCM 字节数算 `pcmBytes / 32000`
+- info 行格式：`📤 发送 type=audio/wav len=N duration=X.XXXs`（同上公式）
+
+### STT 与录音的衔接
+
+录音完成后由 `sendVoiceRecording` 调 `broadcastBinaryToParticipants(wavBytes)`，**STT AI 分发逻辑在 `broadcastBinaryToParticipants` 内部**（见下节《Binary dispatch 架构》）。
+
+## AI STT subtype（Android + iOS 同步）
+
+主页参与卡类型 = AI 时新增 `aiSubType` 字段（编辑卡 + `toConfig()`），可选 `"text"`（默认）/ `"stt"`。
+
+### 主页 UI
+
+- Android：`item_editing_card.xml` `layoutAiModels` 后加 `layoutAiSubType`（一行 LinearLayout + Spinner，display=`["文本", "语音转文字"]` / value=`["text", "stt"]`）
+- iOS：`HomeView.swift` `aiFields` 末尾加一行 `Picker`（`.pickerStyle(.segmented)`），tag `text` / `stt`
+- ChatFragment connect 时读 `config.params["subType"] ?: "text"` 传进 `AiParticipant` 构造函数
+
+### AiParticipant：`subType="stt"` 时多一个 `sendVoice(wavData)` API
+
+- Android：用 **OkHttp**（已在 deps）做 `MultipartBody` 上传 + SSE 流式响应（`response.body?.source()?.readUtf8Line()`），每段贴 `📥 STT: <chunk>` info、最后贴 AI reply
+- iOS：用 **URLSession.shared.bytes(for:)** async API（iOS 15+）做 SSE 流式解析，手写 multipart body（**iOS 没有 OkHttp 也没 URLSession 内建 multipart**，boundary 自己拼）
+- 两者都用 `model.ifBlank { "Qwen3-ASR-0.6B-4bit" }` 做默认值
+
+### HTTP 接口（两端一致）
+
+```
+POST http://{ip}:{port}/v1/audio/transcriptions
+Headers: Authorization: Bearer {apiKey}
+Form: model=<text> + stream=true + file=voice.wav (audio/wav)
+stream=true  → SSE: data: {"text": "<chunk>"} ...
+stream=false → {"text": "<full>"}
+```
+
+`<asr_text>...</asr_text>` 是 Qwen3-ASR 服务端给文本内容包的 marker，**不去它，原样显示**（用户明确要求"只是提问，不是让你过滤掉"）。
+
+## FILE mode（任意文件）
+
+### Android
+
+- Launcher 从 `ActivityResultContracts.GetContent()`（image/*）改成 `OpenDocument` + `arrayOf("*/*")`
+- 按钮文案 `📷 选择图片发送` → `📁 选择文件发送`
+- 自定义 `OpenDocumentAtSdCard` ActivityResultContract（包在 ChatFragment 内 `private class`）：API 33+ 通过 `DocumentsContract.EXTRA_INITIAL_URI` 把系统选择器起步位置强制到 `/sdcard/`；低版本（项目 `minSdk=28`）fallback 默认（通常是 Downloads/Recent）
+
+### iOS
+
+- `PHPickerViewController`（`config.filter = .images`）→ `UIDocumentPickerViewController(forOpeningContentTypes: [.item])`
+- 按钮文案 `📷 选择图片发送` → `📁 选择文件发送`
+- iOS 没有 `/sdcard/` 概念（沙盒 + iCloud Drive），起始位置由系统默认
+- URL 从 `.sheet` 回调里取，安全作用域读 bytes（`url.startAccessingSecurityScopedResource()` + `Data(contentsOf:)`）
+
+### 渲染
+
+`MessageAdapter` / `MessageRowView` 的 `bindContent` 用 `BlobSniffer.detectType` 嗅探 mime：
+- `image/*` → 图片气泡（原路径零改动）
+- `audio/*` → audio 气泡（▶ 播放 + 时长秒）
+- 其它 → 文本 fallback
+
+## Binary dispatch 架构（重要，Android + iOS 对称）
+
+**调用方只调一句 `broadcastBinaryToParticipants(bytes)`，分发逻辑集中**：
+
+```
+handlePickedImage / sendVoiceRecording / handlePickedURL / handlePickedData
+        │
+        ▼
+broadcastBinaryToParticipants(bytes)
+        │
+        ├─→ .socket  → Participant.sendBinary
+        │             （WS override 真正发 binary frame；TCP/UDP TODO no-op）
+        ├─→ .ai      → subType=="stt" ? AiParticipant.sendVoice : no-op
+        │             （接 /v1/audio/transcriptions，SSE 流式响应）
+        ├─→ .agent   → break
+        │             （openclaw 暂无 binary 行为；架构位置已留）
+        ├─→ .echo    → EchoParticipant.sendBinary(bytes)
+        │             （复读机：原样回吐收到的 bytes，adapter 按 mime 决定渲染分支）
+        └─→ default  → break
+                     （PTY/SERIAL/SSH/TELNET/BLUETOOTH：binary no-op）
+```
+
+**设计要点**：
+- caller **不** 也不应该知道哪些参与者类型对 binary 敏感 —— 加新参与者类型只改 broadcast 一个函数
+- 2026-08-11 用户拍板 dispatch 行为"AI 给 AI 发，WS 给 WS 发，两个都在就给两者都发，各自 onMessage 处理不一样"，落到代码就是上面这个 switch
+- 之前 STT dispatch 散在 `sendVoiceRecording` + `handlePickedImage` 两个 caller 里手动循环 `SessionManager.getParticipants`，违反 DRY；refactor 后完全集中
+
+### Android
+
+```kotlin
+private fun broadcastBinaryToParticipants(bytes: ByteArray) {
+    val configs = SessionManager.getParticipants(sessionId)
+    configs.forEach { config ->
+        when (config.type) {
+            ParticipantType.SOCKET -> { /* WS / TCP / UDP */ }
+            ParticipantType.AI -> {
+                val subType = config.params["subType"] ?: "text"
+                if (subType == "stt") {
+                    (activeParticipants[config.id] as? AiParticipant)?.sendVoice(bytes)
+                }
+            }
+            else -> { /* PTY/SERIAL/SSH/TELNET/BLUETOOTH：no-op */ }
+        }
+    }
+}
+```
+
+### iOS
+
+```swift
+private func broadcastBinaryToParticipants(_ data: Data) {
+    let configs = sessionManager.getParticipants(sessionId)
+    for config in configs {
+        switch config.type {
+        case .socket: activeParticipants[config.id]?.sendBinary(data)
+        case .ai:
+            let subType = config.params["subType"] ?? "text"
+            if subType == "stt", let ai = activeParticipants[config.id] as? AiParticipant {
+                ai.sendVoice(data)
+            }
+        default: break
+        }
+    }
+}
+```
+
+---
+
 ## TCP 后台保活（前台服务）
 
 **问题**：Android 切到后台后，进程可能被 LMK 杀 / Doze 冻结网络，TCP socket 跟着断。对端 netcat 看到 ECONNABORTED 或 FIN。
@@ -393,8 +579,8 @@ iOS 端（`ChatView.swift`）跟 Android 几乎一一对应。根容器是 Swift
 | `TEXT` | `textInputBar` | `TextField` + 发送按钮 |
 | `REMOTE` | `remoteInputBar` | 左 `DirectionPadView`（qwe 字母 9 宫格）+ 中间 1pt 灰线 + 右 `NumPadView`（1-9） |
 | `DIM3` | `dim3InputBar` | 左 `ArrowPadView`（↖↑↗←◉→↙↓↘ + +/-）+ 中间 1pt 灰线 + 右 `AxisView`（X/Y/Z 轴） |
-| `VOICE` | `voiceInputBar` | TODO 占位 |
-| `FILE` | `fileInputBar` | TODO 占位 |
+| `VOICE` | `voiceInputBar` | AVAudioRecorder（16 kHz / mono / 16-bit PCM）；权限申请切到 mode 时立刻弹 |
+| `FILE` | `fileInputBar` | `📁 选择文件发送`按钮（任意文件，UIDocumentPickerViewController `forOpeningContentTypes: [.item]`） |
 
 ### 拖拽上下限（iOS per-mode）
 
@@ -635,6 +821,165 @@ OS 层代发 TCP probe（**不**是 app 层心跳字节），跟 Android `socket
 限制：
 - iOS Peripheral 模式只能在 App 前台运行
 - Android 扫描 BLE 设备需要地理位置权限
+
+---
+
+## 2026-08-27 模型查询弹框 + AI HTTP 整合到 `AiParticipant`
+
+**摘要**：今天两件事——主页 AI 卡片的「查询模型」交互从「点查询多出一行 Spinner」改成「点查询 → 查不到不弹 / 查到弹 AlertDialog 点选回填」；同时把主页查询用的 HTTP（GET `/v1/models`）从 UI 层 / 独立服务文件搬进 `AiParticipant`，让「查询 / 发送 / 结果解析」三段 AI HTTP 逻辑全部集中在同一个文件。Android + iOS 对齐，`xcodebuild` + `./gradlew assembleDebug` 都过。
+
+### 1. 模型查询从「多出一行 Spinner」改为「弹框点选回填」」
+
+之前主页 AI 卡片查模型：点「查询模型」按钮 → 下面多出一行「模型列表：」 + Spinner，用户从 Spinner 里选一个 → 自动回填到模型输入框。**冗余**（多一个 layout 行 + 多一次选择步骤）。
+
+现在：点按钮 → 查得到 → 弹框列出所有模型 → 点选 → 回填 + 关弹框；查不到 → 只 Toast「未查到模型」/「查询失败」，不弹任何框。
+
+- **Android**：`item_editing_card.xml` 删 `layoutAiModels`（模型列表 + Spinner 整行）；`ParticipantAdapter.kt` `btnQueryModels.setOnClickListener` 里 `models.isEmpty()` 只 Toast、`else` 走 `AlertDialog.Builder.setItems(...) { _, which -> inputAiModel.setText(models[which]) }`
+- **iOS**：`HomeView.swift` `aiFields` 尾部挂 `.confirmationDialog("选择模型", isPresented: $showModelPicker)`（iOS 15+ 行动面板，iOS 16+ 默认 slide-up，从下往上出）+ `.alert("查询模型", isPresented: $showQueryAlert)`（仅查不到 / 失败时出，点「知道了」返回）
+
+### 2. AI HTTP 全部进 `AiParticipant`
+
+之前查询 HTTP 散落两处（Android 在 UI `ParticipantAdapter.kt`，iOS 在 `Core/ModelQueryService.swift`），跟 send / parse 同名却不在一起，改协议要翻三个文件。今天收拢：
+
+| 端点 | Android | iOS |
+|---|---|---|
+| GET `/v1/models` | `AiParticipant.Companion.fetchModels` | `AiParticipant.queryModels`（static） |
+| POST `/v1/chat/completions` | `AiParticipant.sendChatCompletion` | `AiParticipant.doChatRequest` |
+| POST `/v1/audio/transcriptions` | `AiParticipant.sendVoiceToText` | `AiParticipant.doSttRequest` |
+| POST `/v1/audio/speech` | `AiParticipant.sendTextToSpeech` | `AiParticipant.doTtsRequest` |
+
+具体改动：
+
+- **Android** `participants/AiParticipant.kt`：`companion object` 加 `fetchModels(ip, port, apiKey, callback)`，background 跑网络、main thread 回调（callback 签名 `(httpCode, models, errorMsg)`，errorMsg != null 表示网络异常）。`ui/common/ParticipantAdapter.kt` 加 import，click handler 内联 HTTP 全删，改成调 `AiParticipant.fetchModels(...)`，handler 只剩 UI 关注点（按钮 enable / Toast / AlertDialog / 回填）
+- **iOS** `Participants/AiParticipant.swift`：文件顶部加 `enum ModelQueryError: LocalizedError`（invalidURL / nonHTTPResponse / http(Int) / network(String) / parseFailed 五个 case，错误描述走 `errorDescription`）；类内加 `static func queryModels(ip:port:apiKey:) async -> Result<[String], ModelQueryError>`（URLSession + JSONSerialization）。`UI/Home/HomeView.swift` 调 `ModelQueryService.fetch(...)` → `AiParticipant.queryModels(...)`，UI 代码不动。`Core/ModelQueryService.swift` **删除**
+
+这样「OpenAI 兼容的所有 HTTP 调用」全部集中在 `AiParticipant`——Android 是 class + companion，iOS 是 class + static。主页查询弹框 / Toast 这类 UI 关注点仍然留在 adapter / view 里，这是有意为之：**HTTP 归 `AiParticipant`，UI 归 UI 层**。
+
+### 3. iOS 端踩坑记录
+
+第一次 build 报 `type 'String' does not conform to protocol 'Error'`，因为 `Result<[String], String>` 的 failure 必须是 `Error` 协议。**修法**：定义 `enum ModelQueryError: LocalizedError`，callback caller 走 `error.errorDescription ?? "未知错误"`。
+
+### Build 结果
+
+- Android：`./gradlew assembleDebug` → **BUILD SUCCESSFUL**（5s）
+- iOS：`xcodebuild -project chatroom.xcodeproj -scheme chatroom -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO` → **BUILD SUCCEEDED**
+
+## 2026-08-26 同步（TTS 子类型 + ECHO 复读机 + 图片全屏 + 收方 audio bubble + 移除 USER）
+
+**摘要**：今天主要把 Android 端已有的 chat 增强（WS audio bubble / 图片全屏 / TTS / ECHO 主类型）镜像到 iOS 端，同时重构两个细节（音频气泡只按钮可点、移除 `ParticipantType.USER` + 修 spinner 错位）。Android + iOS 行为对齐，`xcodebuild` + `./gradlew assembleDebug` 都过。
+
+### 1. WS binary receive 现在 `image/*` 和 `audio/*` 都贴气泡
+
+之前 `WsParticipant.dispatchBinary` 只给 image 贴气泡，audio 收到只贴 info 灰字。今天扩到两个都贴（adapter 靠 `BlobSniffer.detectType` 分流）。
+
+```swift
+// iOS WsParticipant.swift
+let isImage = detected.hasPrefix("image/")
+let isAudio = detected.hasPrefix("audio/")
+if isImage || isAudio {
+    let mediaMsg = Message(..., imageBytes: data)
+    onMessage?(mediaMsg)
+}
+```
+
+Android 端 `WsParticipant.kt` 同款改动。
+
+### 2. 图片全屏查看器
+
+- **Android**：新建 `ui/chat/FullscreenImageActivity.kt`，黑底 + `ImageView.ScaleType.FIT_CENTER`，状态栏 / 导航栏涂黑，点任意位置（ImageView）→ `finish()` 回到 chat。在 `AndroidManifest.xml` 注册（`@android:style/Theme.Black.NoTitleBar.Fullscreen`）
+- **iOS**：`MessageRowView.swift` 内嵌 `FullscreenImageView`，用 SwiftUI 原生 `.fullScreenCover(isPresented:)`，**不需 Info.plist 额外配置**。点击流程：
+```swift
+Image(...).onTapGesture { showFullscreen = true }
+    .fullScreenCover(isPresented: $showFullscreen) {
+        FullscreenImageView(imageData: data)
+    }
+```
+
+适配器层面：`MessageAdapter.kt`（Android）/ `MessageRowView.swift`（iOS）的 image 分支都加 `imgContent.setOnClickListener` / `.onTapGesture`。**音频气泡的播放按钮走原生 Button（iOS） / MaterialButton（Android）**，本身就可点，不需要额外包装
+
+### 3. 音频气泡点击行为
+
+最初我把整个 `audioContent` 行（按钮 + 时长 + 空白）都做成可点，结果用户纠正：「不是点气泡播放 / 点气泡放大，是点音频播放，点图片放大」 → **只让按钮是触发器，时长文字 / 气泡空白不响应点击**。
+
+Android：`MessageAdapter.kt` 删掉 `audioContent.setOnClickListener`，只留 `btnAudioPlay.setOnClickListener`
+iOS：音频气泡已经是 `Button { AudioMessagePlayer.shared.play(...) }`，天然只按钮可点，无需改
+
+### 4. AI TTS 子类型（text → stt → tts）
+
+之前 AI 卡片 subType 只有 `text` / `stt`，今天加 `tts`，实现文字转语音。
+
+- **路径**：`POST http://<ip>:<port>/v1/audio/speech`，Body `{model, input, voice}`，Bearer Token。**OpenAI 兼容**，用户已用 `Qwen3-TTS-12Hz-0.6B-Base-4bit` + `voice=alloy` 测过
+- **AiParticipant 重构**：`sendInput(text)` 拆成 dispatcher，`subType==tts` → `sendTextToSpeech()`，否则 → `sendChatCompletion()`。**stt 走 sendVoice 不走 sendInput**
+- **返回音频字节**塞进 `Message.imageBytes`，adapter 用 BlobSniffer 嗅探成 `audio/*` → 音频气泡，跟 WS / STT 那条路径对齐
+- **Info 灰字**：`🔄 TTS 合成中...` → `📥 TTS 接收 type=<mime> len=N hex=...` → 音频气泡
+
+两端 `subTypesDisplay` / `subTypesValue` 都扩成 `["文本", "语音转文字", "文字转语音"]` / `["text", "stt", "tts"]`。
+
+### 5. AI TTS 的 voice 输入框
+
+之前 voice 字段硬编码 `alloy`。今天让用户在首页 AI 卡片填值，仅在 `subType=tts` 时显示：
+
+- `item_editing_card.xml` 加 `layoutAiVoice` + `inputAiVoice` EditText（紧跟 `layoutAiSubType`）
+- `HomeView.swift` 在 `aiFields` 里 tts 时多显示 `voice:` 输入（SwiftUI `if card.aiSubType == "tts" { ... }`）
+- `EditingCardData` 加 `aiVoice: String = "alloy"`；`toConfig()` 写 `voice=...`（仅 tts 且非默认才写，保持 params 简洁）
+- `ChatFragment.kt` / `ChatView.swift` 抽 `val voice = config.params["voice"] ?? "alloy"` 传给 AiParticipant 构造
+- `AiParticipant` 构造加 `voice: String = "alloy"` 参数，`sendTextToSpeech` 用 `voice.ifBlank { "alloy" }`
+
+### 6. ECHO 主类型（自测复读机）
+
+新主类型 `ECHO("🔁")`，纯客户端复读机，**用来测试 chat 页面 + 消息广播链路时不用起真实服务**：
+
+- 用户发什么文本，它把同样的文本作为一条消息贴回来
+- 文本输入 → `sendInput`；二进制输入 → `sendBinary`（image / audio / 其他都原样回吐，adapter 嗅探 mime 决定渲染）
+- 不需要任何配置（ip / port / apiKey 都不需要）
+- Android：`Participants/EchoParticipant.kt` 用 `Handler.postDelayed`；iOS：`Participants/EchoParticipant.swift` 用 `DispatchQueue.main.asyncAfter`
+- 主页 spinner 选 ECHO 后整张卡片只剩「类型 +取消按钮」（通用参数 / IP / 端口那些 layout 全 GONE）
+- `ParticipantType` enum 加在 `.user` 之前的位置，icon `🔁`（repeat/loop 箭头，直白对应「原样回吐」）
+
+### 7. ECHO binary 支持
+
+EchoParticipant 实现 `sendBinary(bytes)`：跟 WS `dispatchBinary` 同款贴 `📥 Echo 接收 type=blob len=N hex=...` + `🔍 Echo 检测 type=...` + imageBytes 消息。**不管 mime 都返**——PDF / ZIP / 任意 binary 也走 self-test 链路
+
+ChatFragment / ChatView 的 `broadcastBinaryToParticipants` switch 加 `case .echo → activeParticipants[config.id]?.sendBinary(data)`
+
+### 8. ECHO 延迟（自测节奏控制）
+
+让 ECHO 不立即回吐，方便看到「发送完还在加载」的中间态，验证 inputArea 不被对方消息顶走：
+
+- **单位 1s，默认 0.5，可输入浮点数**
+- Android：`EditingCardData.echoDelay: Float = 0.5f` + `layoutEchoDelay`（`numberDecimal` 输入框，仅 ECHO 时显示）+ `postDelayed(..., (delaySeconds * 1000).toLong().coerceAtLeast(0L))`
+- iOS：`EditingCardData.echoDelay: Float = 0.5` + `echoFields` 视图（`.decimalPad` 键盘）+ `DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int((delaySeconds * 1000).rounded())))`
+- `toConfig()` 写 `delay=...`（仅非默认 0.5 才写，保持简洁）
+- `EchoParticipant` 加 `delaySeconds: Float = 0.5` 构造参数
+- `connect()` 提示文案带延迟值：`🔁 Echo 已连接（自测模式 · 延迟 默认 0.5s）` 或 `延迟 1.5s`
+
+### 9. ParticipantType.USER 移除 + spinner 错位修复
+
+**根因**：重排 enum（USER 挪到第一位）后，`HomeFragment` 的 `typeSpinner.setSelection(pos)` 用的 `ParticipantType.entries.indexOf(it)` 拿到**全枚举下标**，但 spinner adapter 是 filter 过（去 USER）的列表——**差 1 位**，SOCKET 默认跑到了 BBS，3 个类型 params 字段都错位（ECHO 显示 host:port user:xxx、SERIAL 显示 延迟(s)、等等）
+
+**修法**：
+- `Models.kt` / `ParticipantType.swift` 直接删 `USER("👤")`（它只在内部用来标 `Message.senderType` 内部字段「self」，`SelfViewHolder` / `SelfMessageRow` 根本不渲染 senderType）
+- iOS 端 `selectableCases = allCases`（去 `.user` 的 filter 没意义了）
+- `ChatFragment.kt` / `ChatView.swift` 那 8 处 `senderType = ParticipantType.USER` / `.user` 全部换成 `.socket`（占位，纯文本复读机时改成 .echo 同理）
+- 删除后下标自动对齐，spinner 选择逻辑不再 off-by-one
+
+iOS 端本身用 `Picker.tag(type)`（不是 index），本来就没 bug；删 `.user` 是为了**和 Android 行为对齐 + 简化 enum**
+
+### iOS 端文件登记（特殊处理）
+
+iOS 端 Xcode 项目用了 **`PBXFileSystemSynchronizedRootGroup`**（Xcode 16+ 特性，pbxproj line 12-16 + 51-53），整个 `chatroom/` 目录被自动同步进编译。**新增 `EchoParticipant.swift` 不需要手动改 pbxproj**，只要放进 `chatroom/Participants/` 就行。
+
+### 今日踩坑汇总（README 长期记录）
+
+1. **doc 注释里写 `image/*` 或 `audio/*` 会触发 Kotlin 解析器误判**：`/*` 在块注释内部被当嵌套块注释开始，后面整个文件被吃成注释，build 报一堆 `Unresolved reference mainHandler / sendTextToSpeech / sendChatCompletion` 级联错误。**修法**：注释里写 mime 路径用 `image/...` 占位，别写真实 glob。**今天踩了 2 次**（AiParticipant 的 `audio/* 渲染音频气泡` 注释 + EchoParticipant 的 `audio/* 渲染音频气泡` 注释）
+2. **`edit` tool 的 batch 行为**：任一 edit 的 oldText 对不上时**整个 batch 都不应用**（原子回滚）。涉及多个文件 batch 时，要么同一文件单独 batch，要么各 edit 一次成功再继续。**今天踩了 3 次**：USER 删除 batch（ChatFragment `handlePickedImage` 20 空格缩进 oldText 没对）、ChatView 8 处替换 batch（`sendDirectionLabel` 4 空格缩进 oldText 没对）、AI voice/delay/ECHO 接线 batch（空 oldText 没匹配）
+3. **WS 收 audio 之前漏贴气泡**：跟 Android `WsParticipant.dispatchBinary` 同款 bug，接收方只贴 info 灰字不发气泡，需要手动补 imageBytes 消息
+
+### Build 结果
+
+- Android：`./gradlew assembleDebug` → **BUILD SUCCESSFUL**（4 次：TTS 完后、ECHO 完后、删 USER 完后、最终压缩前）
+- iOS：`xcodebuild -project chatroom.xcodeproj -scheme chatroom -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO` → **`** BUILD SUCCEEDED **`**
+- Android APK：`xcodebuild` 等价的产物在 `android/app/build/outputs/apk/debug/app-debug.apk`，xz -9 压到 7.6MB（33MB → 23%）后通过 `send-file-to-feishu.sh` 发飞书
 
 ---
 

@@ -35,6 +35,8 @@ import com.example.chatroom.core.Message
 import com.example.chatroom.core.ParticipantType
 import com.example.chatroom.core.SessionManager
 import com.example.chatroom.core.VoiceRecorder
+import com.example.chatroom.participants.AgentParticipant
+import com.example.chatroom.participants.EchoParticipant
 import com.example.chatroom.participants.AiParticipant
 import com.example.chatroom.participants.PtyParticipant
 import com.example.chatroom.participants.SerialParticipant
@@ -524,7 +526,7 @@ class ChatFragment : Fragment() {
         appendMessage(
             Message(
                 senderId = "self",
-                senderType = ParticipantType.USER,
+                senderType = ParticipantType.SOCKET,
                 senderName = "我",
                 content = label,
                 isInfo = false
@@ -533,7 +535,7 @@ class ChatFragment : Fragment() {
         appendMessage(
             Message(
                 senderId = "self",
-                senderType = ParticipantType.USER,
+                senderType = ParticipantType.SOCKET,
                 senderName = "我",
                 content = "📤 发送: $label",
                 isInfo = true
@@ -643,8 +645,9 @@ class ChatFragment : Fragment() {
                     val apiKey = config.params["apiKey"] ?: ""
                     val model = config.params["model"] ?: ""
                     val subType = config.params["subType"] ?: "text"
+                    val voice = config.params["voice"] ?: "alloy"
                     if (ip.isNotBlank() && port.isNotBlank()) {
-                        val ai = AiParticipant(sessionId, ip, port, apiKey, model, subType) { msg ->
+                        val ai = AiParticipant(sessionId, ip, port, apiKey, model, subType, voice) { msg ->
                             recyclerView.post { appendMessage(msg) }
                         }
                         ai.connect()
@@ -660,6 +663,41 @@ class ChatFragment : Fragment() {
                             )
                         )
                     }
+                }
+                ParticipantType.AGENT -> {
+                    val addr = config.params["addr"] ?: ""
+                    val port = config.params["port"] ?: ""
+                    val username = config.params["username"] ?: ""
+                    val password = config.params["password"] ?: ""
+                    val subType = config.params["subType"] ?: "openclaw"
+                    if (addr.isNotBlank() && port.isNotBlank()) {
+                        val agent = AgentParticipant(
+                            sessionId, config.name, addr, port, username, password, subType
+                        ) { msg ->
+                            recyclerView.post { appendMessage(msg) }
+                        }
+                        agent.connect()
+                        activeParticipants[config.id] = agent
+                    } else {
+                        appendMessage(
+                            Message(
+                                senderId = "system",
+                                senderType = ParticipantType.AGENT,
+                                senderName = "系统",
+                                content = "❌ AGENT 配置错误：需要 addr 和 port",
+                                isInfo = true
+                            )
+                        )
+                    }
+                }
+                ParticipantType.ECHO -> {
+                    // 复读机：纯客户端，发什么回什么，无需任何配置
+                    val delay = config.params["delay"]?.toFloatOrNull() ?: 0.5f
+                    val echo = EchoParticipant(sessionId, delay) { msg ->
+                        recyclerView.post { appendMessage(msg) }
+                    }
+                    echo.connect()
+                    activeParticipants[config.id] = echo
                 }
                 else -> {
                     // TODO: 其他类型
@@ -704,6 +742,10 @@ class ChatFragment : Fragment() {
                         (activeParticipants[config.id] as? AiParticipant)?.sendVoice(bytes)
                     }
                 }
+                ParticipantType.ECHO -> {
+                    // 复读机：原样回吐收到的 bytes，adapter 按 mime 决定渲染分支
+                    (activeParticipants[config.id] as? EchoParticipant)?.sendBinary(bytes)
+                }
                 else -> { /* PTY/SERIAL/SSH/TELNET/BLUETOOTH 等：binary no-op */ }
             }
         }
@@ -737,7 +779,7 @@ class ChatFragment : Fragment() {
             appendMessage(
                 Message(
                     senderId = "self",
-                    senderType = ParticipantType.USER,
+                    senderType = ParticipantType.SOCKET,
                     senderName = "我",
                     content = "",
                     imageBytes = bytes
@@ -751,7 +793,7 @@ class ChatFragment : Fragment() {
             appendMessage(
                 Message(
                     senderId = "self",
-                    senderType = ParticipantType.USER,
+                    senderType = ParticipantType.SOCKET,
                     senderName = "我",
                     content = "📤 发送 type=$detected$sizeStr len=${bytes.size}",
                     isInfo = true
@@ -852,7 +894,7 @@ class ChatFragment : Fragment() {
         appendMessage(
             Message(
                 senderId = "self",
-                senderType = ParticipantType.USER,
+                senderType = ParticipantType.SOCKET,
                 senderName = "我",
                 content = "",
                 imageBytes = wavBytes
@@ -862,7 +904,7 @@ class ChatFragment : Fragment() {
         appendMessage(
             Message(
                 senderId = "self",
-                senderType = ParticipantType.USER,
+                senderType = ParticipantType.SOCKET,
                 senderName = "我",
                 content = String.format(
                     Locale.US,
@@ -932,6 +974,12 @@ class ChatFragment : Fragment() {
                 }
                 ParticipantType.AI -> {
                     (activeParticipants[config.id] as? AiParticipant)?.sendInput(text)
+                }
+                ParticipantType.AGENT -> {
+                    (activeParticipants[config.id] as? AgentParticipant)?.sendInput(text)
+                }
+                ParticipantType.ECHO -> {
+                    (activeParticipants[config.id] as? EchoParticipant)?.sendInput(text)
                 }
                 else -> {
                     // TODO

@@ -232,7 +232,7 @@ class TcpForegroundService : Service() {
         val sessionId = configToSession.values.firstOrNull() ?: return
         val msg = Message(
             senderId = "system",
-            senderType = ParticipantType.OPENCLAW,
+            senderType = ParticipantType.AGENT,
             senderName = "TcpForeground",
             content = content,
             isInfo = true

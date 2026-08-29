@@ -4,6 +4,8 @@ import android.graphics.Color
 
 /** 参与者类型 */
 enum class ParticipantType(val icon: String) {
+    /** 自测用的复读机，发什么回什么 */
+    ECHO("🔁"),
     SERIAL("🔌"),
     PTY("🖥️"),
     SSH("🔐"),
@@ -11,11 +13,10 @@ enum class ParticipantType(val icon: String) {
     SOCKET("🌐"),
     BBS("💬"),
     AI("🤖"),
-    OPENCLAW("🦞"),
+    AGENT("🦞"),
     BLUETOOTH("📱"),
     INFRARED("💡"),
-    SMART_DEVICE("🏠"),
-    USER("👤")
+    SMART_DEVICE("🏠")
 }
 
 /** 样式（VT100 SGR） */

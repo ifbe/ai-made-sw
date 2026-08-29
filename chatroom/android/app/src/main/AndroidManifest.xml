@@ -34,6 +34,13 @@
             android:name=".service.TcpForegroundService"
             android:foregroundServiceType="connectedDevice"
             android:exported="false" />
+
+        <!-- 全屏图片查看：聊天消息图片气泡点进来，单击任意位置退出 -->
+        <activity
+            android:name=".ui.chat.FullscreenImageActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode|navigation|density|fontScale|layoutDirection"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:exported="false" />
     </application>
 
 </manifest>

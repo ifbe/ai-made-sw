@@ -153,9 +153,10 @@ class WsParticipant(
         )
         mainHandler.post { onMessage(infoMsg) }
 
-        // magic byte 嗅探：识别 jpg / mp4 / pdf 等，并在下一行打印识别结果
+        // magic byte 嗅探：识别 jpg / png / wav / mp3 / pdf 等，并在下一行打印识别结果
         val detected = com.example.chatroom.core.BlobSniffer.detectType(arr)
         val isImage = detected.startsWith("image/")
+        val isAudio = detected.startsWith("audio/")
 
         // image/* 多出 size= W x H （用 BitmapFactory inJustDecodeBounds 取 metadata，不解码像素）
         val typeContent = if (isImage) {
@@ -174,18 +175,21 @@ class WsParticipant(
         )
         mainHandler.post { onMessage(typeMsg) }
 
-        // image/* 额外发一条气泡消息（imageBytes 走内存版，后续加 disk cache 后再切换）
-        // TODO: 内存压力 — 现阶段每张图都全量 ByteArray 驻在 messageList 里，大图片 / 连续接收会快速推高堆。
-        //   后续方案：1) LruCache + 缩略图优先；2) 原图写入 cacheDir，内存仅保留 path + 缩略图。
-        if (isImage) {
-            val imageMsg = Message(
+        // image/* 和 audio/* 都额外发一条气泡消息（imageBytes 走内存版，后续加 disk cache 后再切换）
+        // - image/* → MessageAdapter 走 ImageView 分支，点击全屏
+        // - audio/* → MessageAdapter 走音频气泡分支，点击播放
+        // TODO: 内存压力 — 现阶段每张图 / 每段音频都全量 ByteArray 驻在 messageList 里，
+        //   大文件 / 连续接收会快速推高堆。
+        //   后续方案：1) LruCache + 缩略图优先；2) 原图 / 原音写入 cacheDir，内存仅保留 path。
+        if (isImage || isAudio) {
+            val mediaMsg = Message(
                 senderId = "socket",
                 senderType = ParticipantType.SOCKET,
                 senderName = displayName,
                 content = "",
                 imageBytes = arr
             )
-            mainHandler.post { onMessage(imageMsg) }
+            mainHandler.post { onMessage(mediaMsg) }
         }
     }
 
