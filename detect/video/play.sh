@@ -1,0 +1,1 @@
+mplayer -vo fbdev2 你的视频.mp4
