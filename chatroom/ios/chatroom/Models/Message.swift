@@ -9,6 +9,8 @@ struct Message: Identifiable, Equatable {
     let content: String
     let style: Vt100Style
     let imageUri: String?
+    /// 内存版图片数据。TODO: 后续加磁盘缓存后，优先读 cache file，本字段仅做 transient 过渡
+    let imageBytes: Data?
     let timestamp: TimeInterval
     let isInfo: Bool
 
@@ -20,6 +22,7 @@ struct Message: Identifiable, Equatable {
         content: String,
         style: Vt100Style = Vt100Style(),
         imageUri: String? = nil,
+        imageBytes: Data? = nil,
         timestamp: TimeInterval = Date().timeIntervalSince1970,
         isInfo: Bool = false
     ) {
@@ -30,6 +33,7 @@ struct Message: Identifiable, Equatable {
         self.content = content
         self.style = style
         self.imageUri = imageUri
+        self.imageBytes = imageBytes
         self.timestamp = timestamp
         self.isInfo = isInfo
     }

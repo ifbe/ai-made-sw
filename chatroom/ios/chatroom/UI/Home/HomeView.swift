@@ -111,6 +111,13 @@ struct EditingCardView: View {
     @ObservedObject var card: EditingCardData
     let onDelete: () -> Void
 
+    // AI 模型查询状态
+    @State private var isQueryingModels = false
+    @State private var modelPickerOptions: [String] = []
+    @State private var showModelPicker = false
+    @State private var showQueryAlert = false
+    @State private var queryAlertMessage = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // 类型选择 + 删除按钮
@@ -168,8 +175,12 @@ struct EditingCardView: View {
             telnetFields
         case .ai:
             aiFields
+        case .agent:
+            agentFields
         case .bluetooth:
             bluetoothFields
+        case .echo:
+            echoFields
         default:
             genericParamsField
         }
@@ -218,8 +229,30 @@ struct EditingCardView: View {
                             .background(card.sockType == "UDP" ? Color(hex: "#4CAF50") : Color(hex: "#CCCCCC"))
                             .cornerRadius(6)
                     }
+                    Button(action: { card.sockType = "WS" }) {
+                        Text("WS")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .frame(width: 52, height: 26)
+                            .background(card.sockType == "WS" ? Color(hex: "#4CAF50") : Color(hex: "#CCCCCC"))
+                            .cornerRadius(6)
+                    }
                 }
                 Spacer()
+            }
+            // path 仅 WS 才显示：与 Android 端约定一致（TCP/UDP 不消费 path）
+            if card.sockType == "WS" {
+                HStack {
+                    Text("path：")
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(hex: "#666666"))
+                        .frame(width: 56, alignment: .leading)
+                    TextField("/", text: $card.socketPath)
+                        .font(.system(size: 13))
+                        .textFieldStyle(.roundedBorder)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                }
             }
         }
     }
@@ -351,6 +384,173 @@ struct EditingCardView: View {
                 TextField("模型名称", text: $card.aiModel)
                     .font(.system(size: 13))
                     .textFieldStyle(.roundedBorder)
+                Button(action: { queryModels() }) {
+                    Text(isQueryingModels ? "…" : "查询")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                        .frame(width: 52, height: 26)
+                        .background(isQueryingModels ? Color(hex: "#CCCCCC") : Color(hex: "#4CAF50"))
+                        .cornerRadius(6)
+                }
+                .disabled(isQueryingModels)
+            }
+            HStack {
+                Text("子类型：")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "#666666"))
+                    .frame(width: 56, alignment: .leading)
+                HStack(spacing: 6) {
+                    Button(action: { card.aiSubType = "text" }) {
+                        Text("文本")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .frame(width: 64, height: 26)
+                            .background(card.aiSubType == "text" ? Color(hex: "#4CAF50") : Color(hex: "#CCCCCC"))
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                    Button(action: { card.aiSubType = "stt" }) {
+                        Text("语音转文字")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .frame(width: 80, height: 26)
+                            .background(card.aiSubType == "stt" ? Color(hex: "#4CAF50") : Color(hex: "#CCCCCC"))
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                    Button(action: { card.aiSubType = "tts" }) {
+                        Text("文字转语音")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .frame(width: 80, height: 26)
+                            .background(card.aiSubType == "tts" ? Color(hex: "#4CAF50") : Color(hex: "#CCCCCC"))
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+            // voice 仅在 subType=tts 时显示
+            if card.aiSubType == "tts" {
+                HStack {
+                    Text("voice：")
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(hex: "#666666"))
+                        .frame(width: 56, alignment: .leading)
+                    TextField("alloy", text: $card.aiVoice)
+                        .font(.system(size: 13))
+                        .textFieldStyle(.roundedBorder)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                }
+            }
+        }
+        .confirmationDialog("选择模型", isPresented: $showModelPicker, titleVisibility: .visible) {
+            ForEach(modelPickerOptions, id: \.self) { model in
+                Button(model) {
+                    card.aiModel = model
+                }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .alert("查询模型", isPresented: $showQueryAlert) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(queryAlertMessage)
+        }
+    }
+
+    /// 调用 ModelQueryService 拉取 ip:port 的 /v1/models
+    /// 查不到→alert 提示；查到→confirmationDialog 点选回填到 card.aiModel
+    private func queryModels() {
+        let ip = card.aiIp
+        let port = card.aiPort
+        let apiKey = card.aiApiKey
+        guard !ip.isEmpty, !port.isEmpty else {
+            queryAlertMessage = "请先填 IP 和端口"
+            showQueryAlert = true
+            return
+        }
+        isQueryingModels = true
+        Task {
+            let result = await AiParticipant.queryModels(ip: ip, port: port, apiKey: apiKey)
+            await MainActor.run {
+                isQueryingModels = false
+                switch result {
+                case .success(let models):
+                    if models.isEmpty {
+                        // 查不到：仅 alert 提示，不弹选弹框
+                        queryAlertMessage = "未查到模型"
+                        showQueryAlert = true
+                    } else {
+                        modelPickerOptions = models
+                        showModelPicker = true
+                    }
+                case .failure(let error):
+                    queryAlertMessage = "查询失败：" + (error.errorDescription ?? "未知错误")
+                    showQueryAlert = true
+                }
+            }
+        }
+    }
+
+    private var agentFields: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("子类型：")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "#666666"))
+                    .frame(width: 56, alignment: .leading)
+                Picker("", selection: $card.agentSubType) {
+                    Text("openclaw").tag("openclaw")
+                    Text("codex").tag("codex")
+                    Text("claude").tag("claude")
+                    Text("gemini").tag("gemini")
+                    Text("copilot").tag("copilot")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            HStack {
+                Text("地址：")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "#666666"))
+                    .frame(width: 56, alignment: .leading)
+                TextField("host 或 IP", text: $card.agentAddr)
+                    .font(.system(size: 13))
+                    .textFieldStyle(.roundedBorder)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+            }
+            HStack {
+                Text("端口：")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "#666666"))
+                    .frame(width: 56, alignment: .leading)
+                TextField("22", text: $card.agentPort)
+                    .font(.system(size: 13))
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numberPad)
+            }
+            HStack {
+                Text("用户：")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "#666666"))
+                    .frame(width: 56, alignment: .leading)
+                TextField("username", text: $card.agentUsername)
+                    .font(.system(size: 13))
+                    .textFieldStyle(.roundedBorder)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+            }
+            HStack {
+                Text("密码：")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "#666666"))
+                    .frame(width: 56, alignment: .leading)
+                SecureField("password", text: $card.agentPassword)
+                    .font(.system(size: 13))
+                    .textFieldStyle(.roundedBorder)
             }
         }
     }
@@ -395,5 +595,30 @@ struct EditingCardView: View {
                 .font(.system(size: 13))
                 .textFieldStyle(.roundedBorder)
         }
+    }
+
+    private var echoFields: some View {
+        HStack {
+            Text("延迟(s)：")
+                .font(.system(size: 13))
+                .foregroundColor(Color(hex: "#666666"))
+                .frame(width: 56, alignment: .leading)
+            // SwiftUI 的 TextField 需要 String 绑定；手动做 Float ↔ String 转换
+            TextField("0.5", text: Binding(
+                get: { echoDelayText },
+                set: { newValue in
+                    card.echoDelay = Float(newValue) ?? 0.5
+                }
+            ))
+            .font(.system(size: 13))
+            .textFieldStyle(.roundedBorder)
+            .keyboardType(.decimalPad)
+        }
+    }
+
+    private var echoDelayText: String {
+        // 默认 0.5 输入框显示 "0.5"，其他值显示完整 float
+        if card.echoDelay == 0.5 { return "0.5" }
+        return String(card.echoDelay)
     }
 }
