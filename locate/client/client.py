@@ -4,6 +4,7 @@
 """
 命令行GPS客户端 - 用于向旅迹服务端上报位置
 只使用Python标准库，无需额外安装
+支持 HTTP/HTTPS 和 WS/WSS
 """
 
 import os
@@ -19,6 +20,7 @@ import base64
 import struct
 import subprocess
 import platform
+import ssl
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -31,21 +33,36 @@ DEFAULT_LNG = -123.393333  # 西经 123°23'36"
 # WebSocket 魔术字符串
 WEBSOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+
 class WebSocketConnection:
-    """简单的 WebSocket 连接实现"""
+    """简单的 WebSocket 连接实现，支持 WS 和 WSS"""
     
     def __init__(self):
         self.sock = None
         self.connected = False
         self.recv_buffer = b''
+        self.ssl_context = None
     
-    def connect(self, host, port, path='/', ssl=False):
+    def _create_ssl_context(self):
+        """创建 SSL 上下文"""
+        context = ssl.create_default_context()
+        # 忽略证书验证错误（用于自签名证书）
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+    
+    def connect(self, host, port, path='/', ssl_enabled=False):
         """建立 WebSocket 连接"""
         try:
             # 创建 socket 连接
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10)
             self.sock.connect((host, port))
+            
+            # 如果是 WSS，包装 SSL
+            if ssl_enabled:
+                context = self._create_ssl_context()
+                self.sock = context.wrap_socket(self.sock, server_hostname=host)
             
             # 发送 WebSocket 握手请求
             key = base64.b64encode(os.urandom(16)).decode()
@@ -200,12 +217,22 @@ class WebSocketConnection:
                 pass
         self.connected = False
 
+
 class SimpleHTTPClient:
-    """简单的 HTTP 客户端"""
+    """简单的 HTTP 客户端，支持 HTTP 和 HTTPS"""
+    
+    @staticmethod
+    def _create_ssl_context():
+        """创建 SSL 上下文"""
+        context = ssl.create_default_context()
+        # 忽略证书验证错误（用于自签名证书）
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
     
     @staticmethod
     def post_json(url, data):
-        """发送 POST JSON 请求"""
+        """发送 POST JSON 请求，支持 HTTP 和 HTTPS"""
         try:
             parsed = urlparse(url)
             host = parsed.hostname
@@ -217,10 +244,10 @@ class SimpleHTTPClient:
             sock.settimeout(10)
             sock.connect((host, port))
             
-            # 如果是 HTTPS，这里需要 TLS，简化版不支持
+            # 如果是 HTTPS，包装 SSL
             if parsed.scheme == 'https':
-                print("警告: 当前简化版不支持 HTTPS，请使用 HTTP")
-                return None
+                context = SimpleHTTPClient._create_ssl_context()
+                sock = context.wrap_socket(sock, server_hostname=host)
             
             # 构建请求
             body = json.dumps(data)
@@ -265,15 +292,16 @@ class SimpleHTTPClient:
             print(f"HTTP请求失败: {e}")
             return None
 
+
 class GPSClient:
-    def __init__(self, server_url, username, password, gps_source='auto', fixed_pos=None, debug=False, initial_target=None):
+    def __init__(self, server_url, username, password, gps_source='fixed', fixed_pos=None, debug=False, initial_target=None, status_auto=False):
         """
         初始化GPS客户端
         """
         self.server_url = server_url.rstrip('/')
         self.username = username
         self.password = password
-        self.gps_source = gps_source
+        self.gps_source = gps_source  # 'fixed' 或 'gps'
         self.fixed_pos = fixed_pos
         self.debug = debug
         self.initial_target = initial_target
@@ -291,6 +319,11 @@ class GPSClient:
         # 存储其他用户位置
         self.other_users = {}
         self.display_lock = threading.Lock()
+        
+        # 状态显示控制
+        self.status_auto = status_auto  # 由命令行参数控制
+        self.status_line = ""    # 当前状态行内容
+        self.print_lock = threading.Lock()  # 打印锁，保证输出不混乱
 
         # 解析服务器地址
         parsed = urlparse(self.server_url)
@@ -299,11 +332,16 @@ class GPSClient:
         self.ws_path = '/'
         self.api_path = '/api/challenge'
         
+        # 判断是否启用 SSL
+        self.ssl_enabled = parsed.scheme == 'https'
+        
         # WebSocket URL
-        self.ws_url = f"{'wss' if parsed.scheme == 'https' else 'ws'}://{self.host}:{self.port}"
+        ws_scheme = 'wss' if self.ssl_enabled else 'ws'
+        self.ws_url = f"{ws_scheme}://{self.host}:{self.port}"
 
         self.log(f"🌐 服务器地址: {self.server_url}")
         self.log(f"🔌 WebSocket: {self.ws_url}")
+        self.log(f"🔒 SSL: {'启用' if self.ssl_enabled else '禁用'}")
 
         # 如果有初始目标，设置
         if self.initial_target:
@@ -311,11 +349,25 @@ class GPSClient:
             self.log(f"🎯 初始目标: ({self.target_lat}, {self.target_lng})")
 
     def log(self, msg, level="INFO"):
-        """统一日志输出"""
+        """统一日志输出 - 带锁保证线程安全"""
         if level == "DEBUG" and not self.debug:
             return
+        
         timestamp = datetime.now().strftime('%H:%M:%S')
-        print(f"[{timestamp}] [{level}] {msg}")
+        formatted_msg = f"[{timestamp}] [{level}] {msg}"
+        
+        with self.print_lock:
+            # 1. 清除当前行（状态行）
+            if self.status_auto and self.status_line:
+                sys.stdout.write('\r\033[K')
+            
+            # 2. 输出消息（带换行）
+            print(formatted_msg)
+            
+            # 3. 重新显示状态行
+            if self.status_auto and self.status_line:
+                sys.stdout.write(self.status_line)
+                sys.stdout.flush()
 
     def debug_log(self, msg):
         """调试日志"""
@@ -328,13 +380,22 @@ class GPSClient:
 
     def get_current_position(self):
         """获取当前位置"""
-        if self.fixed_pos:
-            return {
-                'lat': self.fixed_pos[0],
-                'lng': self.fixed_pos[1],
-                'heading': self.fixed_pos[2] if len(self.fixed_pos) > 2 else 0
-            }
-        return {'lat': self.lat, 'lng': self.lng, 'heading': self.heading}
+        if self.gps_source == 'gps':
+            # 从GPS获取位置
+            gps_pos = self.get_system_gps()
+            if gps_pos:
+                return gps_pos
+            # GPS获取失败，返回默认位置
+            return {'lat': self.lat, 'lng': self.lng, 'heading': self.heading}
+        else:
+            # 使用固定位置
+            if self.fixed_pos:
+                return {
+                    'lat': self.fixed_pos[0],
+                    'lng': self.fixed_pos[1],
+                    'heading': self.fixed_pos[2] if len(self.fixed_pos) > 2 else 0
+                }
+            return {'lat': self.lat, 'lng': self.lng, 'heading': self.heading}
 
     def set_position(self, lat, lng, heading=0):
         """手动设置位置"""
@@ -405,7 +466,8 @@ class GPSClient:
             self.log(f"🔐 正在认证用户 {self.username}...")
 
             # 1. 获取挑战码
-            challenge_url = f"http://{self.host}:{self.port}/api/challenge"
+            protocol = 'https' if self.ssl_enabled else 'http'
+            challenge_url = f"{protocol}://{self.host}:{self.port}/api/challenge"
             data = {'username': self.username}
             
             result = SimpleHTTPClient.post_json(challenge_url, data)
@@ -430,7 +492,7 @@ class GPSClient:
 
             # 3. 建立 WebSocket 连接
             self.ws = WebSocketConnection()
-            if not self.ws.connect(self.host, self.port):
+            if not self.ws.connect(self.host, self.port, self.ws_path, self.ssl_enabled):
                 self.log("❌ WebSocket连接失败")
                 return False
 
@@ -528,9 +590,8 @@ class GPSClient:
         """处理命令行输入"""
         self.log("\n📝 命令行模式已启动，输入命令:")
         self.log("  position <lat>,<lng> [heading]  - 设置位置")
-        self.log("  target <lat>,<lng>              - 设置目标")
-        self.log("  target clear                     - 清除目标")
-        self.log("  status                           - 显示状态")
+        self.log("  target [clear|<lat>,<lng>]      - 设置目标")
+        self.log("  status [on|off]                 - 显示状态/开启自动显示/关闭自动显示")
         self.log("  quit                             - 退出")
         
         while self.running:
@@ -545,7 +606,22 @@ class GPSClient:
                     break
                     
                 elif parts[0] == 'status':
-                    self.show_status()
+                    if len(parts) >= 2:
+                        if parts[1] == 'on':
+                            self.status_auto = True
+                            self.log("📊 自动状态显示已开启")
+                        elif parts[1] == 'off':
+                            self.status_auto = False
+                            # 关闭时清除状态行
+                            with self.print_lock:
+                                sys.stdout.write('\r\033[K')
+                                sys.stdout.flush()
+                            self.log("📊 自动状态显示已关闭")
+                        else:
+                            self.log("❌ 用法: status [on|off]")
+                    else:
+                        # 不带参数时，显示一次状态
+                        self.show_status()
                     
                 elif parts[0] == 'position':
                     if len(parts) >= 2:
@@ -576,39 +652,42 @@ class GPSClient:
                 self.log(f"❌ 输入错误: {e}")
 
     def show_status(self):
-        """显示当前状态"""
-        self.log("\n=== 当前状态 ===")
-        self.log(f"用户: {self.username}")
-        self.log(f"位置: ({self.lat:.6f}, {self.lng:.6f}) 朝向: {self.heading}°")
-        if self.target_lat is not None:
-            self.log(f"目标: ({self.target_lat:.6f}, {self.target_lng:.6f})")
-        else:
-            self.log("目标: 未设置")
-        self.log(f"在线用户: {len(self.other_users)}")
-        for u, info in self.other_users.items():
-            if u != self.username:
-                target_info = ""
-                if info.get('target_lat'):
-                    target_info = f" 目标:({info['target_lat']:.4f},{info['target_lng']:.4f})"
-                self.log(f"  {u}: ({info['lat']:.4f},{info['lng']:.4f}){target_info}")
+        """显示当前状态（一次性）"""
+        with self.display_lock:
+            self.log("\n=== 当前状态 ===")
+            self.log(f"用户: {self.username}")
+            self.log(f"位置: ({self.lat:.6f}, {self.lng:.6f}) 朝向: {self.heading}°")
+            if self.target_lat is not None:
+                self.log(f"目标: ({self.target_lat:.6f}, {self.target_lng:.6f})")
+            else:
+                self.log("目标: 未设置")
+            self.log(f"在线用户: {len(self.other_users)}")
+            for u, info in self.other_users.items():
+                if u != self.username:
+                    target_info = ""
+                    if info.get('target_lat'):
+                        target_info = f" 目标:({info['target_lat']:.4f},{info['target_lng']:.4f})"
+                    self.log(f"  {u}: ({info['lat']:.4f},{info['lng']:.4f}){target_info}")
+
+    def update_status_line(self):
+        """更新状态行内容（不输出）"""
+        with self.display_lock:
+            other_count = len([u for u in self.other_users if u != self.username])
+            target_info = f" 🎯({self.target_lat:.4f},{self.target_lng:.4f})" if self.target_lat is not None else ""
+            self.status_line = f"[{datetime.now().strftime('%H:%M:%S')}] 📍 {self.username}: ({self.lat:.6f}, {self.lng:.6f}){target_info} | 👥 在线: {other_count+1}"
 
     def display_status(self):
-        """显示状态线程"""
-        last_display = ""
+        """状态显示线程 - 负责更新并显示状态行"""
         while self.running:
-            try:
-                with self.display_lock:
-                    other_count = len([u for u in self.other_users if u != self.username])
-                    target_info = f" 🎯({self.target_lat:.4f},{self.target_lng:.4f})" if self.target_lat else ""
-
-                    display = f"\r[{datetime.now().strftime('%H:%M:%S')}] 📍 {self.username}: ({self.lat:.6f}, {self.lng:.6f}){target_info} | 👥 在线: {other_count+1}"
-
-                    if display != last_display:
-                        print(display, end='', flush=True)
-                        last_display = display
-
-            except Exception as e:
-                self.debug_log(f"显示错误: {e}")
+            # 更新状态行内容
+            self.update_status_line()
+            
+            # 如果自动显示开启，输出状态行
+            if self.status_auto and self.status_line:
+                with self.print_lock:
+                    sys.stdout.write(f'\r{self.status_line}')
+                    sys.stdout.flush()
+            
             time.sleep(1)
 
     def run(self, interval=UPDATE_INTERVAL):
@@ -616,10 +695,12 @@ class GPSClient:
         self.log("\n" + "="*60)
         self.log("🚐 旅迹定位客户端启动 (纯标准库版)")
         self.log("="*60)
-        self.log(f"📡 GPS来源: {self.gps_source}")
+        self.log(f"📡 GPS来源: {'GPS设备' if self.gps_source == 'gps' else '固定位置'}")
         self.log(f"⏱️  更新间隔: {interval}秒")
         self.log(f"🔧 调试模式: {'开启' if self.debug else '关闭'}")
-        if self.fixed_pos:
+        self.log(f"🔒 SSL/TLS: {'启用' if self.ssl_enabled else '禁用'}")
+        self.log(f"📊 自动状态显示: {'开启' if self.status_auto else '关闭'}")
+        if self.gps_source == 'fixed' and self.fixed_pos:
             self.log(f"📍 固定位置: ({self.fixed_pos[0]}, {self.fixed_pos[1]})")
         if self.initial_target:
             self.log(f"🎯 初始目标: ({self.initial_target[0]}, {self.initial_target[1]})")
@@ -663,6 +744,7 @@ class GPSClient:
                 self.ws.close()
             self.log("👋 客户端已退出")
 
+
 def parse_coordinate(coord_str):
     """解析坐标字符串 "lat,lng" """
     try:
@@ -672,41 +754,41 @@ def parse_coordinate(coord_str):
     except:
         return None
 
+
 def main():
     parser = argparse.ArgumentParser(
-        description='旅迹定位命令行客户端 (纯标准库版)',
+        description='旅迹定位命令行客户端 (纯标准库版，支持 HTTPS/WSS)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  %(prog)s -u http://localhost:9999 -n alice
-  %(prog)s -u http://localhost:9999 -n bob --position 32.0455,118.7908,90
-  %(prog)s -u http://localhost:9999 -n charlie --target 32.0455,118.7908
+  %(prog)s -u http://localhost:9999 --user alice --pass 123456
+  %(prog)s -u https://example.com --user bob --pass 123456 --position 32.0455,118.7908,90
+  %(prog)s -u https://example.com --user charlie --pass 123456 --target 32.0455,118.7908
+  %(prog)s -u https://example.com --user charlie --pass 123456 --status on
   
 运行后可用命令:
   position <lat>,<lng> [heading]  - 设置位置
-  target <lat>,<lng>              - 设置目标
-  target clear                     - 清除目标
-  status                           - 显示状态
+  target [clear|<lat>,<lng>]      - 设置目标/清除目标
+  status [on|off]                 - 显示状态/开启自动显示/关闭自动显示
   quit                             - 退出
         """
     )
 
     parser.add_argument('-u', '--url', required=True,
-                       help='服务器URL (http://或https://) 注意: 简化版只支持HTTP')
-    parser.add_argument('-n', '--username', required=True,
+                       help='服务器URL (http:// 或 https://)')
+    parser.add_argument('--user', required=False,
                        help='用户名')
-    parser.add_argument('-p', '--password',
-                       help='密码 (如果不提供则交互式输入)')
-
-    parser.add_argument('--gps', choices=['auto', 'fixed'],
-                       default='fixed',
-                       help='GPS来源 (简化版只支持fixed)')
+    parser.add_argument('--pass', dest='password', required=False,
+                       help='密码')
 
     parser.add_argument('--position', type=str,
-                       help='固定位置: "纬度,经度[,朝向]" 例如: 32.0455,118.7908,90')
+                       help='固定位置: "纬度,经度[,朝向]" 例如: 32.0455,118.7908,90 (如果使用 --position gps 则从GPS获取位置)')
 
     parser.add_argument('--target', type=str,
                        help='初始目标: "纬度,经度" 例如: 32.0455,118.7908')
+
+    parser.add_argument('--status', choices=['on', 'off'], default='off',
+                       help='启动后自动状态显示开关 (默认: off)')
 
     parser.add_argument('-i', '--interval', type=int, default=UPDATE_INTERVAL,
                        help=f'上报间隔(秒) (默认: {UPDATE_INTERVAL})')
@@ -716,26 +798,42 @@ def main():
 
     args = parser.parse_args()
 
-    # 获取密码
+    # 检查并获取用户名
+    username = args.user
+    if not username:
+        username = input("请输入用户名: ").strip()
+        if not username:
+            print("❌ 用户名不能为空")
+            return
+
+    # 检查并获取密码
     password = args.password
     if not password:
         import getpass
-        password = getpass.getpass("输入密码: ")
+        password = getpass.getpass("请输入密码: ").strip()
+        if not password:
+            print("❌ 密码不能为空")
+            return
 
-    # 解析固定位置
+    # 解析位置
+    gps_source = 'fixed'
     fixed_pos = None
     if args.position:
-        try:
-            parts = args.position.replace(' ', '').split(',')
-            if len(parts) >= 2:
-                lat = float(parts[0])
-                lng = float(parts[1])
-                heading = float(parts[2]) if len(parts) >= 3 else 0
-                fixed_pos = (lat, lng, heading)
-                print(f"📍 固定位置: ({lat}, {lng}) 朝向: {heading}°")
-        except:
-            print(f"❌ 位置格式错误: 使用 --position \"纬度,经度[,朝向]\"")
-            return
+        if args.position.lower() == 'gps':
+            gps_source = 'gps'
+            print("📡 使用GPS获取位置")
+        else:
+            try:
+                parts = args.position.replace(' ', '').split(',')
+                if len(parts) >= 2:
+                    lat = float(parts[0])
+                    lng = float(parts[1])
+                    heading = float(parts[2]) if len(parts) >= 3 else 0
+                    fixed_pos = (lat, lng, heading)
+                    print(f"📍 固定位置: ({lat}, {lng}) 朝向: {heading}°")
+            except:
+                print(f"❌ 位置格式错误: 使用 --position \"纬度,经度[,朝向]\" 或 --position gps")
+                return
 
     # 解析初始目标
     initial_target = None
@@ -749,19 +847,24 @@ def main():
             print(f"❌ 目标格式错误: 使用 --target \"纬度,经度\"")
             return
 
+    # 解析自动状态显示
+    status_auto = args.status == 'on'
+
     # 创建客户端
     client = GPSClient(
         server_url=args.url,
-        username=args.username,
+        username=username,
         password=password,
-        gps_source='fixed',
+        gps_source=gps_source,
         fixed_pos=fixed_pos,
         debug=args.debug,
-        initial_target=initial_target
+        initial_target=initial_target,
+        status_auto=status_auto
     )
 
     # 运行
     client.run(interval=args.interval)
+
 
 if __name__ == '__main__':
     main()
