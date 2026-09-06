@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>findmedia</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-grid">
+    <!-- 第 1 行 -->
+    <div class="cell cell-tl"></div>
+    <div class="cell cell-tm">
+      <div class="state-group" id="state-tiles-left"></div>
+      <input id="q" type="search" placeholder="搜索 文件名 / tag 值…" autocomplete="off">
+      <div class="state-group" id="state-tiles-right"></div>
+    </div>
+    <div class="cell cell-tr"></div>
+
+    <!-- 第 2 行 -->
+    <div class="cell cell-ml">
+      <div class="fs-tree" id="fs-tree"></div>
+    </div>
+    <div class="cell cell-mm">
+      <!-- 原中部 80% 结果网格 -->
+      <main class="middle" id="results"></main>
+    </div>
+    <div class="cell cell-mr">
+      <!-- 过滤条件（从 .cell-tm 移到这里，竖排） -->
+      <header class="top">
+        <select id="type" title="按类型过滤">
+          <option value="">全部类型</option>
+          <option value="image">图片</option>
+          <option value="audio">音频</option>
+          <option value="video">视频</option>
+        </select>
+        <div id="tag-filters" class="tag-filters"></div>
+        <span id="stats" class="stats"></span>
+        <button id="reindex" class="reindex-btn" title="重新扫描文件夹（JSON sidecar 改了按这个）">🔄 刷新</button>
+      </header>
+    </div>
+
+    <!-- 第 3 行 -->
+    <div class="cell cell-bl"></div>
+    <div class="cell cell-bm">
+      <!-- 原底部 10% 时间线 -->
+      <footer class="bottom" id="timeline">
+        <div class="timeline-axis"></div>
+        <div class="timeline-ticks" id="timeline-ticks"></div>
+        <div class="timeline-preview" id="timeline-preview" hidden></div>
+        <div class="timeline-empty" id="timeline-empty" hidden>没有媒体</div>
+      </footer>
+    </div>
+    <div class="cell cell-br"></div>
+
+    <!-- 4 根可拖动分割线 -->
+    <div class="splitter v" data-split="v1" title="拖动改变左侧宽度"></div>
+    <div class="splitter v" data-split="v2" title="拖动改变右侧宽度"></div>
+    <div class="splitter h" data-split="h1" title="拖动改变顶部高度"></div>
+    <div class="splitter h" data-split="h2" title="拖动改变底部高度"></div>
+  </div>
+
+  <!-- 详情弹层（懒创建） -->
+  <script src="/static/app.js"></script>
+</body>
+</html>

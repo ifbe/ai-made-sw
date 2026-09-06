@@ -1,9 +1,0 @@
-wav2txt.py
-convert: wav -> asr -> txt
-
-img2txt.py
-convert: img -> ai -> txt
-
-img2json.py
-create: img -> ai -> json
-update: img+json -> ai -> json

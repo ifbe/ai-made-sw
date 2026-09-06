@@ -1,0 +1,208 @@
+findmedia
+========
+
+只读 + 不动现有 AI 侧脚本的媒体浏览 web 端。
+
+## 1. 启动
+
+```bash
+# 把 img2json.py / wav2txt.py 先扫过的目录作为根
+python3 findmedia.py --dir=/path/to/your/photos
+# 默认 127.0.0.1:8765；想换：
+python3 findmedia.py --dir=/path --host=0.0.0.0 --port=9000
+# 不想跑就：
+python3 findmedia.py     # 打印 help
+```
+
+打开 http://127.0.0.1:8765/。
+
+## 2. 9 宫格布局
+
+```
+┌────────┬────────────┬────────┐
+│  左上  │   中 上    │  右上  │  （纯色背景，无功能）
+│  粉    │  ⚡ ⭐ [搜索] 📦 🗑│  蓝   │
+├────────┼────────────┼────────┤
+│        │            │        │
+│  左中  │   中 中    │  右中  │
+│  文件树  │  媒体图片  │  AI 筛选 │
+│  → 筛选 │            │  type/tag│
+│        │            │  q/type  │
+├────────┼────────────┼────────┤
+│  左下  │   中 下    │  右下  │
+│  黄    │  时间线   │  绿   │
+│  (空)   │  ▶▼ 拖动选区 │  (空)   │
+└────────┴────────────┴────────┘
+```
+
+- 横向：**20 : 60 : 20**（左中 : 中中 : 右中），可拖分割线改
+- 纵向：**10 : 80 : 10**（中上 : 中中 : 中下），也可拖
+- 四角格子（`左/右/上/下 + 左/右`）是纯色块，目前没用
+
+## 3. 4 个核心区域（核心交互）
+
+每个区域是**一种筛选模式**。**4 选 1，互斥**：
+设了其中一种，自动清掉其他三种（避免叠加歧义）。
+
+被激活的那个区域底色会变：
+- 浅蓝 `#cce5ff` → 中上（搜索模式）
+- 浅绿 `#e5ffe5` → 右中（AI 标签模式）
+- 浅黄 `#fff4cc` → 左中（目录模式）
+- 浅粉 `#ffe5e5` → 中下（时间线模式）
+
+### 3.1 中上（搜索模式）
+
+```
+⚡待处理  ⭐收藏  [🔍搜索文件名/tag 值]  📦归档  🗑回收站
+```
+
+- 中间是**搜索框**，**按 Enter 才触发**（不 debounce，避免打几个字就刷屏）
+- 按文件名 / tag 值模糊搜
+- 两侧各两个**状态 tile**（待处理/收藏 / 归档/回收站），目前是 UI 骨架，TODO：DB 需加 `state` 列 + 后端新增 `/api/state-counts` + 点击联动 search
+
+### 3.2 右中（AI 标签模式）
+
+```
+[type▼ 全部类型 / image / audio / video]
+[tag▼ object=文字]
+[tag▼ scene=海滩]
+...
+stats: 共 N 张（X 张图 / Y 音 / Z 视 · 带 JSON K）
+[🔄 刷新]   ← POST /api/reindex 重新扫
+```
+
+- type select：3 个值
+- tag selects：动态生成，key 来自 `img2json.py` 产出的 JSON（`object=…`, `scene=…`, `mood=…` 等）
+- 选了 → 触发 search，按该 tag 筛
+- **激活规则**：碰过 select 就视为激活（即使 value 没变），中中会限制**仅显示带 JSON 的媒体**（`has_json=1`），因为没 JSON 的文件根本不会被选中
+- type 和 tag 之间可任意组合（不互斥）
+
+### 3.3 左中（目录模式）
+
+```
+📂 <根目录名>             [→]   ← 根 header，点 = 清筛选；点 → = 根本层
+├─ ▶ 📁 photos          → [有媒体]   ← 点 ▶ 展开/收起；点 → 筛 photos 本层
+├─   ▶ 📁 2024          →
+├─      🖼 jan.jpg       [索引]
+├─   ▶ 📁 2025          →
+├─   🖼 img.webp          [索引]
+└─   ▶ 🎬 clip.mp4          [索引]
+```
+
+- 树状结构，点击 ▶ 展开 / 收起
+- 文件 / 文件夹右边的 `→`：点击筛该文件夹**本层**（不递归）
+- 文件：点击在新标签打开（`/raw/<id>`，浏览器原生渲染图/音/视）
+- `→` 文件夹互斥：点了就清掉其他三种模式
+
+### 3.4 中下（时间线模式）
+
+```
+─────────────────────────────────────────
+       2024-06-15 ~ 2024-08-10           ← 拖动选区时显示日期范围
+   ▶        ▶     ▶         ▼ ▼        ← 竖线 = 每天/周/月 一个 tick
+─────────────────────────────────────────
+```
+
+- 时间轴左右各留至少 3 天 padding，竖线不顶到边缘
+- 在**空白处**按住拖动 = 框选时间区间，松开后中中只显该时段
+- **已激活的选区**以淡蓝色矩形显示在时间轴上，点击矩形 = 清除
+- tick 鼠标悬浮：弹出 36vmin 大缩略图（position: fixed 浮在最上层，不受 .bottom overflow:hidden 裁剪）；点击 tick = 新标签打开媒体
+- 桶粒度自适应：mtime 跨度 > 200 天 → 月；> 50 天 → 周；否则 → 天
+
+## 4. JSON sidecar 命名约定
+
+findmedia **只读**已经处理过的 JSON。约定是 **`<媒体文件名>.<媒体扩展名>.json`**：
+
+| 媒体文件 | sidecar |
+|---|---|
+| `photo.jpg` | `photo.jpg.json` |
+| `clip.mp4`  | `clip.mp4.json`  |
+| `song.mp3`  | `song.mp3.json`  |
+| `logo.bmp`  | `logo.bmp.json`  |
+
+**不匹配**通用 `.json`（如 `messages.json` / `manifest.json` / `themes.json` 等），即使它们恰好跟媒体文件同目录也忽略。
+
+代码里集中在 `findmedia.py` 的 `_sidecar_for(media_path) -> Path | None`：
+- 入口先校验扩展名在 `MEDIA_EXT`（image / audio / video 三组合并），非媒体直接返回 `None`
+- 然后 `Path.with_suffix(suffix + '.json')` 生成 sidecar 路径
+
+JSON 顶层必须是对象，里头读 `tags` 字段（也是个对象），其余字段忽略：
+
+```json
+{
+  "tags": {
+    "scene": "海滩",
+    "object": ["文字", "建筑"],
+    "mood": "温馨"
+  },
+  "_anything_else": "ignored"
+}
+```
+
+- `tags` 不是对象 / 顶层不是对象 → 该 sidecar 被跳过，打印 `⚠️` 警告，不写 DB
+- `tags` 里的 value 可以是字符串或字符串数组，两种都接受
+- sidecar 文件的 mtime 也参与版本判定：光改 JSON（不改媒体）也能触发重索引（`effective_mtime = max(media_mtime, json_mtime)`）
+
+## 5. 默认状态
+
+**刷新页面后**：中中**空**，4 个 cell 都不高亮，提示"未选择筛选条件：从左中目录 / 右中标签 / 中下时间轴 任选一个维度"。
+
+→ 用户必须**主动选一个维度**才看到内容。
+
+## 6. 后端 API
+
+所有 API 都跑在 `--port` 上，路径前缀 `/api/`：
+
+| 路径 | 参数 | 行为 |
+|---|---|---|
+| `GET /api/search` | `q, type, tag=k:v, path, tmin, tmax, has_json, limit` | 返 JSON `{hits, total, q, path}` |
+| `GET /api/media/<id>` | — | 单条详情 |
+| `GET /api/stats` | — | 各类型文件数 + 带 JSON 计数 |
+| `GET /api/keys` | — | 所有出现过的 tag key + 各自取值（固定顺序：`scene, time, weather, tone, composition, action, mood, subjects, objects`） |
+| `GET /api/fs?path=` | `path`（相对根）| 列目录，过滤掉 `..` 防越权 |
+| `GET /api/timeline` | — | 按 mtime 聚合的时间点（天/周/月自适应） |
+| `POST /api/reindex` | — | 重新扫 `--dir` |
+| `GET /raw/<id>` | — | 原始文件流（支持 HTTP Range，64KB chunk） |
+| `GET /` | — | 主页 |
+| `GET /static/*` | — | CSS / JS |
+
+**搜索参数**：
+- `?tag=` 可重复多次（多个 AND 关系）
+- `?has_json=1` 仅返回带 JSON sidecar 的
+- `?limit=` 默认 200，最大 500
+- `?path=` 空字符串 = 根本层（需要 `keep_blank_values=True` 才能解析到）
+
+### 4 个筛选维度互斥 → `search()`
+
+- `q` 在中上：路径 / tag / type / time 都被清空（focus 在搜索）
+- `type` 或 `tag` 在右中：路径 / 时间被清空（focus 在 AI 标签）
+- `path` 在左中：q / type / tag / time 都被清空（focus 在目录）
+- `time` 在中下：q / type / tag / path 都被清空（focus 在时间）
+
+## 7. 不修改的文件
+
+`img2json.py` / `wav2txt.py` / `img2txt.py` 三个上游 AI 脚本保持原样不动。`findmedia.py` 只读它们产出的 JSON sidecar（见第 4 节）。
+
+## 8. 已知 TODO
+
+- **状态 tile**（待处理/收藏/归档/回收站）UI 完整，**逻辑空**：需要 DB 加 `state` 列 + 后端 `/api/state-counts` + `/api/media/<id>/state` 切换
+- **卡片双击/悬停详情面板**：`openDetail()` 代码保留但未引用，要做就接上右键菜单
+- **右键菜单切换 state**：同上
+- **时间线 zoom in/out**
+- **持久化 splitter 比例**：现在拖完 splitter 刷新就重置
+- **自动定时 reindex**：现在要手动点 🔄
+
+## 9. 文件结构
+
+```
+findmedia/
+├── findmedia.py     # CLI + stdlib HTTP 服务 + _sidecar_for 匹配
+├── web/
+│   ├── index.html   # 9 宫格 + 4 状态 tile + 搜索 + 时间线
+│   ├── app.css      # 9 宫格布局 + splitter + 4 模式高亮底色
+│   └── app.js       # 4 模式互斥 + 拖动 splitter + 懒加载 + box-select + 模式高亮
+├── img2json.py      # 原样未动
+├── wav2txt.py       # 原样未动
+├── img2txt.py       # 原样未动
+└── readme           # 本文件
+```
