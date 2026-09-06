@@ -196,6 +196,57 @@ def index_folder(root: Path, db_path: Path) -> dict:
     return stats
 
 
+def print_subjects_summary(db_path: Path):
+    """打印扫到的 subject (key) + object (value) 汇总
+
+    数据源：sidecar.json 的 tags 段（写入 DB tags 表）
+    排序：key 按出现文件数降序；同 key 内 value 按文件数降序
+    """
+    if not db_path.exists():
+        return
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        # 每个 (key, value) 的文件数
+        rows = conn.execute('''
+            SELECT key, value, COUNT(DISTINCT media_id) AS cnt
+            FROM tags
+            GROUP BY key, value
+            ORDER BY key, cnt DESC, value ASC
+        ''').fetchall()
+
+        if not rows:
+            print('\n📋 subject/object 汇总：（无 tag 数据）')
+            return
+
+        # 按 key 分组
+        by_key: dict = {}
+        for r in rows:
+            by_key.setdefault(r['key'], []).append((r['value'], r['cnt']))
+
+        # 每个 key 占多少个文件（独立 media_id 数）
+        key_files: dict = {}
+        for k in by_key:
+            fc = conn.execute(
+                'SELECT COUNT(DISTINCT media_id) FROM tags WHERE key=?', (k,)
+            ).fetchone()[0]
+            key_files[k] = fc
+
+        # 按 key 文件数降序排
+        ordered = sorted(by_key.keys(), key=lambda k: -key_files[k])
+
+        print(f'\n📋 发现 {len(by_key)} 个 key（subject 列表，来自 sidecar.json 的 tags 段）：')
+        for k in ordered:
+            values = by_key[k]
+            fc = key_files[k]
+            vc = len(values)
+            print(f'   {k:<14} {fc:>4} 文件 · {vc:>3} 值')
+            for val, cnt in values:
+                print(f'      {val} × {cnt}')
+    finally:
+        conn.close()
+
+
 # ====== HTTP ======
 class Handler(BaseHTTPRequestHandler):
     server_version = 'findmedia/1.0'
@@ -451,6 +502,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({'error': 'no index root configured'}, 400)
         try:
             stats = index_folder(INDEX_ROOT, DB_PATH)
+            print_subjects_summary(DB_PATH)
             return self._json({'ok': True, 'stats': stats, 'root': str(INDEX_ROOT)})
         except Exception as e:
             return self._json({'ok': False, 'error': str(e)}, 500)
@@ -696,6 +748,7 @@ def main():
     print(f'   总 {stats["total"]} · 新索引 {stats["indexed"]} · '
           f'带 JSON {stats["with_json"]} · 跳过未变 {stats["skipped"]} · '
           f'清理 {stats["removed"]}')
+    print_subjects_summary(DB_PATH)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f'🌐 http://{args.host}:{args.port}')
