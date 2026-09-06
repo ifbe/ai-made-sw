@@ -145,7 +145,7 @@ function renderResults(hits) {
     } else if (h.type === 'audio') {
       thumb = `<div class="thumb audio">♪</div>`;
     } else if (h.type === 'video') {
-      thumb = `<div class="thumb video">▶</div>`;
+      thumb = `<div class="thumb video"><video data-src="/raw/${h.id}" preload="metadata" muted playsinline></video></div>`;
     } else {
       thumb = `<div class="thumb">📄</div>`;
     }
@@ -165,12 +165,34 @@ function renderResults(hits) {
 
   $$('.card').forEach(c => {
     c.addEventListener('click', () => {
-      window.open(`/raw/${c.dataset.id}`, '_blank');
+      const id = c.dataset.id;
+      const url = `/raw/${id}`;
+      // 同步打开新标签（iOS Safari 规则：window.open 必须在 user gesture 里同步调用）
+      const newWin = window.open(url, '_blank');
+      // 后台异步判断是否要转码 HEIC（不阻塞 iOS 的打开）
+      maybeConvertHeicInNewTab(url, newWin);
     });
   });
 
+// 后台 HEIC 转码：仅在 Chrome/Firefox/Edge 且目标是 HEIC 时才跑
+async function maybeConvertHeicInNewTab(url, newWin) {
+  // iOS Safari 原生支持 HEIC，不需要转
+  if (/iPad|iPhone|iPod/.test(navigator.userAgent)) return;
+  try {
+    const head = await fetch(url, { method: 'HEAD' });
+    const ct = (head.headers.get('Content-Type') || '').toLowerCase();
+    if (!ct.includes('heic') && !ct.includes('heif')) return;
+    const jpegUrl = await heicToJpegUrl(url);
+    if (jpegUrl && newWin && !newWin.closed) {
+      newWin.location.replace(jpegUrl);
+    }
+  } catch {}
+}
+
   // 注册新图片给懒加载观察器
   $$('img[data-src]', main).forEach(img => imageObserver.observe(img));
+  // 注册新视频给懒加载观察器（加载 metadata 后抱 canvas 缩略图）
+  $$('video[data-src]', main).forEach(v => videoObserver.observe(v));
 }
 
 function ensureDetailOverlay() {
@@ -284,6 +306,22 @@ const imageObserver = new IntersectionObserver((entries) => {
       const img = entry.target;
       const src = img.dataset.src;
       if (src) {
+        // HEIC fallback：只在 Content-Type 确认是 HEIC 时才解码
+        img.addEventListener('error', async () => {
+          try {
+            // HEAD 看 Content-Type，避免网络错误时误调 libheif
+            const head = await fetch(src, { method: 'HEAD' });
+            const ct = (head.headers.get('Content-Type') || '').toLowerCase();
+            if (!ct.includes('heic') && !ct.includes('heif')) return;  // 不是 HEIC，不转
+            const jpegUrl = await heicToJpegUrl(src);
+            if (jpegUrl) {
+              img.src = jpegUrl;
+              console.log(`[HEIC→JPEG] ${src}`);
+            }
+          } catch (e) {
+            console.error('[HEIC fallback] failed:', e);
+          }
+        }, { once: true });
         img.src = src;
         img.removeAttribute('data-src');
       }
@@ -295,6 +333,128 @@ const imageObserver = new IntersectionObserver((entries) => {
   rootMargin: '300px 0px',
   threshold: 0,
 });
+
+// 视频缩略图：加载 metadata → seek 到 10% → canvas 抳帧 → 换成 <img>
+const videoObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const video = entry.target;
+    videoObserver.unobserve(video);
+
+    const src = video.dataset.src;
+    if (!src) continue;
+
+    let captured = false;
+    const onLoaded = () => {
+      // seek 到总时长 10%（避免开头黑帧）；快视频用 1s
+      const t = Math.max(0.5, Math.min(video.duration * 0.1, video.duration - 0.1));
+      video.currentTime = isFinite(t) ? t : 0.5;
+    };
+    const onSeeked = () => {
+      if (captured) return;
+      captured = true;
+      const w = video.videoWidth || 320;
+      const h = video.videoHeight || 180;
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+      const img = document.createElement('img');
+      img.src = canvas.toDataURL('image/jpeg', 0.7);
+      img.alt = '';
+      video.replaceWith(img);
+      // 释放 video 资源
+      try { video.removeAttribute('src'); video.load(); } catch {}
+    };
+    const onError = () => {
+      // 加载失败：换回 ▶ 占位
+      if (captured) return;
+      captured = true;
+      const ph = document.createElement('div');
+      ph.className = 'thumb video';
+      ph.textContent = '▶';
+      video.replaceWith(ph);
+    };
+    video.addEventListener('loadedmetadata', onLoaded, { once: true });
+    video.addEventListener('seeked', onSeeked, { once: true });
+    video.addEventListener('error', onError, { once: true });
+    video.src = src;
+    video.removeAttribute('data-src');
+  }
+}, {
+  root: $('.middle'),
+  rootMargin: '300px 0px',
+  threshold: 0,
+});
+
+// HEIC → JPEG 并返回 blob URL；不是 HEIC 返回 null
+async function heicToJpegUrl(src) {
+  try {
+    const resp = await fetch(src);
+    const ct = (resp.headers.get('Content-Type') || '').toLowerCase();
+    if (!ct.includes('heic') && !ct.includes('heif')) return null;
+
+    const blob = await resp.blob();
+    const name = (src.split('/').pop() || 'image.heic').split('?')[0];
+    const file = new File([blob], name, { type: blob.type });
+
+    // 1. 先试 Safari 原生 createImageBitmap（0 WASM，快）
+    if (typeof createImageBitmap === 'function') {
+      try {
+        const bitmap = await createImageBitmap(file);
+        try {
+          const jpegBlob = await rasterToJpeg(bitmap);
+          return URL.createObjectURL(jpegBlob);
+        } finally {
+          bitmap.close();
+        }
+      } catch { /* 非 Safari，走 WASM */ }
+    }
+
+    // 2. Chrome/FF/Edge：动态加载 heic-to WASM（仅首次）
+    const { heicTo } = await loadHeicTo();
+    if (!heicTo) return null;
+    const jpegBlob = await heicTo({ blob: file, type: 'image/jpeg', quality: 0.92 });
+    return URL.createObjectURL(jpegBlob);
+  } catch (e) {
+    console.error('[heicToJpegUrl] failed:', e);
+    return null;
+  }
+}
+
+// raster → JPEG（用 OffscreenCanvas 或 canvas）
+async function rasterToJpeg(bitmap) {
+  const w = bitmap.width, h = bitmap.height;
+  if (typeof OffscreenCanvas === 'function') {
+    const canvas = new OffscreenCanvas(w, h);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    return await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  return await new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92));
+}
+
+// 按需加载 heic-to/csp（WASM，~1.2MB；首次遇到 HEIC 且非 Safari 才下载）
+const HEIC_TO_URL = 'https://cdn.jsdelivr.net/npm/heic-to@1.5.2/dist/csp/heic-to.js';
+let _heicToLoading = null;
+async function loadHeicTo() {
+  if (_heicToLoading) return _heicToLoading;
+  _heicToLoading = (async () => {
+    try {
+      const mod = await import(HEIC_TO_URL);
+      console.log('[heic-to] loaded');
+      return mod;
+    } catch (e) {
+      console.error('[loadHeicTo]', e);
+      _heicToLoading = null;
+      return null;
+    }
+  })();
+  return _heicToLoading;
+}
 
 // 时间线
 async function loadTimeline() {

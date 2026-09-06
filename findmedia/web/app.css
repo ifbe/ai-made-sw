@@ -143,6 +143,7 @@ body { display: flex; flex-direction: column; } /* 被 .app-grid 覆盖，仅 fa
   overflow: hidden;
 }
 .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.card .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
 .card .thumb.audio,
 .card .thumb.video {
   font-size: 9vmin;

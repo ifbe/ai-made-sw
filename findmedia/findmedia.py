@@ -14,6 +14,7 @@ findmedia.py — 单文件媒体索引 + Web 检索
 
 只读现有 JSON，不调用 AI / ffmpeg / 任何 subprocess。
 """
+from __future__ import annotations
 import sys
 import json
 import sqlite3
@@ -660,6 +661,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+        # Content-Disposition: inline + 双格式 filename（兼容中文）
+        # filename 是 ASCII 兑底，filename* 是 UTF-8 编码的现代版本
+        fname = path.name
+        ascii_safe = fname.encode('ascii', 'replace').decode('ascii')
+        disposition = f'inline; filename="{ascii_safe}"; filename*=UTF-8\'\'{urllib.parse.quote(fname)}'
 
         size = path.stat().st_size
         ct = mimetypes.guess_type(str(path))[0] or 'application/octet-stream'
@@ -684,6 +690,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(length))
                 self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
                 self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Disposition', disposition)
                 self.end_headers()
                 if self._skip_body():
                     return
@@ -701,6 +708,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Type', ct)
                 self.send_header('Content-Length', str(size))
                 self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Disposition', disposition)
                 self.end_headers()
                 if self._skip_body():
                     return
