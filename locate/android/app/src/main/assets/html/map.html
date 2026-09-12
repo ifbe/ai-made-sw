@@ -9,12 +9,37 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
         #map { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+        /* 标记全部是 L.divIcon，自己画，不能用 leaflet 默认的白底方块样式 */
+        .locate-icon { background: none; border: none; }
     </style>
 </head>
 <body>
 <div id="map"></div>
 <script>
     var map = null;
+    var mapMoving = false;
+    var movingTimer = null;
+
+    /**
+     * 告诉 Android "手指还按着 / 缩放动画还没停"。
+     * 那边收到 true 就跳过十字线和四角坐标的重画——这两个都是全屏 View，
+     * 拖动时每重画一次就是一次整屏光栅化，是掉帧的大头。
+     */
+    function setMoving(moving) {
+        if (movingTimer) {
+            clearTimeout(movingTimer);
+            movingTimer = null;
+        }
+        if (moving) {
+            // 万一 moveend 没来（被打断），3 秒后自动解除，别让 HUD 冻住
+            movingTimer = setTimeout(function() { setMoving(false); }, 3000);
+        }
+        if (mapMoving === moving) return;
+        mapMoving = moving;
+        if (window.Android && window.Android.onMapMoving) {
+            window.Android.onMapMoving(moving);
+        }
+    }
 
     function initMap(lat, lng, zoom) {
         map = L.map('map', {
@@ -25,7 +50,9 @@
         });
 
         L.tileLayer('https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
-            maxZoom: 19
+            maxZoom: 19,
+            // 多留一圈已解码的瓦片，来回拖动时不用重新下载/解码
+            keepBuffer: 4
         }).addTo(map);
 
         map.on('click', function(e) {
@@ -34,22 +61,19 @@
             }
         });
 
+        // 拖动中不再每 100ms 往 Android 报一次中心点（那可是每秒 10 次全屏重画），
+        // 松手时统一报一次；空闲时还有 500ms 的轮询兜底
+        map.on('movestart', function() {
+            setMoving(true);
+        });
+
         map.on('moveend', function() {
+            setMoving(false);
             reportCenterAndZoom();
         });
 
         map.on('zoomend', function() {
             reportCenterAndZoom();
-        });
-
-        // 节流：move 事件每 100ms 只触发一次
-        var moveTimer = null;
-        map.on('move', function() {
-            if (moveTimer) return;
-            moveTimer = setTimeout(function() {
-                moveTimer = null;
-                reportCenterAndZoom();
-            }, 100);
         });
 
         // 地图初始化完成，通知 Android
@@ -63,26 +87,253 @@
         var c = map.getCenter();
         var z = map.getZoom();
         var container = map.getContainer();
-        console.log('reportCenterAndZoom: z=' + z + ' center=' + c.lat + ',' + c.lng + ' container=' + container.offsetWidth + 'x' + container.offsetHeight);
         if (window.Android.onCenterAndZoom) {
             window.Android.onCenterAndZoom(z, c.lat, c.lng, container.offsetWidth, container.offsetHeight);
         }
+    }
+
+    // ─── 标记图层 ─────────────────────────────────────────────────────
+    //
+    // 箭头 / 目标点 / 目标虚线全部是 Leaflet 图元，跟瓦片在同一个坐标系里，
+    // 所以拖地图、缩放、flyTo 时它们天然同步（不再靠 Android 反查屏幕坐标）。
+    // 坐标的唯一真相源就在这一侧：Android 只负责"告诉我这个人在哪"。
+
+    var SELF_KEY = '__self__';            // 我的金色箭头
+    var SELF_TARGET_KEY = '__self_target__';
+    var SELF_LINE_KEY = '__self_line__';
+
+    var selfState = null;                 // {lat, lng, deg}
+    var selfTarget = null;                // {lat, lng}
+    var userStates = {};                  // key -> {lat, lng, deg, label, target:{lat,lng}|null}
+
+    var markerLayer = {};                 // key -> L.marker
+    var markerMeta = {};                  // key -> {kind, color, glyph, label} 用于判断要不要重建 DOM
+    var lineLayer = {};                   // key -> L.polyline
+
+    function isValid(lat, lng) {
+        return isFinite(lat) && isFinite(lng) && !(lat === 0 && lng === 0);
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    /**
+     * 箭头：金色空心三角=我的本地 GPS，蓝色↑=服务器坐标/队友。
+     * 朝向用 CSS rotate（0°指北、顺时针），和原来 canvas.rotate 的语义一致。
+     * divIcon 的屏幕尺寸不随缩放变化，等价于原来的固定像素 View。
+     */
+    function buildIcon(kind, color, glyph, deg, label) {
+        if (kind === 'target') {
+            return L.divIcon({
+                className: 'locate-icon',
+                iconSize: [21, 10],
+                iconAnchor: [10.5, 5],
+                html: '<div style="width:21px;height:10px;background:#FF9800;border-radius:3px;'
+                    + 'color:#fff;font:bold 7px/10px sans-serif;text-align:center;'
+                    + 'box-shadow:0 0 2px rgba(0,0,0,.4)">T</div>'
+            });
+        }
+
+        var fs = glyph === '\u25B3' ? 30 : 26;
+        var sx = glyph === '\u25B3' ? 0.65 : 1;
+        var html = '<div style="position:relative;width:' + fs + 'px;height:' + fs + 'px">'
+            + '<div class="mk-glyph" style="position:absolute;left:0;top:0;width:' + fs + 'px;height:' + fs + 'px;'
+            + 'font-size:' + fs + 'px;line-height:' + fs + 'px;text-align:center;color:' + color + ';'
+            + 'transform:rotate(' + deg + 'deg) scaleX(' + sx + ');'
+            + 'text-shadow:0 0 2px rgba(0,0,0,.5)">' + glyph + '</div>'
+            + (label
+                ? '<div class="mk-label" style="position:absolute;top:100%;left:50%;'
+                  + 'transform:translateX(-50%);white-space:nowrap;font-size:7px;line-height:8px;'
+                  + 'color:#fff;text-shadow:0 0 2px #000,0 0 2px #000">' + escapeHtml(label) + '</div>'
+                : '')
+            + '</div>';
+
+        return L.divIcon({
+            className: 'locate-icon',
+            iconSize: [fs, fs],
+            iconAnchor: [fs / 2, fs / 2],
+            html: html
+        });
+    }
+
+    function removeMarker(key) {
+        var m = markerLayer[key];
+        if (!m) return;
+        map.removeLayer(m);
+        delete markerLayer[key];
+        delete markerMeta[key];
+    }
+
+    function removeLine(key) {
+        var pl = lineLayer[key];
+        if (!pl) return;
+        map.removeLayer(pl);
+        delete lineLayer[key];
+    }
+
+    function setMarker(key, lat, lng, kind, color, glyph, deg, label) {
+        if (!map || !isValid(lat, lng)) return;
+        var m = markerLayer[key];
+        var meta = markerMeta[key];
+        var labelText = label || '';
+
+        if (!m) {
+            markerLayer[key] = L.marker([lat, lng], {
+                icon: buildIcon(kind, color, glyph, deg, labelText),
+                interactive: false,
+                keyboard: false,
+                // 目标点画在箭头下面
+                zIndexOffset: kind === 'target' ? -100 : 0
+            }).addTo(map);
+            markerMeta[key] = { kind: kind, color: color, glyph: glyph, label: labelText };
+            return;
+        }
+
+        m.setLatLng([lat, lng]);
+
+        // 换了图标内容才重建 DOM；位置和朝向的高频更新只改属性
+        if (!meta || meta.kind !== kind || meta.color !== color
+            || meta.glyph !== glyph || meta.label !== labelText) {
+            m.setIcon(buildIcon(kind, color, glyph, deg, labelText));
+            markerMeta[key] = { kind: kind, color: color, glyph: glyph, label: labelText };
+            return;
+        }
+
+        var el = m.getElement();
+        if (!el) return;
+        var g = el.querySelector('.mk-glyph');
+        if (g) {
+            g.style.transform = 'rotate(' + deg + 'deg) scaleX(' + (glyph === '\u25B3' ? 0.65 : 1) + ')';
+        }
+    }
+
+    function setLine(key, alat, alng, blat, blng) {
+        if (!map || !isValid(alat, alng) || !isValid(blat, blng)) {
+            removeLine(key);
+            return;
+        }
+        var pts = [[alat, alng], [blat, blng]];
+        var pl = lineLayer[key];
+        if (pl) {
+            pl.setLatLngs(pts);
+            return;
+        }
+        lineLayer[key] = L.polyline(pts, {
+            color: '#FF9800',
+            weight: 2.5,
+            opacity: 0.8,
+            dashArray: '8,4',
+            interactive: false
+        }).addTo(map);
+    }
+
+    function drawSelfLine() {
+        if (selfState && selfTarget) {
+            setLine(SELF_LINE_KEY, selfState.lat, selfState.lng, selfTarget.lat, selfTarget.lng);
+        } else {
+            removeLine(SELF_LINE_KEY);
+        }
+    }
+
+    function drawUserLine(key) {
+        var st = userStates[key];
+        if (st && st.target) {
+            setLine(key + '#l', st.lat, st.lng, st.target.lat, st.target.lng);
+        } else {
+            removeLine(key + '#l');
+        }
+    }
+
+    function clearSelfTarget() {
+        selfTarget = null;
+        removeMarker(SELF_TARGET_KEY);
+        removeLine(SELF_LINE_KEY);
+    }
+
+    function clearUserTarget(key) {
+        var st = userStates[key];
+        if (st) st.target = null;
+        removeMarker(key + '#t');
+        removeLine(key + '#l');
+    }
+
+    function removeUser(key) {
+        delete userStates[key];
+        removeMarker(key);
+        removeMarker(key + '#t');
+        removeLine(key + '#l');
     }
 
     // Android 调用这些方法
     window.MapInterface = {
         moveTo: function(lat, lng, zoom) {
             if (!map) return;
-            map.flyTo([lat, lng], zoom || map.getZoom(), {animate: true, duration: 0.5});
+            map.flyTo([lat, lng], zoom || map.getZoom(), { animate: true, duration: 0.5 });
         },
         getCenterAndZoom: function() {
             reportCenterAndZoom();
         },
-        // 将 GPS 坐标转换为屏幕像素（相对于地图容器左上角）
-        latLngToScreen: function(lat, lng) {
-            if (!map) return null;
-            var point = map.latLngToContainerPoint([lat, lng]);
-            return { x: point.x, y: point.y };
+
+        // 我的本地 GPS 位置（金色空心三角，带朝向）
+        setSelf: function(lat, lng, deg) {
+            if (!isValid(lat, lng)) return;
+            selfState = { lat: lat, lng: lng, deg: deg || 0 };
+            setMarker(SELF_KEY, lat, lng, 'arrow', '#FFD700', '\u25B3', selfState.deg, '我');
+            drawSelfLine();
+        },
+
+        // 我的目标点 + 我到目标的虚线
+        setSelfTarget: function(lat, lng) {
+            if (!isValid(lat, lng)) {
+                clearSelfTarget();
+                return;
+            }
+            selfTarget = { lat: lat, lng: lng };
+            setMarker(SELF_TARGET_KEY, lat, lng, 'target', '', 'T', 0, '');
+            drawSelfLine();
+        },
+        clearSelfTarget: clearSelfTarget,
+
+        // 队友（含自己的服务器位置）：蓝色↑ + 昵称
+        setUser: function(key, lat, lng, deg, label) {
+            if (!isValid(lat, lng)) return;
+            var st = userStates[key] || (userStates[key] = { target: null });
+            st.lat = lat;
+            st.lng = lng;
+            st.deg = deg || 0;
+            st.label = label;
+            setMarker(key, lat, lng, 'arrow', '#2196F3', '\u2191', st.deg, label);
+            drawUserLine(key);
+        },
+
+        // 队友的目标点 + 该队友到目标的虚线
+        setUserTarget: function(key, lat, lng) {
+            if (!isValid(lat, lng)) {
+                clearUserTarget(key);
+                return;
+            }
+            var st = userStates[key] || (userStates[key] = { target: null });
+            st.target = { lat: lat, lng: lng };
+            setMarker(key + '#t', lat, lng, 'target', '', 'T', 0, '');
+            drawUserLine(key);
+        },
+        clearUserTarget: clearUserTarget,
+
+        removeUser: removeUser,
+
+        // 列表里已经没有的人，连同他的目标和虚线一起清掉
+        retainUsers: function(keys) {
+            var keep = {};
+            for (var i = 0; i < keys.length; i++) keep[keys[i]] = true;
+            for (var k in userStates) {
+                if (!keep[k]) removeUser(k);
+            }
+        },
+
+        clearUsers: function() {
+            for (var k in userStates) removeUser(k);
+            userStates = {};
         }
     };
 

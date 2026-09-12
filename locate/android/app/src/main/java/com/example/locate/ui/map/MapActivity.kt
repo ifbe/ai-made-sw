@@ -246,26 +246,30 @@ class MapViewModel(
             }
 
             override fun onUserList(users: List<User>) {
-                // user_list 只用于 UI 显示，不过滤坐标（坐标为0不影响列表展示），
-                // 也不过滤自己，让自己的服务器位置（蓝色）一起显示
+                // 服务器发来的 user_list 是"全部在线的人"，里面已经有自己了，
+                // 所以在线人数就是 users.size，不能再 +1
                 _otherUsers.value = users
                 mapViewInterface?.showOtherUsers(users)
                 mapViewInterface?.updateUserList(users)
-                logConnection(1, users.size + 1)  // +1=自己
+                logConnection(1, users.size)
             }
 
             override fun onUserJoined(user: User) {
-                _otherUsers.value = _otherUsers.value + user
+                // 同一个账号重新登录时服务器会再广播一次 user_joined，而旧连接是被静默踢掉的
+                // （不发 user_left），直接 append 会留下重复项，人数会越登越多 —— 按用户名覆盖
+                val merged = _otherUsers.value.filterNot { it.username == user.username } + user
+                _otherUsers.value = merged
                 mapViewInterface?.showOtherUser(user)
-                mapViewInterface?.updateUserList(_otherUsers.value)
-                logConnection(1, _otherUsers.value.size + 1)
+                mapViewInterface?.updateUserList(merged)
+                logConnection(1, merged.size)
             }
 
             override fun onUserLeft(username: String) {
-                _otherUsers.value = _otherUsers.value.filter { it.username != username }
+                val merged = _otherUsers.value.filter { it.username != username }
+                _otherUsers.value = merged
                 mapViewInterface?.removeOtherUser(username)
-                mapViewInterface?.updateUserList(_otherUsers.value)
-                logConnection(1, _otherUsers.value.size + 1)
+                mapViewInterface?.updateUserList(merged)
+                logConnection(1, merged.size)
             }
 
             override fun onTargetUpdate(username: String, targetLat: Double?, targetLng: Double?) {
@@ -302,7 +306,8 @@ class MapViewModel(
             }
 
             override fun onConnected() {
-                logConnection(1, _otherUsers.value.size + 1)
+                // 这时候还没登录、也没拿到 user_list，报人数一定是错的（以前会显示"在线1人"）
+                logConnection(0)
             }
 
             override fun onDisconnected() {

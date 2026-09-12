@@ -9,7 +9,6 @@ import android.text.TextPaint
 import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.View
-import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
@@ -20,11 +19,6 @@ import com.example.locate.domain.model.User
 import com.example.locate.util.AppLog
 import org.json.JSONObject
 import kotlin.math.pow
-import kotlin.math.ln
-import kotlin.math.tan
-import kotlin.math.cos
-import kotlin.math.exp
-import kotlin.math.atan
 
 private const val LOG_PANEL_WIDTH_DP = 300          // 展开后的默认宽度
 private const val LOG_PANEL_TAB_MIN_WIDTH_DP = 40   // 折叠小方块的最小宽度（箭头 + 日志N）
@@ -34,6 +28,38 @@ private const val LOG_PANEL_ROWS_TOP_DP = 3
 private const val LOG_PANEL_MIN_ROWS = 3            // 可拖出来的最小行数
 private const val LOG_PANEL_MAX_ROWS_CAP = 30       // 可拖出来的最大行数
 private const val LOG_PANEL_RESIZE_ZONE_DP = 26     // 右上角缩放热区大小
+private const val LOGOUT_LABEL = "退出登录"          // 本地面板标题行右侧的退出入口
+
+/**
+ * 手写定点格式化。
+ * 十字线和四角坐标每帧都要拼字符串，String.format 每次都会新建 Formatter + StringBuilder，
+ * 拖地图时是白白的分配和 GC 压力。
+ */
+private fun fmtFixed(value: Double, decimals: Int): String {
+    if (!value.isFinite()) return "--"
+    val sb = StringBuilder(16)
+    var v = value
+    if (v < 0) {
+        sb.append('-')
+        v = -v
+    }
+    val scale = when (decimals) {
+        1 -> 10L
+        4 -> 10000L
+        else -> 1000000L
+    }
+    val scaled = Math.round(v * scale)
+    sb.append(scaled / scale)
+    sb.append('.')
+    val frac = scaled % scale
+    var divisor = scale / 10
+    while (divisor > 1 && frac < divisor) {
+        sb.append('0')
+        divisor /= 10
+    }
+    sb.append(frac)
+    return sb.toString()
+}
 
 class MapViewImpl @JvmOverloads constructor(
     context: Context,
@@ -43,18 +69,20 @@ class MapViewImpl @JvmOverloads constructor(
 
     private val webView: WebView
     private val overlay: FrameLayout
-    private val markerViews = mutableMapOf<String, MarkerView>()
-    private var myMarker: MarkerView? = null
-    private var myTargetMarker: MarkerView? = null
-    private var myTargetLineView: TargetLineView? = null
 
-    // 其他用户的 target 标记
-    private val targetMarkers = mutableMapOf<String, MarkerView>()
-    private val targetLines = mutableMapOf<String, TargetLineView>()
+    // 箭头 / 目标点 / 目标虚线都由 Leaflet 画（见 assets/html/map.html），
+    // 这一侧只把"谁在哪、目标在哪"发过去，不再自己算屏幕坐标。
+    private var mapReady = false
+    private val pendingJs = mutableListOf<String>()
+
+    // 手指没松开（或缩放动画没停）时为 true。这期间不重画 HUD，
+    // 因为十字线和四角坐标都是全屏 View，重画一次＝整屏重新光栅化。
+    @Volatile
+    private var mapMoving = false
 
     private var clickListener: ((Double, Double) -> Unit)? = null
-    private var mapViewWidth = 0      // physical pixels from JS
-    private var mapViewHeight = 0    // physical pixels from JS
+    private var mapViewWidth = 0      // CSS 像素，来自 JS
+    private var mapViewHeight = 0     // CSS 像素，来自 JS
     private var currentZoom = 15.0
     private var currentCenterLat = 0.0
     private var currentCenterLng = 0.0
@@ -73,15 +101,13 @@ class MapViewImpl @JvmOverloads constructor(
     private var cornerBottomLeft: Pair<Double, Double>? = null // (lat, lng)
     private var cornerBottomRight: Pair<Double, Double>? = null // (lat, lng)
 
-    private val pendingPositions = mutableMapOf<String, PendingUpdate>()
-
-    private data class PendingUpdate(val lat: Double, val lng: Double, val heading: Float = 0f, val targetLat: Double? = null, val targetLng: Double? = null)
-
     init {
         // dpr = context.resources.displayMetrics.density  // removed, using CSS pixels directly
 
         webView = WebView(context).apply {
-            setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+            // 注意：这里以前是 setLayerType(LAYER_TYPE_SOFTWARE)，会让 WebView 走 CPU 软渲染，
+            // 拖地图时每一帧都要把整屏内容重新光栅化，是卡顿的主要来源。默认的硬件加速交给
+            // Chromium 自己在 GPU 上合成瓦片图层，才能跟手。
             setBackgroundColor(0xFFFFFFFF.toInt())
             layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
             settings.apply {
@@ -100,6 +126,7 @@ class MapViewImpl @JvmOverloads constructor(
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
+                    onMapPageReady()
                     requestCenterAndZoom()
                 }
             }
@@ -168,7 +195,7 @@ class MapViewImpl @JvmOverloads constructor(
         // 定时轮询地图中心（每500ms），解决后台时 evaluateJavascript 不执行的问题
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(object : Runnable {
             override fun run() {
-                postJs("MapInterface.getCenterAndZoom()")
+                if (mapReady) postJs("MapInterface.getCenterAndZoom()")
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this, 500)
             }
         }, 500)
@@ -182,109 +209,50 @@ class MapViewImpl @JvmOverloads constructor(
     // ─── MapView interface ───────────────────────────────────────────
 
     override fun showUser(lat: Double, lng: Double, heading: Float) {
-        android.util.Log.d("MapDebug", "showUser: lat=$lat lng=$lng heading=$heading mapCenter=($currentCenterLat,$currentCenterLng) zoom=$currentZoom")
-        pendingPositions["__self__"] = PendingUpdate(lat, lng, heading)
-        if (myMarker == null) {
-            myMarker = MarkerView(context)
-            post { overlay.addView(myMarker, FrameLayout.LayoutParams(80, 100)) }
-        }
-        // 立即计算位置，不依赖 pending 刷新
-        updateMarkerPosition(myMarker!!, lat, lng, heading, isSelf = true)
+        if (lat == 0.0 && lng == 0.0) return
+        postJs("MapInterface.setSelf($lat, $lng, ${deg(heading)})")
     }
 
     override fun showOtherUser(user: User) {
-        android.util.Log.d("MapDebug", "showOtherUser: ${user.username} lat=${user.lat} lng=${user.lng} targetLat=${user.targetLat} existingMarker=${markerViews[user.username] != null}")
-        pendingPositions[user.username] = PendingUpdate(user.lat, user.lng, user.heading, user.targetLat, user.targetLng)
-        if (markerViews[user.username] == null) {
-            android.util.Log.d("MapDebug", "Creating new MarkerView for ${user.username}")
-            markerViews[user.username] = MarkerView(context)
-            post { overlay.addView(markerViews[user.username], FrameLayout.LayoutParams(80, 100)) }
+        val key = jsQuote(user.username)
+        // 还没上报过坐标的人不画，否则所有标记都会堆在地图左上角
+        if (user.lat == 0.0 && user.lng == 0.0) {
+            postJs("MapInterface.removeUser($key)")
+            return
         }
-        updateMarkerPosition(markerViews[user.username]!!, user.lat, user.lng, user.heading, isSelf = false)
-        // 处理该用户的 target
-        if (user.targetLat != null && user.targetLng != null) {
-            if (targetMarkers[user.username] == null) {
-                targetMarkers[user.username] = MarkerView(context)
-                targetLines[user.username] = TargetLineView(context)
-                post {
-                    overlay.addView(targetMarkers[user.username], FrameLayout.LayoutParams(60, 30))
-                    overlay.addView(targetLines[user.username], FrameLayout.LayoutParams(1, 1))
-                }
-            }
-            updateMarkerPosition(targetMarkers[user.username]!!, user.targetLat, user.targetLng, 0f, isTarget = true)
-            // 目标点和位置之间的连线等位置算出来再更新
-            val marker = markerViews[user.username]
-            if (marker != null) {
-                latLngToScreen(user.lat, user.lng) { pos ->
-                    if (pos != null) {
-                        val px = pos.first
-                        val py = pos.second
-                        latLngToScreen(user.targetLat, user.targetLng) { targetPos ->
-                            if (targetPos != null) {
-                                post {
-                                    targetLines[user.username]?.setLine(px, py, targetPos.first, targetPos.second)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        val label = user.nickname?.takeIf { it.isNotBlank() } ?: user.username
+        postJs(
+            "MapInterface.setUser($key, ${user.lat}, ${user.lng}, ${deg(user.heading)}, ${jsQuote(label)})"
+        )
+
+        val targetLat = user.targetLat
+        val targetLng = user.targetLng
+        if (targetLat != null && targetLng != null && !(targetLat == 0.0 && targetLng == 0.0)) {
+            postJs("MapInterface.setUserTarget($key, $targetLat, $targetLng)")
         } else {
-            // 无 target 则移除
-            targetMarkers[user.username]?.let { overlay.removeView(it) }
-            targetMarkers.remove(user.username)
-            targetLines[user.username]?.let { overlay.removeView(it) }
-            targetLines.remove(user.username)
-            // 清除 pendingPositions 中的 target 坐标，防止 refreshAllMarkers 再次画出旧位置
-            pendingPositions[user.username] = pendingPositions[user.username]?.copy(targetLat = null, targetLng = null)
-                ?: PendingUpdate(user.lat, user.lng, user.heading, null, null)
+            postJs("MapInterface.clearUserTarget($key)")
         }
     }
 
     override fun removeOtherUser(username: String) {
-        android.util.Log.d("MapDebug", "removeOtherUser: $username")
-        pendingPositions.remove(username)
-        markerViews[username]?.let {
-            overlay.removeView(it)
-            markerViews.remove(username)
-        }
-        targetMarkers[username]?.let {
-            overlay.removeView(it)
-            targetMarkers.remove(username)
-        }
-        targetLines[username]?.let {
-            overlay.removeView(it)
-            targetLines.remove(username)
-        }
+        postJs("MapInterface.removeUser(${jsQuote(username)})")
     }
 
     override fun showOtherUsers(users: List<User>) {
-        val usernames = users.map { it.username }.toSet()
-        markerViews.keys.toList().forEach { name ->
-            if (name !in usernames) removeOtherUser(name)
+        // 这一侧不缓存任何标记状态：让 JS 侧按 key 清掉已经不在列表里的人
+        val keys = users.joinToString(prefix = "[", postfix = "]", separator = ",") {
+            jsQuote(it.username)
         }
+        postJs("MapInterface.retainUsers($keys)")
         users.forEach { showOtherUser(it) }
     }
 
     override fun showTarget(lat: Double, lng: Double) {
-        pendingPositions["__myTarget__"] = PendingUpdate(lat, lng)
-        if (myTargetMarker == null) {
-            myTargetMarker = MarkerView(context)
-            overlay.addView(myTargetMarker, FrameLayout.LayoutParams(60, 30))
-        }
-        updateMarkerPosition(myTargetMarker!!, lat, lng, 0f, isTarget = true)
+        postJs("MapInterface.setSelfTarget($lat, $lng)")
     }
 
     override fun clearTarget() {
-        pendingPositions.remove("__myTarget__")
-        myTargetMarker?.let {
-            overlay.removeView(it)
-            myTargetMarker = null
-        }
-        myTargetLineView?.let {
-            overlay.removeView(it)
-            myTargetLineView = null
-        }
+        postJs("MapInterface.clearSelfTarget()")
     }
 
     override fun moveTo(lat: Double, lng: Double, zoom: Double) {
@@ -338,145 +306,39 @@ class MapViewImpl @JvmOverloads constructor(
         webView.destroy()
     }
 
-    // ─── Position conversion ──────────────────────────────────────────
-    // 用 Leaflet 原生 latLngToContainerPoint 做坐标转换
+    // ─── 发给 Leaflet 的指令 ──────────────────────────────────────────
 
-    private fun updateCorners() {
-        if (mapViewWidth == 0 || mapViewHeight == 0) return
-        android.util.Log.d("MapDebug", "updateCorners: css=${mapViewWidth}x${mapViewHeight}")
-    }
+    /** JS 字符串字面量：用户名/昵称可能带引号 */
+    private fun jsQuote(value: String): String = JSONObject.quote(value)
 
-    // 调用 Leaflet 的 latLngToContainerPoint 获取屏幕像素
-    // WebView 方法必须在主线程调用，用 webView.post{}
-    private fun latLngToScreen(lat: Double, lng: Double, callback: (Pair<Float, Float>?) -> Unit) {
-        if (mapViewWidth == 0 || mapViewHeight == 0) {
-            callback(null)
-            return
-        }
-        val js = "MapInterface.latLngToScreen($lat, $lng)"
-        webView.post {
-            webView.evaluateJavascript(js) { result ->
-            android.util.Log.d("MapDebug", "latLngToScreen JS result: $result")
-            if (result == "null") {
-                callback(null)
-                return@evaluateJavascript
-            }
-            try {
-                // result 格式: {"x":123.4,"y":567.8}
-                val json = JSONObject(result)
-                val x = json.getDouble("x").toFloat()
-                val y = json.getDouble("y").toFloat()
-                // Leaflet 返回的是 CSS 像素，需要转物理像素
-                val dpr = context.resources.displayMetrics.density
-                val physX = x * dpr
-                val physY = y * dpr
-                android.util.Log.d("MapDebug", "latLngToScreen: ($lat, $lng) => CSS($x,$y) phys($physX,$physY) dpr=$dpr")
-                callback(Pair(physX, physY))
-            } catch (e: Exception) {
-                android.util.Log.d("MapDebug", "latLngToScreen parse error: $e")
-                callback(null)
-            }
-        }
-        }
-    }
-
-    private fun updateMarkerPosition(view: MarkerView, lat: Double, lng: Double, heading: Float, isSelf: Boolean = false, isTarget: Boolean = false, isServerPos: Boolean = false, key: String = "") {
-        // 过滤无效 GPS 坐标
-        if (lat == 0.0 && lng == 0.0) {
-            android.util.Log.d("MapDebug", "updateMarker: skipped invalid (0,0)")
-            return
-        }
-        latLngToScreen(lat, lng) { pos ->
-            if (pos == null) {
-                android.util.Log.d("MapDebug", "updateMarker: pos is null")
-                return@latLngToScreen
-            }
-            val (x, y) = pos
-            android.util.Log.d("MapDebug", "updateMarker: lat=$lat lng=$lng => ($x, $y)")
-            val size = if (isTarget) 60 else 80
-            val h = if (isTarget) 30 else size
-            post {
-                view.layoutParams = LayoutParams(size, h).apply {
-                    leftMargin = (x - size / 2).toInt()
-                    topMargin = (y - h / 2).toInt()
-                }
-                view.update(lat, lng, heading, isSelf, isTarget, isServerPos)
-                view.requestLayout()
-            }
-
-            if (isSelf && !isTarget) {
-                val targetPos = pendingPositions["__myTarget__"]
-                if (targetPos != null) {
-                    latLngToScreen(targetPos.lat, targetPos.lng) { targetScreen ->
-                        if (targetScreen != null) {
-                            post {
-                                if (myTargetLineView == null) {
-                                    myTargetLineView = TargetLineView(context).also {
-                                        overlay.addView(it, 0)
-                                    }
-                                }
-                                myTargetLineView?.setLine(x, y, targetScreen.first, targetScreen.second)
-                            }
-                        }
-                    }
-                }
-            } else if (!isTarget && key.isNotEmpty()) {
-                // 其他用户的 target 连线
-                val userPending = pendingPositions[key]
-                if (userPending?.targetLat != null && userPending.targetLng != null) {
-                    val tx = x
-                    val ty = y
-                    latLngToScreen(userPending.targetLat, userPending.targetLng) { targetScreen ->
-                        if (targetScreen != null) {
-                            post {
-                                targetLines[key]?.setLine(tx, ty, targetScreen.first, targetScreen.second)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun refreshAllMarkers() {
-        android.util.Log.d("MapDebug", "refreshAllMarkers: pending=${pendingPositions.size} markers=${markerViews.size} targets=${targetMarkers.size}")
-        pendingPositions.forEach { (key, update) ->
-            when (key) {
-                "__self__" -> myMarker?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = true) }
-                "__myTarget__" -> myTargetMarker?.let { updateMarkerPosition(it, update.lat, update.lng, 0f, isTarget = true) }
-                "__server__" -> { }  // 已移除
-                else -> {
-                    markerViews[key]?.let { updateMarkerPosition(it, update.lat, update.lng, update.heading, isSelf = false, key = key) }
-                    // 该用户有 target 时刷新 target 标记和连线
-                    if (update.targetLat != null && update.targetLng != null) {
-                        if (targetMarkers[key] == null) {
-                            targetMarkers[key] = MarkerView(context)
-                            targetLines[key] = TargetLineView(context)
-                            post {
-                                overlay.addView(targetMarkers[key], FrameLayout.LayoutParams(60, 30))
-                                overlay.addView(targetLines[key], FrameLayout.LayoutParams(1, 1))
-                            }
-                        }
-                        targetMarkers[key]?.let { updateMarkerPosition(it, update.targetLat, update.targetLng, 0f, isTarget = true) }
-                    } else {
-                        // 无 target 则移除
-                        targetMarkers[key]?.let { overlay.removeView(it) }
-                        targetMarkers.remove(key)
-                        targetLines[key]?.let { overlay.removeView(it) }
-                        targetLines.remove(key)
-                    }
-                }
-            }
-        }
-    }
+    /** 朝向只在 0~360 有意义；NaN/Infinity 会让 JS 里的 rotate() 失效 */
+    private fun deg(heading: Float): Float = if (heading.isFinite()) heading else 0f
 
     private fun requestCenterAndZoom() {
         postJs("MapInterface.getCenterAndZoom()")
     }
 
+    /**
+     * 页面加载完成前 evaluateJavascript 是发给空白页的，会直接丢掉。
+     * 所以标记指令先排队，页面就绪（onPageFinished / onMapReady）时一起发。
+     */
     @SuppressLint("SetJavaScriptEnabled")
     private fun postJs(code: String) {
+        if (!mapReady) {
+            if (pendingJs.size < 128) pendingJs.add(code)
+            return
+        }
         webView.post { webView.evaluateJavascript(code, null) }
+    }
+
+    private fun onMapPageReady() {
+        mapReady = true
+        if (pendingJs.isEmpty()) return
+        val queued = pendingJs.toList()
+        pendingJs.clear()
+        webView.post {
+            queued.forEach { webView.evaluateJavascript(it, null) }
+        }
     }
 
     // ─── JS Bridge ───────────────────────────────────────────────────
@@ -490,30 +352,39 @@ class MapViewImpl @JvmOverloads constructor(
 
         @JavascriptInterface
         fun onMapReady() {
-            android.util.Log.d("MapDebug", "Map ready")
+            // 页面脚本已跑起来（Leaflet 已建好），早先排队的标记指令现在可以发了
+            onMapPageReady()
             postJs("MapInterface.getCenterAndZoom()")
+        }
+
+        @JavascriptInterface
+        fun onMapMoving(moving: Boolean) {
+            mapMoving = moving
         }
 
         @JavascriptInterface
         fun onCenterAndZoom(zoom: Double, centerLat: Double, centerLng: Double, cssWidth: Int, cssHeight: Int) {
             val wasInitialized = mapViewWidth > 0 && mapViewHeight > 0
-            // 保持 CSS 像素原始值，用于 Mercator 投影计算
+            // 值没变就别重画（空闲时每 500ms 一次轮询，本来全是白画）
+            val changed = cssWidth != mapViewWidth || cssHeight != mapViewHeight ||
+                zoom != currentZoom || centerLat != currentCenterLat || centerLng != currentCenterLng
+            // 保持 CSS 像素原始值，用于十字线旁的墨卡托投影计算
             mapViewWidth = cssWidth
             mapViewHeight = cssHeight
             currentZoom = zoom
             currentCenterLat = centerLat
             currentCenterLng = centerLng
-            android.util.Log.d("MapDebug", "onCenterAndZoom: zoom=$zoom center=($centerLat,$centerLng) css=${cssWidth}x${cssHeight} pending=${pendingPositions.size}")
-            // 确保在 UI 线程执行 layout 和 invalidate
+
+            if (!wasInitialized && cssWidth > 0 && cssHeight > 0) {
+                onFirstMapReady?.invoke()
+            }
+
+            // 拖拽/缩放动画进行中：数值照记（设目标要用地图中心），但不重画
+            if (mapMoving || !changed) return
+
             post {
-                updateCorners()
                 crosshairView?.invalidate()
                 cornerCoordsView?.invalidate()
-                refreshAllMarkers()
-            }
-            if (!wasInitialized && cssWidth > 0 && cssHeight > 0) {
-                android.util.Log.d("MapDebug", "First map ready, triggering callback")
-                onFirstMapReady?.invoke()
             }
         }
     }
@@ -543,6 +414,17 @@ class MapViewImpl @JvmOverloads constructor(
         private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xBBFFFFFF.toInt()
         }
+        // 这两个以前是在 onDraw 里 new 出来的，每帧都在分配
+        private val debugPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF00AA00.toInt()
+            textSize = 20f
+            textAlign = Paint.Align.CENTER
+        }
+        private val debugBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xBB000000.toInt()
+        }
+        private var debugText = ""
+        private var debugWidth = 0f
 
         override fun onDraw(canvas: Canvas) {
             // 直接用 canvas 的实际尺寸，不用 mapViewWidth/Height
@@ -563,21 +445,15 @@ class MapViewImpl @JvmOverloads constructor(
             drawCorner(canvas, pad,      h - pad,      "左下", true)
             drawCorner(canvas, w - pad,  h - pad,      "右下", false)
 
-            // Debug: 屏幕尺寸（顶部居中）
-            val debugText = "屏幕:${w.toInt()}x${h.toInt()}"
-            val debugPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = 0xFF00AA00.toInt()
-                textSize = 20f
-            }
-            val debugBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = 0xBB000000.toInt()
+            // Debug: 屏幕尺寸（顶部居中）。尺寸不会变，量一次就够
+            if (debugText.isEmpty()) {
+                debugText = "屏幕:${w.toInt()}x${h.toInt()}"
+                debugWidth = debugPaint.measureText(debugText)
             }
             val debugX = w / 2
             val debugY = 20f
-            val debugW = debugPaint.measureText(debugText)
             val debugH = 28f
-            canvas.drawRoundRect(debugX - debugW / 2 - 8f, debugY - debugH + 4f, debugX + debugW / 2 + 8f, debugY + 4f, 8f, 8f, debugBgPaint)
-            debugPaint.textAlign = Paint.Align.CENTER
+            canvas.drawRoundRect(debugX - debugWidth / 2 - 8f, debugY - debugH + 4f, debugX + debugWidth / 2 + 8f, debugY + 4f, 8f, 8f, debugBgPaint)
             canvas.drawText(debugText, debugX, debugY, debugPaint)
         }
 
@@ -596,16 +472,14 @@ class MapViewImpl @JvmOverloads constructor(
 
 
         // dy: screen pixels from center. dy>0=above center(north), dy<0=below center(south)
-        // Same formula as latLngToScreen for worldY
         private fun cornerLat(dy: Double): Double {
             val scale = 256.0 * 2.0.pow(currentZoom)
-            // Use SAME formula as latLngToScreen for worldY:
             // worldY/halfScale = 0.5 - ln(tan(latRad) + 1/cos(latRad)) / (2π)
             val centerLatRad = Math.toRadians(currentCenterLat)
             val centerWorldY = (0.5 - kotlin.math.ln(kotlin.math.tan(centerLatRad) + 1.0 / kotlin.math.cos(centerLatRad)) / (2.0 * Math.PI)) * scale * 0.5
             val worldY = centerWorldY - dy
             val worldYFrac = worldY / (scale * 0.5)
-            // Inverse: lat = 2*atan(exp(π*(1-2*worldYFrac))) - π/2  (same as latLngToScreen inverse)
+            // Inverse: lat = 2*atan(exp(π*(1-2*worldYFrac))) - π/2
             val latRad = 2.0 * kotlin.math.atan(kotlin.math.exp(Math.PI * (1.0 - 2.0 * worldYFrac))) - Math.PI / 2.0
             return Math.toDegrees(latRad)
         }
@@ -617,7 +491,7 @@ class MapViewImpl @JvmOverloads constructor(
             return worldX / scale * 360.0 - 180.0
         }
 
-        private fun fmt(v: Double) = String.format("%.4f", v)
+        private fun fmt(v: Double) = fmtFixed(v, 4)
     }
 
     // ─── Crosshair View ─────────────────────────────────────────────
@@ -659,9 +533,10 @@ class MapViewImpl @JvmOverloads constructor(
             canvas.drawCircle(cx, cy, 8f, paint)
 
             // 坐标文字（在十字线上方，三行，位置抬高不挡十字星）
-            val line1 = String.format("经度: %.6f", currentCenterLng)
-            val line2 = String.format("纬度: %.6f", currentCenterLat)
-            val altText = if (currentAltitude != null) String.format("海拔: %.1f m", currentAltitude!!) else "海拔: -- m"
+            val line1 = "经度: " + fmtFixed(currentCenterLng, 6)
+            val line2 = "纬度: " + fmtFixed(currentCenterLat, 6)
+            val altitude = currentAltitude
+            val altText = if (altitude != null) "海拔: " + fmtFixed(altitude, 1) + " m" else "海拔: -- m"
             val lineH = 28f
 
             // 背景框在十字星上方，不遮挡
@@ -677,123 +552,6 @@ class MapViewImpl @JvmOverloads constructor(
             canvas.drawText(line1, textX + 8f, textY + lineH, textPaint)
             canvas.drawText(line2, textX + 8f, textY + lineH * 2, textPaint)
             canvas.drawText(altText, textX + 8f, textY + lineH * 3, textPaint)
-        }
-    }
-
-    // ─── Marker View ─────────────────────────────────────────────────
-
-    // ─── Marker View ─────────────────────────────────────────────────
-
-    inner class MarkerView @JvmOverloads constructor(
-        ctx: Context,
-        attrs: AttributeSet? = null,
-        defStyleAttr: Int = 0
-    ) : View(ctx, attrs, defStyleAttr) {
-        private var label: String = ""
-        private var heading: Float = 0f
-        private var isSelf: Boolean = false
-        private var isTarget: Boolean = false
-        private var isServerPos: Boolean = false
-        private var markerLat: Double = 0.0
-        private var markerLng: Double = 0.0
-        private val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val coordTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val arrowPath = Path()
-
-        init { setWillNotDraw(false) }
-
-        fun update(lat: Double, lng: Double, heading: Float = 0f, isSelf: Boolean = false, isTarget: Boolean = false, isServerPos: Boolean = false) {
-            android.util.Log.d("MapDebug", "MarkerView.update: isSelf=$isSelf isTarget=$isTarget isServerPos=$isServerPos size=${width}x${height} lat=$lat lng=$lng")
-            this.label = if (isTarget) "🎯" else if (isSelf) "我" else if (isServerPos) "云" else (markerViews.entries.find { it.value == this }?.key ?: "")
-            this.heading = heading
-            this.isSelf = isSelf
-            this.isTarget = isTarget
-            this.isServerPos = isServerPos
-            this.markerLat = lat
-            this.markerLng = lng
-            invalidate()
-        }
-
-        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            setMeasuredDimension(80, 100)
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            val w = width.toFloat()
-            val h = height.toFloat()
-            if (w <= 0 || h <= 0) return
-            val cx = w / 2
-            val cy = h / 2
-
-            if (isTarget) {
-                bgPaint.color = 0xFFFF9800.toInt()
-                canvas.drawRoundRect(0f, 0f, w, h, 8f, 8f, bgPaint)
-                textPaint.color = 0xFFFFFFFF.toInt()
-                textPaint.textSize = h * 0.6f
-                textPaint.textAlign = Paint.Align.CENTER
-                canvas.drawText("T", cx, cy + textPaint.textSize / 3, textPaint)
-                return
-            }
-
-            // 箭头，旋转角度=heading（0°指北，顺时针）
-            canvas.save()
-            canvas.rotate(heading, cx, cy)
-
-            if (isSelf) {
-                // 本地GPS：空心三角 emoji △（X轴压扁变尖）
-                textPaint.color = 0xFFFFD700.toInt()
-                textPaint.textSize = h * 0.9f
-                textPaint.textAlign = Paint.Align.CENTER
-
-                canvas.save()
-                canvas.scale(0.65f, 1f, cx, cy)
-                canvas.drawText("\u25B3", cx, cy + textPaint.textSize / 3, textPaint)
-                canvas.restore()
-            } else {
-                // 服务器位置/其他用户：↑箭头（保持原样）
-                textPaint.color = when {
-                    isServerPos -> 0xFF4CAF50.toInt()  // 绿色
-                    else -> 0xFF2196F3.toInt()           // 蓝色
-                }
-                textPaint.textSize = h * 0.8f
-                textPaint.textAlign = Paint.Align.CENTER
-                canvas.drawText("↑", cx, cy + textPaint.textSize / 3, textPaint)
-            }
-
-            canvas.restore()
-
-            // 昵称（箭头下方）
-            if (label.isNotEmpty()) {
-                textPaint.color = 0xFFFFFFFF.toInt()
-                textPaint.textSize = 18f
-                textPaint.textAlign = Paint.Align.CENTER
-                canvas.drawText(label, cx, h + 20f, textPaint)
-            }
-        }
-    }
-
-    // ─── Target Line View ───────────────────────────────────────────
-
-    inner class TargetLineView @JvmOverloads constructor(
-        ctx: Context,
-        attrs: AttributeSet? = null,
-        defStyleAttr: Int = 0
-    ) : View(ctx, attrs, defStyleAttr) {
-        private var x1 = 0f; private var y1 = 0f; private var x2 = 0f; private var y2 = 0f
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xCCFF9800.toInt()
-            strokeWidth = 6f
-            style = Paint.Style.STROKE
-            pathEffect = android.graphics.DashPathEffect(floatArrayOf(24f, 12f), 0f)
-        }
-        fun setLine(x1: Float, y1: Float, x2: Float, y2: Float) {
-            this.x1 = x1; this.y1 = y1; this.x2 = x2; this.y2 = y2
-            invalidate()
-        }
-        override fun onDraw(canvas: Canvas) {
-            canvas.drawLine(x1, y1, x2, y2, paint)
         }
     }
 
@@ -1139,15 +897,23 @@ class MapViewImpl @JvmOverloads constructor(
         private val rowTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFF000000.toInt(); textSize = 28f
         }
+        // 标题行最右边的「退出登录」
+        private val logoutPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFE53935.toInt(); textSize = 28f; textAlign = Paint.Align.RIGHT
+        }
 
         init { setWillNotDraw(false) }
 
         fun setOnClickListener(listener: (String) -> Unit) { onClickListener = listener }
         fun setHasTarget(has: Boolean) { hasTarget = has; invalidate() }
 
+        /** 「退出登录」文字的左边界，绘制和点击热区共用 */
+        private fun logoutLeft(): Float =
+            width - dp(10) - logoutPaint.measureText(LOGOUT_LABEL) - dp(6)
+
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            // 标题(dp(30)) + 分隔线(dp(2)) + 3行内容(dp(24)每行) + padding(dp(8))
-            val contentHeight = dp(30) + dp(2) + (dp(24) * 3) + dp(8)
+            // 标题行(dp(30)) + 分隔线(dp(2)) + 2行内容(dp(24)每行) + padding(dp(8))
+            val contentHeight = dp(30) + dp(2) + (dp(24) * 2) + dp(8)
             setMeasuredDimension(dp(130), contentHeight)
         }
 
@@ -1156,8 +922,9 @@ class MapViewImpl @JvmOverloads constructor(
             canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), dp(10).toFloat(), dp(10).toFloat(), bgPaint)
             canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), dp(10).toFloat(), dp(10).toFloat(), borderPaint)
 
-            // header
+            // header：左边「本地」，同一行最右边「退出登录」
             canvas.drawText("本地", dp(10).toFloat(), dp(20).toFloat(), headerPaint)
+            canvas.drawText(LOGOUT_LABEL, (width - dp(10)).toFloat(), dp(20).toFloat(), logoutPaint)
             canvas.drawLine(dp(4).toFloat(), dp(30).toFloat(), (width - dp(4)).toFloat(), dp(30).toFloat(), dividerPaint)
 
             // rows at y=36, 60 (24dp spacing)
@@ -1177,28 +944,20 @@ class MapViewImpl @JvmOverloads constructor(
             rowTextPaint.color = if (hasTarget) 0xFFFF9800.toInt() else 0xFF2196F3.toInt()
             canvas.drawText(if (hasTarget) "取消目标" else "设目标", dp(28).toFloat(), (rowY2 + dp(13)).toFloat(), rowTextPaint)
             rowTextPaint.color = 0xFF000000.toInt()
-
-            // 退出登录 row
-            val rowY3 = dp(84)
-            canvas.drawRect(dp(4).toFloat(), rowY3.toFloat() - dp(3), (width - dp(4)).toFloat(), (rowY3 + dp(20)).toFloat(), rowBgPaint)
-            rowIconPaint.color = 0xFFE53935.toInt()
-            canvas.drawText("⊗", dp(10).toFloat(), (rowY3 + dp(13)).toFloat(), rowIconPaint)
-            rowTextPaint.color = 0xFFE53935.toInt()
-            canvas.drawText("退出登录", dp(28).toFloat(), (rowY3 + dp(13)).toFloat(), rowTextPaint)
-            rowTextPaint.color = 0xFF000000.toInt()
         }
 
         override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
             if (event.action == android.view.MotionEvent.ACTION_UP) {
                 parent?.requestDisallowInterceptTouchEvent(true)
+                val x = event.x
                 val y = event.y
                 val rowY1 = dp(36)
                 val rowY2 = dp(60)
-                val rowY3 = dp(84)
                 when {
+                    // 标题行右侧那块就是退出登录
+                    y <= dp(30) && x >= logoutLeft() -> onClickListener?.invoke("logout")
                     y >= (rowY1 - dp(3)) && y <= (rowY1 + dp(20)) -> onClickListener?.invoke("location")
                     y >= (rowY2 - dp(3)) && y <= (rowY2 + dp(20)) -> onClickListener?.invoke("target")
-                    y >= (rowY3 - dp(3)) && y <= (rowY3 + dp(20)) -> onClickListener?.invoke("logout")
                 }
             }
             return true
