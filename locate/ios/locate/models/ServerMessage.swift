@@ -9,6 +9,7 @@ enum ServerMessage {
     case userLeft(username: String)
     case targetUpdate(username: String, targetLat: Double?, targetLng: Double?)
     case positionUpdate(username: String, lat: Double, lng: Double, heading: Float)
+    case forceLogout(message: String)
     case error(message: String)
 
     static func parse(_ jsonString: String) -> ServerMessage? {
@@ -59,6 +60,11 @@ enum ServerMessage {
                 lng: obj["lng"] as? Double ?? 0,
                 heading: Float(obj["heading"] as? Double ?? 0)
             )
+
+        case "force_logout":
+            // 同一账号在别处登录时服务器会踢掉这条连接。以前没解析这条消息，
+            // 结果是被踢了还以为在线，位置一直上报不上去。
+            return .forceLogout(message: obj["message"] as? String ?? "账号已在其他地方登录")
 
         case "error":
             return .error(message: obj["message"] as? String ?? "未知错误")

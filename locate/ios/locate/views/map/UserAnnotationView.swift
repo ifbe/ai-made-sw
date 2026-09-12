@@ -29,10 +29,12 @@ class UserAnnotationView: MKAnnotationView {
         let cx = rect.midX
         let cy = rect.midY
 
+        // UIKit 的绘图坐标系 y 向下，正角度即顺时针，和 Android 的
+        // canvas.rotate(heading) 语义一致；以前写成 -headingRad，箭头是镜像的
         let headingRad = CGFloat(userAnnotation.heading) * .pi / 180.0
         ctx?.saveGState()
         ctx?.translateBy(x: cx, y: cy)
-        ctx?.rotate(by: -headingRad)
+        ctx?.rotate(by: headingRad)
 
         // 本地GPS：空心三角；服务器所有人：实心三角
         if userAnnotation.isSelf {

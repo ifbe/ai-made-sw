@@ -11,6 +11,8 @@ protocol WebSocketServiceDelegate: AnyObject {
     func onError(message: String)
     func onConnected()
     func onDisconnected()
+    /// 账号在别处登录，服务器把这条连接踢了
+    func onForceLogout(message: String)
 }
 
 /// WebSocket 服务，替代 Android 的 ApiClient
@@ -22,6 +24,11 @@ final class WebSocketService: NSObject {
     private var token: String?
     private var username: String?
     private var serverUrl: String
+
+    // 诊断用：每类只记第一次，避免一秒一条刷屏
+    private var loggedFirstPositionSent = false
+    private var loggedSendError = false
+    private var loggedSkipWarning = false
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
@@ -61,7 +68,14 @@ final class WebSocketService: NSObject {
     }
 
     func sendPosition(lat: Double, lng: Double, heading: Float) {
-        guard let token = token, let username = username else { return }
+        guard let token = token, let username = username else {
+            // 以前这里是静默 return，位置一条都发不出去也看不出来
+            if !loggedSkipWarning {
+                loggedSkipWarning = true
+                AppLog.w("位置上报被跳过：还没登录成功（缺 token 或用户名）")
+            }
+            return
+        }
         let msg: [String: Any] = [
             "type": "update_position",
             "token": token,
@@ -70,7 +84,9 @@ final class WebSocketService: NSObject {
             "lng": lng,
             "heading": heading
         ]
-        send(msg)
+        send(msg, firstSuccessMessage: loggedFirstPositionSent
+            ? nil
+            : "位置已上报：\(WebSocketService.fmt(lat)), \(WebSocketService.fmt(lng))")
     }
 
     func sendTarget(targetLat: Double?, targetLng: Double?) {
@@ -96,14 +112,35 @@ final class WebSocketService: NSObject {
         token = nil
     }
 
-    private func send(_ dict: [String: Any]) {
+    private func send(_ dict: [String: Any], firstSuccessMessage: String? = nil) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
-              let jsonString = String(data: data, encoding: .utf8) else { return }
-        webSocketTask?.send(.string(jsonString)) { error in
+              let jsonString = String(data: data, encoding: .utf8) else {
+            logSendError("消息无法序列化")
+            return
+        }
+        guard let task = webSocketTask else {
+            logSendError("WebSocket 未连接")
+            return
+        }
+        task.send(.string(jsonString)) { [weak self] error in
             if let error = error {
-                print("WebSocket send error: \(error)")
+                self?.logSendError(error.localizedDescription)
+            } else if let message = firstSuccessMessage {
+                self?.loggedFirstPositionSent = true
+                AppLog.i(message)
             }
         }
+    }
+
+    private func logSendError(_ reason: String) {
+        if loggedSendError { return }
+        loggedSendError = true
+        AppLog.e("消息发送失败：\(reason)")
+    }
+
+    /// 日志里显示坐标用
+    static func fmt(_ value: Double) -> String {
+        String(format: "%.5f", value)
     }
 
     private func receiveMessage() {
@@ -154,6 +191,9 @@ final class WebSocketService: NSObject {
             delegate?.onTargetUpdate(username: username, targetLat: targetLat, targetLng: targetLng)
         case .positionUpdate(let username, let lat, let lng, let heading):
             delegate?.onPositionUpdate(username: username, lat: lat, lng: lng, heading: heading)
+        case .forceLogout(let message):
+            token = nil
+            delegate?.onForceLogout(message: message)
         case .error(let message):
             delegate?.onError(message: message)
         }

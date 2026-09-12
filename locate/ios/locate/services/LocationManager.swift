@@ -1,6 +1,5 @@
 import Foundation
 import CoreLocation
-import CoreMotion
 
 protocol LocationManagerDelegate: AnyObject {
     func didUpdateLocation(lat: Double, lng: Double, heading: Float)
@@ -12,10 +11,14 @@ final class LocationManager: NSObject {
     weak var delegate: LocationManagerDelegate?
 
     private let clLocationManager = CLLocationManager()
-    private let motionManager = CMMotionManager()
 
     private(set) var currentPosition: Position?
     private(set) var currentHeading: Float = 0
+
+    // 日志去重标记（对应 Android 的 LocationTrackerService 里的那几条 AppLog）
+    private var started = false
+    private var loggedFirstFix = false
+    private var loggedPermissionDenied = false
 
     // 是否在中国大陆需要坐标转换
     private var needsGcj02Conversion: Bool {
@@ -26,7 +29,6 @@ final class LocationManager: NSObject {
     override init() {
         super.init()
         setupLocationManager()
-        setupMotionManager()
     }
 
     private func setupLocationManager() {
@@ -36,37 +38,32 @@ final class LocationManager: NSObject {
         clLocationManager.pausesLocationUpdatesAutomatically = false
     }
 
-    private func setupMotionManager() {
-        guard motionManager.isDeviceMotionAvailable else { return }
-        motionManager.deviceMotionUpdateInterval = 0.1
-
-        motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
-            guard let motion = motion else { return }
-            self?.processDeviceMotion(motion)
-        }
-    }
-
-    private func processDeviceMotion(_ motion: CMDeviceMotion) {
-        let gravity = motion.gravity
-        var azimuth = atan2(gravity.x, gravity.y) * 180 / .pi
-        if azimuth < 0 { azimuth += 360 }
-        currentHeading = Float(azimuth)
-    }
-
+    /// 朝向用罗盘，不用 CoreMotion。
+    /// 原来那套 atan2(gravity.x, gravity.y) 是拿重力分量凑的：手机平放在手里时
+    /// 两个分量都是 0，算出来恒为 0，根本不是朝向；安卓那边用的是
+    /// SensorManager 的方位角（磁北、顺时针），这里用 magneticHeading 对齐。
     func requestPermission() {
         clLocationManager.requestWhenInUseAuthorization()
     }
 
     func start() {
+        if !started {
+            started = true
+            AppLog.i("定位服务已启动")
+        }
         clLocationManager.startUpdatingLocation()
-        if !motionManager.isDeviceMotionActive {
-            motionManager.startDeviceMotionUpdates()
+        if CLLocationManager.headingAvailable() {
+            clLocationManager.startUpdatingHeading()
         }
     }
 
     func stop() {
+        if started {
+            started = false
+            AppLog.i("定位服务已停止")
+        }
         clLocationManager.stopUpdatingLocation()
-        motionManager.stopDeviceMotionUpdates()
+        clLocationManager.stopUpdatingHeading()
     }
 
     func getCurrentHeading() -> Float {
@@ -117,6 +114,11 @@ extension LocationManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
 
+        if !loggedFirstFix {
+            loggedFirstFix = true
+            AppLog.i("首次定位成功，精度 \(Int(location.horizontalAccuracy)) 米")
+        }
+
         currentPosition = Position(
             lat: location.coordinate.latitude,
             lng: location.coordinate.longitude,
@@ -134,6 +136,12 @@ extension LocationManager: CLLocationManagerDelegate {
         delegate?.didUpdateLocation(lat: gcjLat, lng: gcjLng, heading: currentHeading)
     }
 
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        // magneticHeading < 0 表示这次读数无效
+        guard newHeading.magneticHeading >= 0 else { return }
+        currentHeading = Float(newHeading.magneticHeading)
+    }
+
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("Location error: \(error)")
     }
@@ -141,9 +149,14 @@ extension LocationManager: CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         switch manager.authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways:
+            loggedPermissionDenied = false
+            AppLog.i("已获得定位权限")
             start()
         case .denied, .restricted:
-            print("位置权限被拒绝")
+            if !loggedPermissionDenied {
+                loggedPermissionDenied = true
+                AppLog.w("位置权限被拒绝，地图无法定位")
+            }
         default:
             break
         }
