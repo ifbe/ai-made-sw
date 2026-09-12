@@ -1,20 +1,108 @@
 // ========== 工具函数 ==========
+
+/** 界面设置（服务器地址 / 用户名）在 localStorage 里的键 */
+const UI_PREFS_KEY = 'locate.ui';
+
+/**
+ * 写一条日志。
+ *
+ * 和 Android 的 AppLog 一样：既打到浏览器控制台，也进左下角日志矩形的缓冲。
+ * 界面只显示应用自己写的消息，不镜像 console。
+ */
 function debugLog(...args) {
-    const timestamp = new Date().toLocaleTimeString();
-    const message = `[${timestamp}] ${args.join(' ')}`;
-    console.log(message);
+    AppLog.i(args.map(describe).join(' '));
+}
 
-    if (AppState.debugEnabled) {
-        const line = document.createElement('div');
-        line.textContent = message;
-        DOM.debugPanel.appendChild(line);
-        DOM.debugPanel.scrollTop = DOM.debugPanel.scrollHeight;
+function debugWarn(...args) {
+    AppLog.w(args.map(describe).join(' '));
+}
 
-        while (DOM.debugPanel.children.length > 100) {
-            DOM.debugPanel.removeChild(DOM.debugPanel.firstChild);
+function debugError(...args) {
+    AppLog.e(args.map(describe).join(' '));
+}
+
+function describe(value) {
+    if (value instanceof Error) return value.message || String(value);
+    if (value === null || value === undefined) return String(value);
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch (e) {
+            return String(value);
         }
     }
+    return String(value);
 }
+
+// ========== 服务器地址 ==========
+
+/** 补全成 http(s)://host 形式，去掉结尾的斜杠；空则用本页同源地址 */
+function normalizeServerUrl(raw) {
+    let url = (raw || '').trim();
+    if (url === '') return SAME_ORIGIN;
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+        url = (window.location.protocol === 'https:' ? 'https://' : 'http://') + url;
+    }
+    return url.replace(/\/+$/, '');
+}
+
+/** HTTP 接口地址 */
+function apiUrl(path) {
+    return normalizeServerUrl(AppState.serverUrl) + path;
+}
+
+/** WebSocket 地址（和原来的保持一致：只取 host） */
+function wsUrl() {
+    const url = new URL(normalizeServerUrl(AppState.serverUrl));
+    return (url.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + url.host;
+}
+
+/** 等待 WebSocket 连上，超时就报错（原来的写法没有超时，服务器不通会一直转圈） */
+function waitForSocket(timeoutMs = 8000) {
+    return new Promise((resolve, reject) => {
+        const started = Date.now();
+        const timer = setInterval(() => {
+            if (AppState.socket && AppState.socket.readyState === WebSocket.OPEN) {
+                clearInterval(timer);
+                resolve();
+            } else if (Date.now() - started > timeoutMs) {
+                clearInterval(timer);
+                reject(new Error('连接服务器超时'));
+            }
+        }, 100);
+    });
+}
+
+// ========== 界面设置读写 ==========
+
+function loadPrefs() {
+    const saved = readPrefs();
+    AppState.serverUrl = normalizeServerUrl(saved.serverUrl || SAME_ORIGIN);
+    DOM.serverUrl.value = AppState.serverUrl;
+    DOM.username.value = saved.username || '';
+}
+
+function savePrefs() {
+    try {
+        localStorage.setItem(UI_PREFS_KEY, JSON.stringify({
+            serverUrl: AppState.serverUrl,
+            username: DOM.username.value.trim()
+        }));
+    } catch (e) {
+        // 隐私模式下写不进去，忽略
+    }
+}
+
+function readPrefs() {
+    try {
+        const raw = localStorage.getItem(UI_PREFS_KEY);
+        return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+// ========== 加密 ==========
 
 function sha256(message) {
     return CryptoJS.SHA256(message).toString(CryptoJS.enc.Hex);

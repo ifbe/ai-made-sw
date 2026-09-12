@@ -5,10 +5,10 @@ async function reconnect() {
     if (AppState.isReconnecting || !AppState.currentUser || !AppState.savedPassword) return;
 
     AppState.isReconnecting = true;
-    debugLog('开始重新认证...');
+    debugLog('开始重新认证…');
 
     try {
-        const challengeResponse = await fetch('/api/challenge', {
+        const challengeResponse = await fetch(apiUrl('/api/challenge'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: AppState.currentUser })
@@ -27,15 +27,8 @@ async function reconnect() {
 
         if (!AppState.socket || AppState.socket.readyState !== WebSocket.OPEN) {
             initSocket();
-            await new Promise(resolve => {
-                const checkInterval = setInterval(() => {
-                    if (AppState.socket && AppState.socket.readyState === WebSocket.OPEN) {
-                        clearInterval(checkInterval);
-                        resolve();
-                    }
-                }, 100);
-            });
         }
+        await waitForSocket();
 
         const loginMsg = {
             type: 'login',
@@ -45,21 +38,21 @@ async function reconnect() {
             lng: AppState.localLng,
             heading: AppState.localHeading
         };
-        
+
         // 如果有目标，一并发送
         if (AppState.targetLat && AppState.targetLng) {
             loginMsg.target_lat = AppState.targetLat;
             loginMsg.target_lng = AppState.targetLng;
         }
-        
+
         AppState.socket.send(JSON.stringify(loginMsg));
         debugLog('重新认证成功');
 
     } catch (error) {
-        debugLog('重新认证错误:', error);
+        debugError('重新认证失败：' + describe(error));
         AppState.savedPassword = null;
         handleLogout();
-        alert('重新认证失败，请手动登录');
+        showLoginError('重新认证失败，请重新登录');
     } finally {
         AppState.isReconnecting = false;
     }
@@ -68,58 +61,53 @@ async function reconnect() {
 // 初始化WebSocket
 function initSocket() {
     if (AppState.socket) {
+        // 主动关闭：别让 onclose 再触发一次自动重连
+        AppState.socket.onclose = null;
         AppState.socket.close();
+        AppState.socket = null;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
+    const url = wsUrl();
+    AppState.socketUrl = url;
 
-    debugLog('连接 WebSocket:', wsUrl);
-    AppState.socket = new WebSocket(wsUrl);
+    debugLog('连接 WebSocket：' + url);
+    const socket = new WebSocket(url);
+    AppState.socket = socket;
 
-    AppState.socket.onopen = () => {
+    socket.onopen = () => {
+        if (AppState.socket !== socket) return;
         debugLog('WebSocket连接成功');
-        DOM.connectionStatus.innerText = '✅ 已连接';
-        DOM.connectionStatus.className = 'connection-status connected';
-        DOM.autoReconnectBtn.classList.remove('show');
-        DOM.manualReconnectBtn.classList.remove('show');
     };
 
-    AppState.socket.onclose = (event) => {
-        debugLog('WebSocket连接断开:', event.code, event.reason);
-        DOM.connectionStatus.innerText = '❌ 连接断开';
-        DOM.connectionStatus.className = 'connection-status disconnected';
+    socket.onclose = (event) => {
+        if (AppState.socket !== socket) return;
+        debugWarn('WebSocket连接断开：' + event.code + ' ' + (event.reason || ''));
 
-        if (AppState.currentUser) {
-            DOM.autoReconnectBtn.classList.add('show');
-            DOM.manualReconnectBtn.classList.add('show');
-            
-            if (AppState.autoReconnectEnabled) {
-                debugLog('自动重连已开启，3秒后尝试...');
-                if (AppState.reconnectTimer) clearTimeout(AppState.reconnectTimer);
-                AppState.reconnectTimer = setTimeout(() => {
-                    reconnect();
-                }, 3000);
-            }
+        if (AppState.currentUser && AppState.savedPassword && AppState.autoReconnectEnabled) {
+            debugLog('自动重连已开启，3秒后尝试…');
+            if (AppState.reconnectTimer) clearTimeout(AppState.reconnectTimer);
+            AppState.reconnectTimer = setTimeout(() => {
+                reconnect();
+            }, 3000);
         }
     };
 
-    AppState.socket.onerror = (error) => {
-        debugLog('WebSocket错误:', error);
+    socket.onerror = () => {
+        debugError('WebSocket 连接出错：' + url);
     };
 
-    AppState.socket.onmessage = (event) => {
+    socket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            debugLog('收到消息:', data.type);
+            debugLog('收到消息: ' + data.type);
 
             switch (data.type) {
                 case 'login_success':
-                    debugLog('登录成功:', data);
+                    AppLog.i('登录成功：' + (data.nickname || AppState.currentUser || ''));
                     AppState.sessionToken = data.token;
-
-                    DOM.loginPage.style.display = 'none';
-                    DOM.mapPage.style.display = 'block';
+                    AppState.loggingIn = false;
+                    setLoginBusy(false);
+                    applyAuthUi();
 
                     if (!AppState.mapInitialized) {
                         initMap();
@@ -141,13 +129,14 @@ function initSocket() {
                     clearSelfTarget();
 
                     updateSelfLocalMarker();
-                    
+
                     // 如果有目标，显示目标线
                     if (AppState.targetLat && AppState.targetLng) {
                         updateSelfTarget();
+                        updateTargetButton(true);
                     }
 
-                    AppState.socket.send(JSON.stringify({
+                    socket.send(JSON.stringify({
                         type: 'get_users',
                         token: AppState.sessionToken,
                         username: AppState.currentUser
@@ -157,13 +146,10 @@ function initSocket() {
                     if (typeof sendPositionToServer === 'function') {
                         sendPositionToServer();
                     }
-
-                    DOM.loginBtn.disabled = false;
-                    DOM.loginBtn.innerHTML = '登录';
                     break;
 
                 case 'user_list':
-                    debugLog('收到用户列表:', data.users.length, '人');
+                    debugLog('收到用户列表：' + data.users.length + ' 人');
 
                     // 存储所有用户（包括自己），用于右上角面板
                     AppState.otherUsersData.clear();
@@ -174,18 +160,30 @@ function initSocket() {
                     updateUserListPanel(data.users); // 传入全部用户，右上角面板自己过滤
                     break;
 
-                case 'update_position':
-                    debugLog('位置更新:', data.username);
+                case 'update_position': {
+                    debugLog('位置更新：' + data.username);
 
                     // 更新 otherUsersData（所有人一视同仁，包括自己）
                     const existingData = AppState.otherUsersData.get(data.username) || {};
-                    AppState.otherUsersData.set(data.username, { ...existingData, lat: data.lat, lng: data.lng, heading: data.heading });
+                    const mergedData = {
+                        ...existingData,
+                        lat: data.lat,
+                        lng: data.lng,
+                        heading: data.heading
+                    };
+                    AppState.otherUsersData.set(data.username, mergedData);
 
-                    // 更新地图上其他用户的标记（不包括自己，自己用 selfLocalMarker）
-                    if (data.username !== AppState.currentUser) {
+                    // 蓝色 ↑ 标记：服务器回显的自己那一份也要更新
+                    //（本地的金色 △ 由 GPS 那条路单独更新）
+                    // 位置广播里没有 nickname，所以昵称沿用 user_list 里的，别退回用户名
+                    if (!(data.lat === 0 && data.lng === 0)) {
                         const marker = AppState.userMarkers.get(data.username);
                         if (marker) {
-                            const icon = createHeadingIcon(data.heading, data.nickname || data.username, 'other');
+                            const icon = createHeadingIcon(
+                                data.heading,
+                                mergedData.nickname || data.username,
+                                'other'
+                            );
                             marker.setLatLng([data.lat, data.lng]);
                             marker.setIcon(icon);
                         }
@@ -201,8 +199,10 @@ function initSocket() {
                             AppState.targetLng = data.target_lng;
                             if (AppState.targetLat && AppState.targetLng) {
                                 updateSelfTarget();
+                                updateTargetButton(true);
                             } else {
                                 clearSelfTarget();
+                                updateTargetButton(false);
                             }
                         }
                     }
@@ -210,13 +210,18 @@ function initSocket() {
                     // 刷新右上角面板
                     updateUserListPanel([...AppState.otherUsersData.values()]);
                     break;
+                }
 
-                case 'update_target':
-                    debugLog('目标更新:', data.username, data.target_lat, data.target_lng);
+                case 'update_target': {
+                    debugLog('目标更新：' + data.username + ' ' + data.target_lat + ', ' + data.target_lng);
 
                     // 更新数据（所有人一视同仁）
                     const tgtUserData = AppState.otherUsersData.get(data.username) || {};
-                    AppState.otherUsersData.set(data.username, { ...tgtUserData, target_lat: data.target_lat, target_lng: data.target_lng });
+                    AppState.otherUsersData.set(data.username, {
+                        ...tgtUserData,
+                        target_lat: data.target_lat,
+                        target_lng: data.target_lng
+                    });
 
                     // 如果是自己
                     if (data.username === AppState.currentUser) {
@@ -224,10 +229,12 @@ function initSocket() {
                             AppState.targetLat = data.target_lat;
                             AppState.targetLng = data.target_lng;
                             updateSelfTarget();
+                            updateTargetButton(true);
                         } else {
                             AppState.targetLat = null;
                             AppState.targetLng = null;
                             clearSelfTarget();
+                            updateTargetButton(false);
                         }
                     } else {
                         // 其他用户：更新目标线
@@ -245,16 +252,17 @@ function initSocket() {
                     // 刷新右上角面板
                     updateUserListPanel([...AppState.otherUsersData.values()]);
                     break;
+                }
 
                 case 'user_joined':
-                    debugLog('用户加入:', data.username);
+                    debugLog('用户加入：' + data.username);
                     if (data.target_lat && data.target_lng) {
                         updateOtherTarget(data.username,
                             data.lat, data.lng,
                             data.target_lat, data.target_lng);
                     }
                     if (AppState.sessionToken && AppState.currentUser && AppState.socket.readyState === WebSocket.OPEN) {
-                        AppState.socket.send(JSON.stringify({
+                        socket.send(JSON.stringify({
                             type: 'get_users',
                             token: AppState.sessionToken,
                             username: AppState.currentUser
@@ -263,12 +271,12 @@ function initSocket() {
                     break;
 
                 case 'user_left':
-                    debugLog('用户离开:', data.username);
+                    debugLog('用户离开：' + data.username);
                     // 清除离开用户的目标线
                     clearOtherTarget(data.username);
-                    
+
                     if (AppState.sessionToken && AppState.currentUser && AppState.socket.readyState === WebSocket.OPEN) {
-                        AppState.socket.send(JSON.stringify({
+                        socket.send(JSON.stringify({
                             type: 'get_users',
                             token: AppState.sessionToken,
                             username: AppState.currentUser
@@ -277,17 +285,20 @@ function initSocket() {
                     break;
 
                 case 'force_logout':
-                    debugLog('被强制登出:', data.message);
-                    alert(data.message || '您的账号已在其他地方登录');
+                    debugWarn('被强制登出：' + (data.message || ''));
                     handleLogout();
+                    showLoginError(data.message || '您的账号已在其他地方登录');
                     break;
 
                 case 'error':
-                    debugLog('服务器错误:', data.message);
-                    if (data.message.includes('认证') || data.message.includes('登录')) {
-                        DOM.loginError.innerText = data.message;
-                        DOM.loginBtn.disabled = false;
-                        DOM.loginBtn.innerHTML = '登录';
+                    debugError('服务器错误：' + (data.message || ''));
+                    if (AppState.loggingIn || !AppState.currentUser) {
+                        // 登录过程中的错误放回登录矩形里
+                        AppState.loggingIn = false;
+                        AppState.currentUser = null;
+                        AppState.savedPassword = null;
+                        showLoginError(data.message || '登录失败');
+                        setLoginBusy(false);
                     } else {
                         alert('错误: ' + data.message);
                     }
@@ -298,7 +309,7 @@ function initSocket() {
                     break;
             }
         } catch (error) {
-            debugLog('处理消息错误:', error);
+            debugError('处理消息错误：' + describe(error));
         }
     };
 }

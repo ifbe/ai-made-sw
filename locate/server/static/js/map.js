@@ -46,24 +46,25 @@ function createHeadingIcon(headingDeg, userName, type = 'other') {
 // 更新本地GPS标记（只有一个 △，无特殊我的箭头）
 function updateSelfLocalMarker() {
     if (!AppState.map || !AppState.currentUser) return;
+    // 还没定位到就当没位置，别把标记画到几内亚湾
+    if (AppState.localLat === 0 && AppState.localLng === 0) return;
 
     if (AppState.selfLocalMarker) AppState.map.removeLayer(AppState.selfLocalMarker);
     const localIcon = createHeadingIcon(AppState.localHeading, AppState.currentUser, 'self_local');
     AppState.selfLocalMarker = L.marker([AppState.localLat, AppState.localLng], { icon: localIcon }).addTo(AppState.map);
 }
 
-// 刷新其他用户标记（所有人包括服务器发的自己都用 ↑）
+// 刷新队友标记：服务器发回来的"自己"那一份也画成蓝色↑（本地还有个金色△，两条路各画各的）
 function refreshOtherMarkers(users) {
     if (!AppState.map || !users) return;
 
-    const myUsername = AppState.currentUser;
-    const otherUsers = users.filter(u => u.username !== myUsername);
-    const otherUsernames = new Set(otherUsers.map(u => u.username));
+    // 不过滤自己：安卓/iOS 上服务器回显的自己也是一支蓝色↑
+    const allNames = new Set(users.map(u => u.username));
 
-    // 移除不存在的用户及其目标线
+    // 移除列表里已经没有的人及其目标线
     const existingIds = new Set(AppState.userMarkers.keys());
     existingIds.forEach(id => {
-        if (!otherUsernames.has(id)) {
+        if (!allNames.has(id)) {
             const marker = AppState.userMarkers.get(id);
             if (marker) AppState.map.removeLayer(marker);
             AppState.userMarkers.delete(id);
@@ -71,8 +72,19 @@ function refreshOtherMarkers(users) {
         }
     });
 
-    // 添加或更新其他用户（服务器发的所有人包括服务器发的我自己都用 ↑）
-    otherUsers.forEach(user => {
+    // 添加或更新队友（服务器发的所有人，包括服务器发的我自己，都用 ↑）
+    users.forEach(user => {
+        // 还没上报过坐标的人不画，否则所有标记都会堆在地图左上角
+        if (user.lat === 0 && user.lng === 0) {
+            const stale = AppState.userMarkers.get(user.username);
+            if (stale) {
+                AppState.map.removeLayer(stale);
+                AppState.userMarkers.delete(user.username);
+            }
+            clearOtherTarget(user.username);
+            return;
+        }
+
         let marker = AppState.userMarkers.get(user.username);
         const icon = createHeadingIcon(user.heading || 0, user.nickname || user.username, 'other');
 
@@ -93,9 +105,39 @@ function refreshOtherMarkers(users) {
 }
 
 // ========== 右上角用户列表面板 ==========
+const USER_COLORS = [
+    '#0099ff', '#9900ff', '#00cc99', '#ff6699',
+    '#66ccff', '#ff9933', '#cc6600', '#999999'
+];
+
+/** 按用户名取一个固定的颜色（和 iOS 一样，每个人一个色点） */
+function colorForUsername(username) {
+    let hash = 0;
+    for (let i = 0; i < username.length; i++) {
+        hash = (hash * 31 + username.charCodeAt(i)) | 0;
+    }
+    return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
+}
+
+/**
+ * 点这一行该飞到哪：
+ * - 自己那一行用本地 GPS：服务器上那份可能还是登录时占位的 (0,0)，或者被同账号的另一个客户端覆盖过
+ * - 还是 (0,0) 的人（从没上报过位置）不给飞，免得飞到几内亚湾
+ */
+function flyTargetFor(user) {
+    const isSelf = user.username === AppState.currentUser;
+    if (isSelf) {
+        const local = getCurrentPosition();
+        return local ? { lat: local.lat, lng: local.lng } : null;
+    }
+    if (user.lat === 0 && user.lng === 0) return null;
+    if (user.lat == null || user.lng == null) return null;
+    return { lat: user.lat, lng: user.lng };
+}
+
 function updateUserListPanel(users) {
-    // iOS 风格：不过滤自己，所有人（包括自己）都显示在右上角面板
-    const allUsers = users; // 直接用传入的全部用户，不额外过滤
+    // 不过滤自己，所有人（包括自己）都显示在右上角面板
+    const allUsers = users || [];
 
     DOM.userListTitle.textContent = '同服人数: ' + allUsers.length;
 
@@ -105,11 +147,13 @@ function updateUserListPanel(users) {
     }
 
     DOM.userListContent.innerHTML = allUsers.map(user => {
-        const hasTarget = user.target_lat && user.target_lng;
+        const hasTarget = !!(user.target_lat && user.target_lng);
+        const name = user.nickname || user.username;
         return `
-            <div class="user-list-row" data-username="${user.username}">
-                <span class="user-name" data-action="fly">${user.nickname || user.username}</span>
-                <span class="target-btn-small" data-action="fly-target" ${hasTarget ? '' : 'style="opacity:0.3"'}>🎯 目标</span>
+            <div class="user-list-row" data-username="${escapeAttr(user.username)}">
+                <span class="user-dot" style="background:${colorForUsername(user.username)}"></span>
+                <span class="user-name" data-action="fly">${escapeAttr(name)}</span>
+                <span class="target-btn-small ${hasTarget ? 'active' : ''}" data-action="fly-target">⊕</span>
             </div>
         `;
     }).join('');
@@ -118,24 +162,33 @@ function updateUserListPanel(users) {
     DOM.userListContent.querySelectorAll('.user-list-row').forEach(row => {
         row.addEventListener('click', (e) => {
             const username = row.dataset.username;
-            const action = e.target.dataset.action;
+            const action = e.target.dataset ? e.target.dataset.action : null;
             const userData = AppState.otherUsersData.get(username);
+            if (!userData) return;
 
-            if (action === 'fly' && userData) {
-                const lat = userData.lat;
-                const lng = userData.lng;
-                if (lat != null && lng != null) {
-                    AppState.map.setView([lat, lng], AppState.map.getZoom());
-                    debugLog('飞图到用户 ' + username + ':', lat, lng);
+            if (action === 'fly') {
+                const coord = flyTargetFor(userData);
+                if (coord) {
+                    AppState.map.setView([coord.lat, coord.lng], AppState.map.getZoom());
+                    debugLog('飞图到用户 ' + username + '：' + coord.lat + ', ' + coord.lng);
                 }
-            } else if (action === 'fly-target' && userData) {
-                if (userData.target_lat && userData.target_lng) {
+            } else if (action === 'fly-target') {
+                if (userData.target_lat && userData.target_lng &&
+                    !(userData.target_lat === 0 && userData.target_lng === 0)) {
                     AppState.map.setView([userData.target_lat, userData.target_lng], AppState.map.getZoom());
-                    debugLog('飞图到用户 ' + username + ' 的目标:', userData.target_lat, userData.target_lng);
+                    debugLog('飞图到用户 ' + username + ' 的目标：' + userData.target_lat + ', ' + userData.target_lng);
                 }
             }
         });
     });
+}
+
+function escapeAttr(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
 // ========== 目标线功能 ==========
@@ -228,18 +281,42 @@ function clearSelfTarget() {
     }
 }
 
-// 发送目标到服务器
+// 发送目标到服务器（服务器只认 update_target；位置消息里的 target 字段会被忽略）
 function sendTargetToServer() {
     if (!AppState.currentUser || !AppState.socket || AppState.socket.readyState !== WebSocket.OPEN || !AppState.sessionToken) return;
 
     AppState.socket.send(JSON.stringify({
-        type: 'update_position',
+        type: 'update_target',
         token: AppState.sessionToken,
         username: AppState.currentUser,
         target_lat: AppState.targetLat,
         target_lng: AppState.targetLng
     }));
-    debugLog('发送目标到服务器:', AppState.targetLat, AppState.targetLng);
+    debugLog('发送目标到服务器：' + AppState.targetLat + ', ' + AppState.targetLng);
+}
+
+/** 设目标（对应 Android 的 MapViewModel.onMapClick） */
+function onMapClick(lat, lng) {
+    AppState.targetLat = lat;
+    AppState.targetLng = lng;
+    updateSelfTarget();
+    updateTargetButton(true);
+    sendTargetToServer();
+}
+
+/** 取消目标 */
+function clearTarget() {
+    AppState.targetLat = null;
+    AppState.targetLng = null;
+    clearSelfTarget();
+    updateTargetButton(false);
+    sendTargetToServer();
+}
+
+/** 本地面板第二行的文字和颜色：有目标时是橙色的「取消目标」 */
+function updateTargetButton(hasTarget) {
+    DOM.btnSetTargetText.textContent = hasTarget ? '取消目标' : '设目标';
+    DOM.btnSetTarget.classList.toggle('target-active', !!hasTarget);
 }
 
 // ========== 十字星坐标更新 ==========

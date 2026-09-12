@@ -30,7 +30,7 @@ function sendPositionToServer() {
 // 开始GPS监听
 function startGPSWatch() {
     if (!navigator.geolocation) {
-        debugLog('浏览器不支持GPS定位');
+        debugWarn('浏览器不支持GPS定位');
         return;
     }
 
@@ -38,7 +38,7 @@ function startGPSWatch() {
         navigator.geolocation.clearWatch(AppState.watchId);
     }
 
-    debugLog('开始GPS定位...');
+    debugLog('定位服务已启动');
 
     AppState.watchId = navigator.geolocation.watchPosition(
         (position) => {
@@ -49,7 +49,9 @@ function startGPSWatch() {
             AppState.localLat = gcj02.lat;
             AppState.localLng = gcj02.lng;
 
-            if (position.coords.heading !== null) {
+            let headingChanged = false;
+            if (position.coords.heading !== null && position.coords.heading !== undefined) {
+                headingChanged = Math.abs(position.coords.heading - AppState.localHeading) > 0.5;
                 AppState.localHeading = position.coords.heading;
             }
 
@@ -57,15 +59,18 @@ function startGPSWatch() {
                 AppState.currentAltitude = position.coords.altitude;
             }
 
-            if (!AppState.lastPosition ||
+            const moved = !AppState.lastPosition ||
                 Math.abs(AppState.localLat - AppState.lastPosition.lat) > 0.00001 ||
-                Math.abs(AppState.localLng - AppState.lastPosition.lng) > 0.00001) {
+                Math.abs(AppState.localLng - AppState.lastPosition.lng) > 0.00001;
 
-                debugLog('GPS更新:', AppState.localLat.toFixed(6), AppState.localLng.toFixed(6), AppState.localHeading + '°');
+            // 站着不动只转朝向时也要刷新，否则金色三角不动
+            if (moved || headingChanged) {
+                debugLog('位置已更新：' + AppState.localLat.toFixed(6) + ' ' +
+                    AppState.localLng.toFixed(6) + ' ' + Math.round(AppState.localHeading) + '°');
 
                 updateSelfLocalMarker();
                 updateCrosshairInfo();
-                
+
                 // 如果有目标，更新自己的目标线（但不发送）
                 if (AppState.targetLat && AppState.targetLng) {
                     updateSelfTarget();
@@ -75,11 +80,13 @@ function startGPSWatch() {
                     sendPositionToServer();
                 }
 
-                AppState.lastPosition = { lat: AppState.localLat, lng: AppState.localLng };
+                if (moved) {
+                    AppState.lastPosition = { lat: AppState.localLat, lng: AppState.localLng };
+                }
             }
         },
         (error) => {
-            debugLog('GPS定位错误:', error.code, error.message);
+            debugWarn('GPS定位错误：' + error.code + ' ' + error.message);
         },
         {
             enableHighAccuracy: true,
