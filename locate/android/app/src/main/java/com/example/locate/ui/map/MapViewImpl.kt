@@ -5,6 +5,8 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.text.TextPaint
+import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.View
 import android.view.ViewGroup
@@ -15,6 +17,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import com.example.locate.domain.model.User
+import com.example.locate.util.AppLog
 import org.json.JSONObject
 import kotlin.math.pow
 import kotlin.math.ln
@@ -22,6 +25,15 @@ import kotlin.math.tan
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.atan
+
+private const val LOG_PANEL_WIDTH_DP = 300          // 展开后的默认宽度
+private const val LOG_PANEL_TAB_MIN_WIDTH_DP = 40   // 折叠小方块的最小宽度（箭头 + 日志N）
+private const val LOG_PANEL_ROW_DP = 14             // 每行日志的行距
+private const val LOG_PANEL_STRIP_DP = 30           // 底部把手条高度（折叠时只有它）
+private const val LOG_PANEL_ROWS_TOP_DP = 3
+private const val LOG_PANEL_MIN_ROWS = 3            // 可拖出来的最小行数
+private const val LOG_PANEL_MAX_ROWS_CAP = 30       // 可拖出来的最大行数
+private const val LOG_PANEL_RESIZE_ZONE_DP = 26     // 右上角缩放热区大小
 
 class MapViewImpl @JvmOverloads constructor(
     context: Context,
@@ -41,7 +53,6 @@ class MapViewImpl @JvmOverloads constructor(
     private val targetLines = mutableMapOf<String, TargetLineView>()
 
     private var clickListener: ((Double, Double) -> Unit)? = null
-    private var connectionStatusClickListener: (() -> Unit)? = null
     private var mapViewWidth = 0      // physical pixels from JS
     private var mapViewHeight = 0    // physical pixels from JS
     private var currentZoom = 15.0
@@ -50,8 +61,7 @@ class MapViewImpl @JvmOverloads constructor(
     private var currentAltitude: Double? = null
     private var crosshairView: CrosshairView? = null
     private var cornerCoordsView: CornerCoordsView? = null
-    private var connectionStatusView: ConnectionStatusView? = null
-    private var targetButtonView: TargetButtonView? = null
+    private var logPanel: LogPanel? = null
     private var localSettingsPanel: LocalSettingsPanel? = null
     private var userListPanel: UserListPanel? = null
     private var localSettingsClickListener: ((String, Double, Double) -> Unit)? = null
@@ -117,19 +127,13 @@ class MapViewImpl @JvmOverloads constructor(
         cornerCoordsView = CornerCoordsView(context)
         overlay.addView(cornerCoordsView!!, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
-        // 连接状态图标（左下角）
-        connectionStatusView = ConnectionStatusView(context)
-        connectionStatusView?.setStatus(0)  // 初始=连接中(橙)
-        overlay.addView(connectionStatusView!!, FrameLayout.LayoutParams(72, 72).apply {
+        // 左下角：日志面板（折叠时只有一个小三角）
+        logPanel = LogPanel(context)
+        overlay.addView(logPanel!!, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
             bottomMargin = 32
             marginStart = 20
         })
-        connectionStatusView?.setOnClickListener {
-            connectionStatusClickListener?.invoke()
-        }
-
-        // 服务器位置标记已移除
 
         // 左上角：本地设置面板
         localSettingsPanel = LocalSettingsPanel(context)
@@ -154,6 +158,9 @@ class MapViewImpl @JvmOverloads constructor(
         })
 
 
+
+        // 未登录时两个角面板都不显示，登录成功后由 ViewModel 打开
+        setCornerPanelsVisible(false)
 
         webView.addJavascriptInterface(JsInterface(), "Android")
         webView.loadUrl("file:///android_asset/html/map.html")
@@ -289,13 +296,16 @@ class MapViewImpl @JvmOverloads constructor(
         clickListener = listener
     }
 
-    override fun setConnectionStatus(status: Int, onlineCount: Int) {
-        post { connectionStatusView?.setStatus(status, onlineCount) }
+    override fun setCornerPanelsVisible(visible: Boolean) {
+        post {
+            val state = if (visible) View.VISIBLE else View.GONE
+            localSettingsPanel?.visibility = state
+            userListPanel?.visibility = state
+        }
     }
 
     override fun updateTargetButton(hasTarget: Boolean) {
         post {
-            targetButtonView?.setHasTarget(hasTarget)
             localSettingsPanel?.setHasTarget(hasTarget)
         }
     }
@@ -304,10 +314,6 @@ class MapViewImpl @JvmOverloads constructor(
         localSettingsClickListener = { type, lat, lng ->
             if (type == "target") listener(lat, lng)
         }
-    }
-
-    override fun setOnConnectionStatusClickListener(listener: () -> Unit) {
-        connectionStatusClickListener = listener
     }
 
     override fun updateUserList(users: List<User>) {
@@ -328,6 +334,7 @@ class MapViewImpl @JvmOverloads constructor(
     }
 
     override fun onDestroy() {
+        logPanel?.dispose()
         webView.destroy()
     }
 
@@ -790,119 +797,322 @@ class MapViewImpl @JvmOverloads constructor(
         }
     }
 
-    // ─── Connection Status Icon ───────────────────────────────────────
+    // ─── Log Panel (bottom-left) ──────────────────────────────────────
 
-    inner class ConnectionStatusView @JvmOverloads constructor(
+    /**
+     * 应用内日志矩形。左下角那个点固定不动，卡片往右上长。
+     *
+     * - 底部是始终可见的把手条：折叠时只有它（▲ 日志N），展开后日志行画在它上方（▼）
+     * - 只有点把手条才切换展开/折叠，点日志行不会收起
+     * - 日志行区域上下拖动翻历史，长按清空
+     * - 拖右上角可以自己改宽高（左下角固定，所以往右上拖）
+     * - 右侧竖条是滚动条，显示当前这一段在全部日志里的位置
+     */
+    inner class LogPanel @JvmOverloads constructor(
         ctx: Context,
         attrs: AttributeSet? = null,
         defStyleAttr: Int = 0
     ) : View(ctx, attrs, defStyleAttr) {
-        // 0=连接中(橙), 1=已连接(绿), 2=断开(红)
-        private var status = 2
-        private var onlineCount = 0
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+
+        private var entries: List<AppLog.Entry> = emptyList()
+        private var expanded = AppLog.panelExpanded
+        private var scrollLines = 0        // 距最新一行上滚了多少行，0 = 贴住最新
+        private var visibleRows = AppLog.panelRows
+        private var customWidthPx = 0      // 0 = 用默认宽度
+        private var resizing = false
+        private var downTime = 0L
+        private var downY = 0f
+        private var lastY = 0f
+        private var dragging = false
+        private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+        private val locationOnScreen = IntArray(2)
+
+        private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xF0FFFFFF.toInt(); style = Paint.Style.FILL
+        }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 3f
-            color = 0x99FFFFFF.toInt()
+            color = 0x33000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 1f
         }
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt()
-            textAlign = Paint.Align.CENTER
+        private val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF888888.toInt() }
+        private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x22000000 }
+        private val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF9E9E9E.toInt() }
+        private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() }
+        private val trianglePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF666666.toInt(); style = Paint.Style.FILL
         }
-        private val warnPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt()
-            textAlign = Paint.Align.CENTER
-            isFakeBoldText = true
+        private val trianglePath = Path()
+        private val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x55000000; style = Paint.Style.STROKE
         }
+        private val scrollTrackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x14000000 }
+        private val scrollThumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66000000 }
 
-        init { setWillNotDraw(false) }
-
-        fun setStatus(s: Int, count: Int = 0) {
-            status = s
-            onlineCount = count
+        private val logListener: (List<AppLog.Entry>) -> Unit = { list ->
+            val oldSize = entries.size
+            entries = list
+            // 正在翻历史时来了新日志：滚动量一起前推，视口保持不动
+            if (scrollLines > 0 && list.size > oldSize) scrollLines += list.size - oldSize
+            scrollLines = scrollLines.coerceIn(0, maxScrollLines())
+            if (expanded) requestLayout()
             invalidate()
         }
 
-        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            setMeasuredDimension(72, 72)
+        init {
+            setWillNotDraw(false)
+            // 恢复上次拖出来的宽度（Activity 重建后不丢）
+            if (AppLog.panelWidthDp > 0) customWidthPx = dp(AppLog.panelWidthDp)
         }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            AppLog.addListener(logListener)
+        }
+
+        override fun onDetachedFromWindow() {
+            super.onDetachedFromWindow()
+            AppLog.removeListener(logListener)
+        }
+
+        fun dispose() {
+            AppLog.removeListener(logListener)
+        }
+
+        // ─── 尺寸 ────────────────────────────────────────────────────
+
+        private fun defaultPanelWidth(): Int = minOf(dp(LOG_PANEL_WIDTH_DP), getScreenWidth() - dp(48))
+
+        private fun panelWidth(): Int = if (customWidthPx > 0) customWidthPx else defaultPanelWidth()
+
+        private fun minPanelWidth(): Int = dp(140)
+
+        private fun maxPanelWidth(): Int = getScreenWidth() - dp(16)
+
+        /** 高度最多占屏幕一半，换算成能放几行 */
+        private fun maxRowCapacity(): Int {
+            val usable = getScreenHeight() / 2 - dp(LOG_PANEL_STRIP_DP + LOG_PANEL_ROWS_TOP_DP + 1)
+            return (usable / dp(LOG_PANEL_ROW_DP)).coerceIn(LOG_PANEL_MIN_ROWS, LOG_PANEL_MAX_ROWS_CAP)
+        }
+
+        private fun rowCapacity(): Int = visibleRows.coerceIn(LOG_PANEL_MIN_ROWS, maxRowCapacity())
+
+        private fun maxScrollLines(): Int = (entries.size - rowCapacity()).coerceAtLeast(0)
+
+        private fun rowPitchPx(): Float = dp(LOG_PANEL_ROW_DP).toFloat()
+
+        /** 当前视口里的日志：末尾是 entries.size - scrollLines */
+        private fun visibleEntries(): List<AppLog.Entry> {
+            val end = (entries.size - scrollLines).coerceIn(0, entries.size)
+            val start = (end - rowCapacity()).coerceAtLeast(0)
+            return entries.subList(start, end)
+        }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            var h = LOG_PANEL_STRIP_DP
+            if (expanded) {
+                // 展开后是个固定行数的窗口（像终端），行数由拖拽决定
+                h += LOG_PANEL_ROWS_TOP_DP + rowCapacity() * LOG_PANEL_ROW_DP + 1
+            }
+            // 折叠态是个小方块（箭头 + 日志N），展开才变宽
+            val w = if (expanded) panelWidth() else tabWidth()
+            setMeasuredDimension(w, dp(h))
+        }
+
+        private fun stripText(): String = "日志 ${entries.size}"
+
+        /** 折叠态宽度：按把手条文字实测，仍比展开时短得多 */
+        private fun tabWidth(): Int {
+            headerPaint.textSize = dp(10).toFloat()
+            val textWidth = headerPaint.measureText(stripText())
+            return maxOf(dp(LOG_PANEL_TAB_MIN_WIDTH_DP), (dp(24) + textWidth + dp(10)).toInt())
+        }
+
+        // ─── 绘制 ────────────────────────────────────────────────────
 
         override fun onDraw(canvas: Canvas) {
-            val cx = width / 2f
-            val cy = height / 2f
-            val radius = 34f
+            headerPaint.textSize = dp(10).toFloat()
+            timePaint.textSize = dp(8).toFloat()
+            textPaint.textSize = dp(10).toFloat()
 
-            paint.color = when (status) {
-                0 -> 0xFFFF9800.toInt()  // 橙色-连接中
-                1 -> 0xFF4CAF50.toInt() // 绿色-已连接
-                else -> 0xFFF44336.toInt() // 红色-断开
+            val r = dp(10).toFloat()
+            canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), r, r, bgPaint)
+            canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), r, r, borderPaint)
+
+            // 把手条永远贴着底边，展开只是往上长
+            val stripTop = height - dp(LOG_PANEL_STRIP_DP)
+
+            if (expanded) {
+                val capacity = rowCapacity()
+                val visible = visibleEntries()
+                val rowsTop = dp(LOG_PANEL_ROWS_TOP_DP)
+
+                if (visible.isEmpty()) {
+                    canvas.drawText("暂无日志", dp(8).toFloat(), (rowsTop + dp(10)).toFloat(), headerPaint)
+                }
+                var baseline = rowsTop + dp(10)
+                for (entry in visible) {
+                    canvas.drawText(entry.time, dp(6).toFloat(), baseline.toFloat(), timePaint)
+                    textPaint.color = when (entry.level) {
+                        AppLog.Level.WARN -> 0xFFEF6C00.toInt()
+                        AppLog.Level.ERROR -> 0xFFD32F2F.toInt()
+                        else -> 0xFF000000.toInt()
+                    }
+                    // 右侧留出滚动条的位置
+                    val text = TextUtils.ellipsize(
+                        entry.text,
+                        textPaint,
+                        (width - dp(42) - dp(16)).toFloat(),
+                        TextUtils.TruncateAt.END
+                    ).toString()
+                    canvas.drawText(text, dp(42).toFloat(), baseline.toFloat(), textPaint)
+                    baseline += dp(LOG_PANEL_ROW_DP)
+                }
+
+                drawScrollBar(canvas, stripTop, capacity)
+                drawResizeGrip(canvas)
+
+                canvas.drawLine(
+                    dp(4).toFloat(), stripTop.toFloat(),
+                    (width - dp(4)).toFloat(), stripTop.toFloat(),
+                    dividerPaint
+                )
             }
-            canvas.drawCircle(cx, cy, radius, paint)
-            canvas.drawCircle(cx, cy, radius, borderPaint)
 
-            when (status) {
-                1 -> {
-                    // 绿色: 纯色圆，仅表示已连接
-                }
-                2 -> {
-                    // 红色: 显示警告感叹号
-                    warnPaint.textSize = 38f
-                    canvas.drawText("!", cx, cy + warnPaint.textSize / 3 - 1, warnPaint)
-                }
-                else -> {
-                    // 橙色: 空白
-                }
+            // 把手条：箭头永远在最左边；展开/折叠文字完全一样，只有矩形长度不同
+            headerPaint.color = if (expanded && scrollLines > 0) 0xFFEF6C00.toInt() else 0xFF888888.toInt()
+            canvas.drawText(stripText(), dp(24).toFloat(), (stripTop + dp(19)).toFloat(), headerPaint)
+            headerPaint.color = 0xFF888888.toInt()
+
+            val cx = dp(13).toFloat()
+            val cy = (stripTop + dp(15)).toFloat()
+            trianglePath.reset()
+            if (expanded) {
+                // 向下 = 点击折叠
+                trianglePath.moveTo(cx - dp(6), cy - dp(4))
+                trianglePath.lineTo(cx + dp(6), cy - dp(4))
+                trianglePath.lineTo(cx, cy + dp(5))
+            } else {
+                // 向上 = 点击展开
+                trianglePath.moveTo(cx, cy - dp(5))
+                trianglePath.lineTo(cx - dp(6), cy + dp(4))
+                trianglePath.lineTo(cx + dp(6), cy + dp(4))
+            }
+            trianglePath.close()
+            canvas.drawPath(trianglePath, trianglePaint)
+        }
+
+        /** 终端式滚动条：显示当前窗口在全部日志里的位置 */
+        private fun drawScrollBar(canvas: Canvas, stripTop: Int, capacity: Int) {
+            if (entries.size <= capacity) return
+
+            val trackTop = dp(LOG_PANEL_ROWS_TOP_DP)
+            val trackBottom = stripTop - dp(3)
+            val trackHeight = (trackBottom - trackTop).toFloat()
+            if (trackHeight <= 0f) return
+
+            val x = (width - dp(7)).toFloat()
+            val barWidth = dp(3).toFloat()
+            canvas.drawRect(x, trackTop.toFloat(), x + barWidth, trackBottom.toFloat(), scrollTrackPaint)
+
+            val total = entries.size
+            val end = (total - scrollLines).coerceIn(0, total)
+            val start = (end - capacity).coerceAtLeast(0)
+            val thumbHeight = maxOf(dp(10).toFloat(), trackHeight * capacity / total)
+            val thumbTop = trackTop + trackHeight * start / total
+            canvas.drawRect(x, thumbTop, x + barWidth, thumbTop + thumbHeight, scrollThumbPaint)
+        }
+
+        /** 右上角拖拽手柄（三条斜线） */
+        private fun drawResizeGrip(canvas: Canvas) {
+            gripPaint.strokeWidth = dp(1).toFloat()
+            val right = (width - dp(3)).toFloat()
+            val top = dp(3).toFloat()
+            for (i in 0 until 3) {
+                val offset = dp(i * 4).toFloat()
+                canvas.drawLine(right - dp(10) + offset, top, right, top + dp(10) - offset, gripPaint)
             }
         }
-    }
 
-    // ─── Target Button ────────────────────────────────────────────────
+        // ─── 触摸 ────────────────────────────────────────────────────
 
-    inner class TargetButtonView @JvmOverloads constructor(
-        ctx: Context,
-        attrs: AttributeSet? = null,
-        defStyleAttr: Int = 0
-    ) : View(ctx, attrs, defStyleAttr) {
-        private var hasTarget = false
-        private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt()
-            textSize = 24f
-            textAlign = Paint.Align.CENTER
+        override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+            when (event.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downTime = event.eventTime
+                    downY = event.y
+                    lastY = event.y
+                    dragging = false
+                    // 右上角是缩放热区
+                    resizing = expanded &&
+                        event.x >= width - dp(LOG_PANEL_RESIZE_ZONE_DP) &&
+                        event.y <= dp(LOG_PANEL_RESIZE_ZONE_DP)
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (resizing) {
+                        applyResize(event)
+                    } else {
+                        if (!dragging && kotlin.math.abs(event.y - downY) > touchSlop) dragging = true
+                        if (dragging && expanded) {
+                            val pitch = rowPitchPx()
+                            val lines = ((event.y - lastY) / pitch).toInt()
+                            if (lines != 0) {
+                                scrollLines = (scrollLines + lines).coerceIn(0, maxScrollLines())
+                                lastY += lines * pitch
+                                invalidate()
+                            }
+                        }
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    if (!resizing && !dragging) {
+                        if (event.eventTime - downTime >= android.view.ViewConfiguration.getLongPressTimeout()) {
+                            AppLog.clear()
+                            scrollLines = 0
+                        } else if (event.y >= height - dp(LOG_PANEL_STRIP_DP)) {
+                            // 只有把手条切换展开/折叠，点日志行不会把它收起来
+                            expanded = !expanded
+                            AppLog.panelExpanded = expanded
+                            if (!expanded) scrollLines = 0
+                            requestLayout()
+                            invalidate()
+                        }
+                    }
+                    dragging = false
+                    resizing = false
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    dragging = false
+                    resizing = false
+                }
+            }
+            return true
         }
-        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-            color = 0x99FFFFFF.toInt()
-        }
 
-        init { setWillNotDraw(false) }
+        /** 拖右上角改宽高：左下角固定，所以宽取到左边缘的距离、高取到底边的距离 */
+        private fun applyResize(event: android.view.MotionEvent) {
+            getLocationOnScreen(locationOnScreen)
+            val left = locationOnScreen[0].toFloat()
+            val bottom = locationOnScreen[1].toFloat() + height
 
-        fun setHasTarget(has: Boolean) {
-            hasTarget = has
+            val newWidth = (event.rawX - left).toInt().coerceIn(minPanelWidth(), maxPanelWidth())
+            val fixedHeight = dp(LOG_PANEL_STRIP_DP + LOG_PANEL_ROWS_TOP_DP) + 1
+            val newRows = (((bottom - event.rawY).toInt() - fixedHeight) / dp(LOG_PANEL_ROW_DP))
+                .coerceIn(LOG_PANEL_MIN_ROWS, maxRowCapacity())
+
+            if (newWidth == customWidthPx && newRows == visibleRows) return
+
+            customWidthPx = newWidth
+            visibleRows = newRows
+            AppLog.panelWidthDp = (newWidth / resources.displayMetrics.density).toInt()
+            AppLog.panelRows = newRows
+            scrollLines = scrollLines.coerceIn(0, maxScrollLines())
+            requestLayout()
             invalidate()
         }
 
-        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val text = if (hasTarget) "已设目标，点我取消" else "未设目标，点我设置"
-            val tw = textPaint.measureText(text)
-            setMeasuredDimension(tw.toInt() + 40, 64)
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            val cx = width / 2f
-            val cy = height / 2f
-            val rx = (width / 2f) - 4f
-            val ry = (height / 2f) - 4f
-
-            bgPaint.color = if (hasTarget) 0xFFFF9800.toInt() else 0xCC1E88E5.toInt()
-            canvas.drawRoundRect(4f, 4f, width - 4f, height - 4f, 12f, 12f, bgPaint)
-            canvas.drawRoundRect(4f, 4f, width - 4f, height - 4f, 12f, 12f, borderPaint)
-
-            val text = if (hasTarget) "已设目标，点我取消" else "未设目标，点我设置"
-            canvas.drawText(text, cx, cy + textPaint.textSize / 3 - 2, textPaint)
-        }
+        private fun dp(px: Int): Int = (px * context.resources.displayMetrics.density).toInt()
     }
 
     // ─── Local Settings Panel (top-left) ───────────────────────────
@@ -936,8 +1146,8 @@ class MapViewImpl @JvmOverloads constructor(
         fun setHasTarget(has: Boolean) { hasTarget = has; invalidate() }
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            // 标题(dp(30)) + 分隔线(dp(2)) + 2行内容(dp(24)每行) + padding(dp(8))
-            val contentHeight = dp(30) + dp(2) + (dp(24) * 2) + dp(8)
+            // 标题(dp(30)) + 分隔线(dp(2)) + 3行内容(dp(24)每行) + padding(dp(8))
+            val contentHeight = dp(30) + dp(2) + (dp(24) * 3) + dp(8)
             setMeasuredDimension(dp(130), contentHeight)
         }
 
@@ -967,6 +1177,15 @@ class MapViewImpl @JvmOverloads constructor(
             rowTextPaint.color = if (hasTarget) 0xFFFF9800.toInt() else 0xFF2196F3.toInt()
             canvas.drawText(if (hasTarget) "取消目标" else "设目标", dp(28).toFloat(), (rowY2 + dp(13)).toFloat(), rowTextPaint)
             rowTextPaint.color = 0xFF000000.toInt()
+
+            // 退出登录 row
+            val rowY3 = dp(84)
+            canvas.drawRect(dp(4).toFloat(), rowY3.toFloat() - dp(3), (width - dp(4)).toFloat(), (rowY3 + dp(20)).toFloat(), rowBgPaint)
+            rowIconPaint.color = 0xFFE53935.toInt()
+            canvas.drawText("⊗", dp(10).toFloat(), (rowY3 + dp(13)).toFloat(), rowIconPaint)
+            rowTextPaint.color = 0xFFE53935.toInt()
+            canvas.drawText("退出登录", dp(28).toFloat(), (rowY3 + dp(13)).toFloat(), rowTextPaint)
+            rowTextPaint.color = 0xFF000000.toInt()
         }
 
         override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
@@ -975,9 +1194,11 @@ class MapViewImpl @JvmOverloads constructor(
                 val y = event.y
                 val rowY1 = dp(36)
                 val rowY2 = dp(60)
+                val rowY3 = dp(84)
                 when {
                     y >= (rowY1 - dp(3)) && y <= (rowY1 + dp(20)) -> onClickListener?.invoke("location")
                     y >= (rowY2 - dp(3)) && y <= (rowY2 + dp(20)) -> onClickListener?.invoke("target")
+                    y >= (rowY3 - dp(3)) && y <= (rowY3 + dp(20)) -> onClickListener?.invoke("logout")
                 }
             }
             return true

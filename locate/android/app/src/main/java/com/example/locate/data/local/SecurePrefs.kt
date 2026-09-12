@@ -52,10 +52,14 @@ class SecurePrefs(context: Context) {
     }
 
     /**
-     * 清除所有凭证
+     * 清除登录凭证（保留服务器地址，退出登录后不必重填）
      */
     fun clearCredentials() {
-        prefs.edit().clear().apply()
+        prefs.edit()
+            .remove(Constants.KEY_USERNAME)
+            .remove(Constants.KEY_PASSWORD)
+            .remove(Constants.KEY_TOKEN)
+            .apply()
     }
 
     /**

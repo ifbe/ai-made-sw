@@ -50,10 +50,12 @@
             </intent-filter>
         </activity>
 
-        <!-- 地图页 -->
+        <!-- 地图页：应用主界面（启动页准备完成后进入） -->
         <activity
             android:name=".ui.map.MapActivity"
             android:exported="false"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Locate" />
 
         <!-- 前台定位服务 -->

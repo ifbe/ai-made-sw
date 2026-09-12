@@ -19,4 +19,8 @@ object Constants {
     const val KEY_PASSWORD = "password"
     const val KEY_TOKEN = "token"
     const val KEY_SERVER_URL = "server_url"
+
+    // 非加密的界面偏好
+    const val UI_PREFS_NAME = "locate_ui"
+    const val KEY_PERMISSIONS_REQUESTED = "permissions_requested"
 }

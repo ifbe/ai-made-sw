@@ -23,6 +23,7 @@ import androidx.core.content.ContextCompat
 import com.example.locate.data.remote.ApiClient
 import com.example.locate.domain.model.Position
 import com.example.locate.ui.map.MapActivity
+import com.example.locate.util.AppLog
 import com.example.locate.util.Constants
 import com.google.android.gms.location.*
 
@@ -61,12 +62,14 @@ class LocationTrackerService : Service(), SensorEventListener {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) {
             // 没有位置权限，不启动前台服务
+            AppLog.w("定位服务未启动：缺少定位权限")
             return START_NOT_STICKY
         }
         startForeground()
         startLocationUpdates()
         startSensorUpdates()
         wakeLock.acquire(10 * 60 * 1000L) // 10分钟防止休眠
+        AppLog.i("定位服务已启动")
         return START_STICKY
     }
 
@@ -77,6 +80,7 @@ class LocationTrackerService : Service(), SensorEventListener {
         stopLocationUpdates()
         stopSensorUpdates()
         if (wakeLock.isHeld) wakeLock.release()
+        AppLog.i("定位服务已停止")
     }
 
     fun setApiClient(client: ApiClient) {
@@ -224,6 +228,7 @@ class LocationTrackerService : Service(), SensorEventListener {
         if (!hasMovedToSelf && mapView != null) {
             hasMovedToSelf = true
             mapView?.moveTo(gcjLat, gcjLng, 17.0)
+            AppLog.i("首次定位成功，精度 ${pos.accuracy.toInt()} 米")
         }
         mapView?.updateAltitude(pos.altitude)
         apiClient?.sendPosition(gcjLat, gcjLng, currentHeading)

@@ -52,11 +52,10 @@ interface MapView {
     fun setOnMapClickListener(listener: (lat: Double, lng: Double) -> Unit)
 
     /**
-     * 设置连接状态图标
-     * status: 0=连接中(橙), 1=已连接(绿), 2=断开(红)
-     * onlineCount: 在线人数（绿色时显示）
+     * 左上角「本地」面板与右上角「同服人数」面板的显示开关。
+     * 未登录（含自动登录中）时隐藏，登录后显示。
      */
-    fun setConnectionStatus(status: Int, onlineCount: Int = 0)
+    fun setCornerPanelsVisible(visible: Boolean)
 
     /**
      * 更新目标按钮状态（是否已设置目标）
@@ -68,11 +67,6 @@ interface MapView {
      * 回调时传入当前地图中心经纬度
      */
     fun setOnTargetButtonClickListener(listener: (lat: Double, lng: Double) -> Unit)
-
-    /**
-     * 连接状态图标点击回调（断开连接时点击可回到登录页）
-     */
-    fun setOnConnectionStatusClickListener(listener: () -> Unit)
 
     /**
      * 更新队友列表面板
