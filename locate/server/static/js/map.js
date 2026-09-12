@@ -85,23 +85,61 @@ function refreshOtherMarkers(users) {
             return;
         }
 
-        let marker = AppState.userMarkers.get(user.username);
-        const icon = createHeadingIcon(user.heading || 0, user.nickname || user.username, 'other');
-
-        if (marker) {
-            marker.setLatLng([user.lat, user.lng]);
-            marker.setIcon(icon);
-        } else {
-            marker = L.marker([user.lat, user.lng], { icon: icon }).addTo(AppState.map);
-            AppState.userMarkers.set(user.username, marker);
-        }
-
-        if (user.target_lat && user.target_lng) {
-            updateOtherTarget(user.username, user.lat, user.lng, user.target_lat, user.target_lng);
-        } else {
-            clearOtherTarget(user.username);
-        }
+        upsertUserMarker(user.username, user.nickname || user.username, user.lat, user.lng, user.heading);
+        refreshUserTargetLine(user.username, user);
     });
+}
+
+/**
+ * 服务器发回来的蓝色 ↑ 标记：没有就建、有就更新（对应安卓的 showOtherUser）。
+ *
+ * 位置更新也要走这里建标记：以前只有 user_list 会建，
+ * 结果是某个人在列表里还是占位 (0,0) 被跳过之后，他后面真上报了位置也画不出来。
+ */
+function upsertUserMarker(username, label, lat, lng, heading) {
+    if (!AppState.map) return null;
+    if (lat == null || lng == null) return null;
+    if (lat === 0 && lng === 0) return null;
+
+    let marker = AppState.userMarkers.get(username);
+    const icon = createHeadingIcon(heading || 0, label || username, 'other');
+
+    if (marker) {
+        marker.setLatLng([lat, lng]);
+        marker.setIcon(icon);
+    } else {
+        marker = L.marker([lat, lng], { icon: icon }).addTo(AppState.map);
+        AppState.userMarkers.set(username, marker);
+    }
+    return marker;
+}
+
+/**
+ * 重画某个队友的「人 → 目标」虚线。
+ *
+ * 位置一变就要重画（安卓每次 showOtherUser 都会 drawUserLine），
+ * 所以不能只在收到目标数据时画一次。
+ * 还没有这个人坐标时不画，等他位置上报了，update_position 会再调一次补上。
+ */
+function refreshUserTargetLine(username, record) {
+    // 自己的线走本地 GPS 那条（updateSelfTarget），别画两条重叠的
+    if (username === AppState.currentUser) return;
+
+    const data = record || AppState.otherUsersData.get(username);
+    if (!data) return;
+
+    const targetLat = data.target_lat;
+    const targetLng = data.target_lng;
+    if (!targetLat || !targetLng || (targetLat === 0 && targetLng === 0)) {
+        clearOtherTarget(username);
+        return;
+    }
+
+    const lat = data.lat;
+    const lng = data.lng;
+    if (lat == null || lng == null || (lat === 0 && lng === 0)) return;
+
+    updateOtherTarget(username, lat, lng, targetLat, targetLng);
 }
 
 // ========== 右上角用户列表面板 ==========

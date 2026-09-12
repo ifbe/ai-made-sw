@@ -164,30 +164,29 @@ function initSocket() {
                     debugLog('位置更新：' + data.username);
 
                     // 更新 otherUsersData（所有人一视同仁，包括自己）
+                    // username 也要写进去：只从位置更新认识的人，右上角面板要用它
                     const existingData = AppState.otherUsersData.get(data.username) || {};
                     const mergedData = {
                         ...existingData,
+                        username: data.username,
                         lat: data.lat,
                         lng: data.lng,
                         heading: data.heading
                     };
                     AppState.otherUsersData.set(data.username, mergedData);
 
-                    // 蓝色 ↑ 标记：服务器回显的自己那一份也要更新
-                    //（本地的金色 △ 由 GPS 那条路单独更新）
+                    // 蓝色 ↑ 标记：没有就建、有就更新（服务器回显的自己那份也一样）
                     // 位置广播里没有 nickname，所以昵称沿用 user_list 里的，别退回用户名
-                    if (!(data.lat === 0 && data.lng === 0)) {
-                        const marker = AppState.userMarkers.get(data.username);
-                        if (marker) {
-                            const icon = createHeadingIcon(
-                                data.heading,
-                                mergedData.nickname || data.username,
-                                'other'
-                            );
-                            marker.setLatLng([data.lat, data.lng]);
-                            marker.setIcon(icon);
-                        }
-                    }
+                    upsertUserMarker(
+                        data.username,
+                        mergedData.nickname || data.username,
+                        data.lat,
+                        data.lng,
+                        data.heading
+                    );
+
+                    // 目标虚线跟着人走
+                    refreshUserTargetLine(data.username, mergedData);
 
                     // 如果是自己，同时更新服务器坐标和自己的目标（向后兼容）
                     if (data.username === AppState.currentUser) {
@@ -238,15 +237,9 @@ function initSocket() {
                         }
                     } else {
                         // 其他用户：更新目标线
-                        const userMarker = AppState.userMarkers.get(data.username);
-                        if (userMarker) {
-                            if (data.target_lat && data.target_lng) {
-                                const userPos = userMarker.getLatLng();
-                                updateOtherTarget(data.username, userPos.lat, userPos.lng, data.target_lat, data.target_lng);
-                            } else {
-                                clearOtherTarget(data.username);
-                            }
-                        }
+                        // 这里不用管他的标记建没建起来：坐标还没到就先记着，
+                        // 等他位置上报时 update_position 会再补画一次
+                        refreshUserTargetLine(data.username);
                     }
 
                     // 刷新右上角面板
@@ -254,13 +247,23 @@ function initSocket() {
                     break;
                 }
 
-                case 'user_joined':
+                case 'user_joined': {
                     debugLog('用户加入：' + data.username);
-                    if (data.target_lat && data.target_lng) {
-                        updateOtherTarget(data.username,
-                            data.lat, data.lng,
-                            data.target_lat, data.target_lng);
-                    }
+
+                    const joined = {
+                        ...(AppState.otherUsersData.get(data.username) || {}),
+                        username: data.username,
+                        nickname: data.nickname,
+                        lat: data.lat,
+                        lng: data.lng,
+                        heading: data.heading,
+                        target_lat: data.target_lat,
+                        target_lng: data.target_lng
+                    };
+                    AppState.otherUsersData.set(data.username, joined);
+                    upsertUserMarker(data.username, data.nickname || data.username, data.lat, data.lng, data.heading);
+                    refreshUserTargetLine(data.username, joined);
+
                     if (AppState.sessionToken && AppState.currentUser && AppState.socket.readyState === WebSocket.OPEN) {
                         socket.send(JSON.stringify({
                             type: 'get_users',
@@ -269,6 +272,7 @@ function initSocket() {
                         }));
                     }
                     break;
+                }
 
                 case 'user_left':
                     debugLog('用户离开：' + data.username);
