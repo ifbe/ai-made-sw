@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberGear 控制台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>🎮 CyberGear 电机控制台</h1>
+    <div class="status">
+      <span id="serialStatus" class="dot dot-off"></span>
+      <span id="serialText">未连接</span>
+      <button id="btnLs" class="btn btn-primary">🔍 扫描</button>
+      <span class="spacer"></span>
+      <span class="hint">轮询: <span id="pollHz">200ms</span></span>
+    </div>
+  </header>
+
+  <!-- 第1行: 电机卡片 (一排从左到右, 选中高亮) -->
+  <section class="row motor-row">
+    <div class="row-label">电机</div>
+    <div id="motorList" class="motor-list">
+      <button id="btnAddMotor" class="btn-add" title="添加电机">+</button>
+    </div>
+  </section>
+
+  <!-- 第2行: 使能 / 停止 -->
+  <section class="row cmd-row">
+    <div class="row-label">控制</div>
+    <button id="btnEnable" class="btn btn-go">⚡ 使能</button>
+    <button id="btnStop" class="btn btn-stop">⏹️ 停止</button>
+    <span class="target-hint">作用于: <strong id="curTarget">未选</strong></span>
+  </section>
+
+  <!-- 第3行: 4 种模式矩形 -->
+  <section class="row mode-row">
+    <div class="mode-card" data-mode="ctrl">
+      <button class="btn-mode" data-act="setmode">🎮 切到运控</button>
+      <h3>运控 (Motion)</h3>
+      <label>pos (rad) <input class="num" data-f="pos" type="number" step="0.1" value="0"></label>
+      <label>vel (rad/s) <input class="num" data-f="vel" type="number" step="0.1" value="0"></label>
+      <label>kp (0~500) <input class="num" data-f="kp" type="number" step="1" value="30"></label>
+      <label>kd (0~5) <input class="num" data-f="kd" type="number" step="0.1" value="0.5"></label>
+      <label>torque (Nm) <input class="num" data-f="torque" type="number" step="0.1" value="0"></label>
+      <button class="btn-send" data-act="ctrl">发送运控</button>
+    </div>
+
+    <div class="mode-card" data-mode="pos">
+      <button class="btn-mode" data-act="setmode">📍 切到位置</button>
+      <h3>位置 (Position)</h3>
+      <label>
+        n (单位 1/60 圈)
+        <button class="btn-read-addr" data-addr="0x7016" data-target-f="n" title="点击从电机读 0x7016 LOC_REF (rad) 并转为 n">📥 0x7016</button>
+        <input class="num" data-f="n" type="number" step="1" value="60">
+      </label>
+      <p class="hint">60 = 1 圈, 1 = 6°</p>
+      <button class="btn-act" data-act="setzero" title="把当前电机位置设为机械零位 (会改变后续 LOC_REF 的基准)">📍 设零位</button>
+      <button class="btn-send" data-act="pos">发送位置</button>
+    </div>
+
+    <div class="mode-card" data-mode="speed">
+      <button class="btn-mode" data-act="setmode">💨 切到速度</button>
+      <h3>速度 (Speed)</h3>
+      <label>
+        limitcur (A)
+        <button class="btn-read-addr" data-addr="0x7018" data-target-f="limit_cur" title="点击从电机读 0x7018 LIMIT_CUR 填入输入框">📥 0x7018</button>
+        <input class="num" data-f="limit_cur" type="number" step="0.1" value="1.0">
+      </label>
+      <label>
+        spdref (rad/s)
+        <button class="btn-read-addr" data-addr="0x700A" data-target-f="rad" title="点击从电机读 0x700A SPD_REF 填入输入框">📥 0x700A</button>
+        <input class="num" data-f="rad" type="number" step="0.1" value="3.14">
+      </label>
+      <p class="hint">≈ 30 RPM at π rad/s</p>
+      <button class="btn-send" data-act="speed">发送速度</button>
+    </div>
+
+    <div class="mode-card" data-mode="cur">
+      <button class="btn-mode" data-act="setmode">⚡ 切到电流</button>
+      <h3>电流 (Current)</h3>
+      <label>
+        A
+        <button class="btn-read-addr" data-addr="0x7006" data-target-f="a" title="点击从电机读 0x7006 IQ_REF 填入输入框">📥 0x7006</button>
+        <input class="num" data-f="a" type="number" step="0.1" value="0.5">
+      </label>
+      <button class="btn-send" data-act="cur">发送电流</button>
+    </div>
+  </section>
+
+  <!-- 高级: 统一表格 (自定义 + 全部参数) -->
+  <section class="row advanced-row">
+    <div class="row-label">高级</div>
+    <div id="paramsList" class="adv-list">
+      <div class="params-list-hint">加载中...</div>
+    </div>
+  </section>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <!-- 底部历史 log 区 -->
+  <section class="log-section">
+    <div class="log-header">
+      <h3>📜 历史日志</h3>
+      <button id="btnClearLog" class="btn-small">清空</button>
+      <span class="log-hint">最新在上, 点击 <code>?</code> 查命令</span>
+    </div>
+    <div id="logArea" class="log-area"></div>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
