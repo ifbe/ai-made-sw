@@ -10,6 +10,9 @@ import UniformTypeIdentifiers
 /// - 6 种输入模式（empty/text/remote/dim3/voice/file）
 struct ChatView: View {
     let sessionId: String
+    /// 重连面板是否展开。由 `MainContainerView` 在 tab 上点 `ⓘ` 时切换
+    /// （对应 Android `MainActivity.onSessionInfoClick` → `ChatFragment.toggleReconnectPanel()`）
+    @Binding var showReconnectPanel: Bool
 
     @StateObject private var sessionManager = SessionManager.shared
     @State private var currentInputMode: ChatInputMode = .text
@@ -17,6 +20,12 @@ struct ChatView: View {
     @State private var messages: [Message] = []
     /// `Participant` 不是值类型，用普通 var + 回调，不参与 SwiftUI 响应式
     @State private var activeParticipants: [String: Participant] = [:]
+    /// configId -> 链路是否正常（只有 SOCKET 类参与者会写）。用来聚合出会话级的「是否正常」
+    @State private var linkStates: [String: Bool] = [:]
+
+    /// 从磁盘恢复出来的会话还没连过时，聊天区贴一次的提示
+    private let restoredHintText =
+        "🔌 该会话已从本地恢复，当前处于未连接状态\n点该会话标签左边的 ⓘ 可展开重连面板"
 
     // === 文件选择器（FILE bar，走 UIDocumentPickerViewController；支持任意文件类型） ===
     @State private var showFilePicker = false
@@ -60,11 +69,23 @@ struct ChatView: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 if !isMaximized {
-                    messagesList
-                        .frame(height: max(0, geo.size.height - inputHeight))
+                    // 面板展开时必须用弹性高度（面板高度不定，消息区只能"占剩下的"）。
+                    // 面板收起时保留原来的显式高度算法，避免动到已验证过不振荡的拖拽路径。
+                    if showReconnectPanel {
+                        messagesList
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        messagesList
+                            .frame(height: max(0, geo.size.height - inputHeight))
+                    }
                 }
                 inputArea
                     .frame(height: isMaximized ? geo.size.height : inputHeight)
+
+                // 重连面板：输入区下方 / tabbar 上方，占掉高度 → 输入区被顶上去
+                if showReconnectPanel {
+                    reconnectPanel
+                }
             }
             .onAppear { availableHeight = geo.size.height }
             .onChange(of: geo.size.height) { newH in availableHeight = newH }
@@ -72,10 +93,19 @@ struct ChatView: View {
         .background(Color(hex: "#F0F0F0"))
         .onAppear {
             loadMessages()
-            connectParticipants()
+            // 恢复出来的会话（connected=false）不自动连，只贴一次提示；等用户点 ⓘ → 重连
+            if sessionManager.isSessionConnected(sessionId) {
+                connectParticipants()
+            } else {
+                showRestoredHintIfNeeded()
+            }
         }
         .onDisappear {
             disconnectParticipants()
+        }
+        .onChange(of: showReconnectPanel) { open in
+            // 最大化时聊天区被隐藏、输入区撑满，没有空间放面板 → 先退出最大化
+            if open && isMaximized { toggleMaximize() }
         }
     }
 
@@ -137,6 +167,124 @@ struct ChatView: View {
         case .voice: voiceInputBar
         case .file: fileInputBar
         }
+    }
+
+    // MARK: - 重连面板（输入区下方 / tabbar 上方）
+
+    /// 展开时把输入区向上挤。内容对应 Android `ChatFragment.refreshReconnectPanel()`：
+    /// 标题按链路状态显示 + 参与者卡片列表（复用主页卡片样式）+ 重连按钮。
+    private var reconnectPanel: some View {
+        VStack(spacing: 0) {
+            Divider()
+
+            HStack {
+                Text(sessionManager.isSessionUp(sessionId) ? "🔌 参与者 · 已连接" : "🔌 参与者 · 未连接")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(Color(hex: "#333333"))
+
+                Spacer()
+
+                Button {
+                    showReconnectPanel = false
+                } label: {
+                    Text("收起")
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(hex: "#2196F3"))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            let configs = sessionManager.getParticipants(sessionId)
+            let up = sessionManager.isSessionUp(sessionId)
+
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    if configs.isEmpty {
+                        Text("该会话没有参与者")
+                            .font(.system(size: 14))
+                            .foregroundColor(Color(hex: "#999999"))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 8)
+                    } else {
+                        ForEach(configs) { config in
+                            ParticipantCardView(config: config, stateLabel: up ? "已连接" : "未连接")
+                        }
+                    }
+                }
+                .padding(12)
+            }
+            // 对应 Android `reconnectScroll.maxHeightPx = dp(200)`：参与者多时面板不无限长
+            .frame(maxHeight: 200)
+
+            Divider()
+
+            Button(action: onClickReconnect) {
+                Text(sessionManager.isSessionConnected(sessionId) ? "🔁 重新连接" : "🔌 重连")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color(hex: "#2196F3"))
+                    .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(Color(hex: "#F5F5F5"))
+    }
+
+    /// 「重连」按钮：先断开本会话现有参与者，再按配置重新连一遍。
+    /// 恢复出来的会话本来就没连（首次连接）；已连接的会话则是一次强制重连。
+    private func onClickReconnect() {
+        disconnectParticipants()
+        sessionManager.setSessionConnected(sessionId, true)
+        sessionManager.addMessage(
+            sessionId,
+            message: Message(
+                senderId: "system",
+                senderType: .socket,
+                senderName: "系统",
+                content: "🔌 开始重连会话…",
+                isInfo: true
+            )
+        )
+        messages = sessionManager.getMessages(sessionId)
+        connectParticipants()
+        refreshLinkState()
+    }
+
+    /// 未连接的恢复会话：聊天区贴一次提示（view 重建时不重复贴）
+    private func showRestoredHintIfNeeded() {
+        let already = sessionManager.getMessages(sessionId).contains { $0.content == restoredHintText }
+        if !already {
+            sessionManager.addMessage(
+                sessionId,
+                message: Message(
+                    senderId: "system",
+                    senderType: .socket,
+                    senderName: "系统",
+                    content: restoredHintText,
+                    isInfo: true
+                )
+            )
+            messages = sessionManager.getMessages(sessionId)
+        }
+        refreshLinkState()
+    }
+
+    /// 把「各网络参与者链路状态」聚合到会话级写进 SessionManager（tab 删除线靠它）。
+    /// 纯 ECHO / PTY / AI 这类会话没有网络参与者，不写 → 保持 nil（= 正常）。
+    private func refreshLinkState() {
+        let netIds = sessionManager.getParticipants(sessionId)
+            .filter { $0.type == .socket }
+            .map { $0.id }
+        guard !netIds.isEmpty else { return }
+        sessionManager.setSessionLinkUp(sessionId, netIds.contains { linkStates[$0] == true })
     }
 
     // MARK: - Handle 行：spinner + 拖拽 + 最大化
@@ -515,6 +663,10 @@ struct ChatView: View {
                             sessionManager.addMessage(sessionId, message: msg)
                             messages = sessionManager.getMessages(sessionId)
                         }
+                        p.onStateChange = { [self] up in
+                            linkStates[config.id] = up
+                            refreshLinkState()
+                        }
                         p.connect()
                         activeParticipants[config.id] = p
                     } else {
@@ -523,6 +675,10 @@ struct ChatView: View {
                         p.onMessage = { [self] msg in
                             sessionManager.addMessage(sessionId, message: msg)
                             messages = sessionManager.getMessages(sessionId)
+                        }
+                        p.onStateChange = { [self] up in
+                            linkStates[config.id] = up
+                            refreshLinkState()
                         }
                         p.connect()
                         activeParticipants[config.id] = p
@@ -631,11 +787,16 @@ struct ChatView: View {
         }
 
         messages = sessionManager.getMessages(sessionId)
+        // 网络参与者刚加进来还没报状态 → 先按「未连上」算（tab 会短暂带删除线，连上后自动消失）
+        refreshLinkState()
     }
 
     private func disconnectParticipants() {
         activeParticipants.values.forEach { $0.disconnect() }
         activeParticipants.removeAll()
+        linkStates.removeAll()
+        // 链路状态只存内存：断开后回到「未上报 = 正常」缺省，重连时再重新聚合
+        sessionManager.clearSessionLinkUp(sessionId)
         // 离开页面时释放语音资源（防后台麦克风常亮）
         releaseVoiceRecorder()
     }

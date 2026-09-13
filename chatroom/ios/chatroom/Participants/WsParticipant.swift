@@ -18,6 +18,10 @@ final class WsParticipant: Participant {
 
     var onMessage: ((Message) -> Void)?
 
+    /// 链路状态回调（主线程）：握手成功 = true，握手失败 / 被动断开 = false。
+    /// **主动 disconnect() 不会回调 false**（对应 Android `WsParticipant.onStateChange`）。
+    var onStateChange: ((Bool) -> Void)?
+
     private let sessionId: String
     private let ip: String
     private let port: Int
@@ -25,7 +29,22 @@ final class WsParticipant: Participant {
 
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
-    private var running = false
+
+    /// 线程安全：URLSession delegate 回调在 OperationQueue 上，主线程也会读写
+    private let stateLock = NSLock()
+    private var _running = false
+    private var running: Bool {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return _running
+        }
+        set {
+            stateLock.lock()
+            _running = newValue
+            stateLock.unlock()
+        }
+    }
 
     init(sessionId: String, ip: String, port: Int, path: String = "/") {
         self.sessionId = sessionId
@@ -87,6 +106,7 @@ final class WsParticipant: Participant {
     }
 
     func disconnect() {
+        // 先置 running=false：后面的 didClose / receive 失败回调才不会上报 false
         running = false
         task?.cancel(with: .normalClosure, reason: nil)
         session?.invalidateAndCancel()
@@ -125,6 +145,10 @@ final class WsParticipant: Participant {
             case .failure(let error):
                 DispatchQueue.main.async {
                     self.postInfo("❌ WS 接收错误: \(error)")
+                    if self.running {
+                        self.running = false
+                        self.reportState(false)
+                    }
                 }
             }
         }
@@ -135,11 +159,23 @@ final class WsParticipant: Participant {
         // 这里打印 protocol 即可，跟 Android 的 `Response.protocol` 对齐。
         postInfo("🔌 WS 握手响应: \(proto ?? "") 101 Switching Protocols")
         postInfo("🔌 WS 已连接")
+        // 已主动 disconnect 的老实例（running=false）不再上报，避免污染重连后的新连接
+        if running { reportState(true) }
     }
 
     private func handleClose(code: Int, reason: String?) {
+        // 主动 disconnect() 已经先把 running 置 false 了 → 不上报 false
+        let wasRunning = running
         running = false
         postInfo("🔌 WS 已断开 code=\(code) reason=\(reason ?? "")")
+        if wasRunning { reportState(false) }
+    }
+
+    /// 上报链路状态（统一回主线程，SessionManager 是 @MainActor）
+    private func reportState(_ up: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onStateChange?(up)
+        }
     }
 
     private func dispatchText(_ content: String) {

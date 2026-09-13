@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-09-13 iOS 底栏对齐 Android：会话恢复 + ⓘ 重连面板 + 删除线
+
+**摘要**：把 Android 那套会话 tabbar 行为搬到 iOS——App 重启后恢复已打开的会话（未连接、参与者还在）；
+tab 结构改成 `[ⓘ] 时间戳 [×]`，点 `ⓘ` 在输入区下方展开重连面板（参与者卡片样式对齐主页 + 重连按钮），
+再点一次收起；tab 名字用创建时间 `YYMM-DDhh-mmss`（无 emoji、无状态符号），**未连接 / 链路失败时整串加删除线**。
+
+### 改动
+
+| 文件 | 内容 |
+|---|---|
+| `Core/SessionStore.swift`（新增） | 会话落盘：`Application Support/chatroom_sessions.json`，`.atomic` 写（等价 Android `SessionStore` 的 `commit()`）；容错解析，未知 `ParticipantType` 只跳过该参与者、不丢整条会话 |
+| `Core/SessionManager.swift` | 加 `sessionOrder`（tab 顺序）/ `connected`（本进程是否激活过）/ `linkUp`（链路聚合，仅内存）；新增 `restoreFromStore()` / `persist()` / `isSessionUp()` / `setSessionConnected()` / `setSessionLinkUp()` / `clearSessionLinkUp()`；`createSession/addParticipant/removeParticipant/removeSession` 都落盘 |
+| `Participants/SocketParticipant.swift` | 加 `onStateChange(Bool)`：TCP/UDP 连上 → `true`，`.failed` / 读错误 / 被动关闭 → `false`；**主动 `disconnect()` 不上报**（`running` 先置 false）；`running` 由裸 `var` 换成 `NSLock` 保护（Swift 没有 `@Volatile`） |
+| `Participants/WsParticipant.swift` | 同款 `onStateChange`：`didOpen` → `true`，`didClose` / receive 失败 → `false`，主动关闭静默；`running` 同样加锁 |
+| `UI/Chat/ParticipantCardView.swift`（新增） | 重连面板用的只读参与者卡片，外壳对齐主页 `EditingCardView`（白底 + 12 圆角 + 阴影 + 蓝描边），显示「图标 + 名称 + 参数 · 已连接/未连接」 |
+| `UI/Chat/ChatView.swift` | 新增 `showReconnectPanel` 绑定 + 面板（标题按链路状态、列表 `maxHeight 200` 对应 Android `dp(200)`、`🔁 重新连接` / `🔌 重连`）；`onAppear` 改成「已激活才连，恢复出来的只贴一次提示」；SOCKET/WS 参与者注册 `onStateChange` 聚合到会话级 |
+| `UI/MainContainerView.swift` | tab 结构改为 `[ⓘ] 名字 [×]`，`ⓘ` 切到该会话并展开/收面板；tab 名 = 创建时间，`!isSessionUp` 时 `strikethrough`；启动时 `restoreFromStore()` 并用 `sessionOrder` 建 tab |
+| `android/.../ChatFragment.kt` | 顺手修掉恢复提示里的过期文案（「再次点击底部该会话标签」→「点该会话标签左边的 ⓘ」，tab 点击语义早已简化） |
+| `ios/.gitignore`（新增） | 与 `waterinbox/ios/.gitignore` 同一约定，忽略 `/build` 等产物 |
+
+### 效果 / 限制
+
+- 杀进程重启 → tab 还在、名字带删除线，点 `ⓘ` 能看到参与者，点重连即恢复
+- iOS 没有 Android 的 `TcpForegroundService`，后台只能靠 `beginBackgroundTask` 撑 ~30s，删除线会在系统挂断连接后由链路回调亮起
+- 聊天消息仍然不落盘（`imageBytes` 体积不可控），限制同 Android；见 [`readme.md`](./readme.md) 已知限制
+- `ⓘ` / `×` 与 tab 本体的点击分流：用 `contentShape + onTapGesture` 承载「切 tab」，两个按钮各自独立，避免 Button 套 Button 被外层吞点击
+
+---
+
 ## 2026-09-13 Android 后台保活加固：按 Home / 锁屏后连接不断
 
 **摘要**：用户反馈「按下 home 会被断开 tcp，或者被系统杀掉」。主因是 `ChatFragment.onDestroy()`

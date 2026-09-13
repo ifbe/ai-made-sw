@@ -166,7 +166,7 @@ broadcastBinaryToParticipants(bytes)
 - **SSH**: 仅有 UI 配置，无实际连接实现（Android/iOS）
 - **BLUETOOTH 直接通信架构**：iOS Peripheral（CBPeripheralManager）广播 ↔ Android Central（BluetoothAdapter）连接，无需第三方中转。iOS App 必须在前台运行。Android 扫描 iOS 设备需要地理位置权限（6.0+）。
 - **图片/视频消息**: 未实现
-- **会话持久化（Android）**: 进程重启只恢复「会话 + 参与者配置」（未连接状态），**聊天消息不落盘**，恢复出来的会话聊天区只有重连后的新消息；tab 上再点一次当前会话可展开重连面板。见 [`android.md`](./android.md)
+- **会话持久化（Android / iOS）**: 进程重启只恢复「会话 + 参与者配置」（未连接状态），**聊天消息不落盘**，恢复出来的会话聊天区只有重连后的新消息；点 tab 名字左边的 **ⓘ** 展开重连面板手动重连，未连接的会话 tab 名字带删除线。见 [`android.md`](./android.md) / [`ios.md`](./ios.md)
 - **PTY/SERIAL**: Android 需要 root
 - **Android TCP 后台保活 vs OEM 省电策略**：`TcpForegroundService` 能在标准设备上后台保持 TCP socket。但**国内厂商（华为/小米/OPPO/vivo/一加）有自家省电策略**，可能直接杀主进程，不走 `onTaskRemoved` 路径。**用户需在系统设置给 chatroom 加白名单**：
   - 华为/荣耀：设置 → 电池 → 启动管理 → 关掉 chatroom "自动管理"

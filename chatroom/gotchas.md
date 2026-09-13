@@ -380,3 +380,71 @@ service 自己的日志连续打 `onStartCommand: ... startedFlag=false count=0`
   只能引导用户加白名单（第 6 条），代码无法规避（`android:process` 拆进程试过，见第 6 条）
 
 **踩坑频率**：2026-09-13 一次集中排查（用户诉求：切回 home 很久后连接都还在）。
+
+---
+
+## 12. 主动断开必须静默：迟到回调会把刚重连好的会话标成「断开」
+
+**日期**：2026-09-13
+**影响**：iOS tab 删除线（以及 Android tab 状态）在重连后可能一直不消失，或者反复闪
+
+### 现象
+
+点重连后连接其实已经成功，但会话 tab 的删除线不消失。日志里连接是好的。
+
+### 根因
+
+重连流程是「先 `disconnect()` 掉老 participant，再按配置新建一个」。老实例的
+`NWConnection` / `URLSessionWebSocketTask` 在 `cancel()` 之后仍会回调一次：
+
+- iOS `NWConnection`: `.cancelled`（有时是 `.failed`）+ 读循环的 `isComplete == true`
+- iOS `WebSocketTask`: `didCloseWith` / `receive` 返回 `.failure`
+
+这些回调如果无脑上报 `false`，就会覆盖掉**新实例**刚上报的 `true` —— 同一个 `configId`，
+两个实例共用一个状态槽位。Android 那边同理（`SocketParticipant` 的读循环 `disconnect()`
+也会唤醒阻塞的读）。
+
+### 修法
+
+- `disconnect()` **第一件事**就是把 `running` 置 false，然后才 `cancel()`
+- 所有上报路径都加 `if running` 守卫（`.ready` / `.failed` / `.cancelled` / 读错误 / `didOpen` / `didClose`）
+- 只有 `connect()` 会置 `running = true`；`running` 用锁保护（Swift 没有 `@Volatile`，
+  `NWConnection` 回调不在主线程；Android 那边直接 `@Volatile`）
+- 聚合层再加一道：`ChatView` 只接受「当前 `activeParticipants[configId]` 实例」的状态
+
+### 教训
+
+- 「断开」和「发现断开」是两件事：主动断开的副作用回调必须与真实故障区分开
+- 跨线程的「当前是否还在跑」标志位，别用裸 `var`；重连 = 换实例，老实例必须能自我静音
+
+---
+
+## 13. SwiftUI Button 套 Button：内层 `ⓘ` / `×` 的点击会被外层吞掉
+
+**日期**：2026-09-13
+**影响**：iOS tab 上的 `ⓘ` / `×` 点了没反应，或者误触发「切到该会话」
+
+### 现象
+
+tab 原本整块是 `Button { 切 tab }`，里面又嵌了关闭用的 `Button("×")`。点 × 时外层先响应，
+关闭和切换互相打架；加上 `ⓘ` 之后更明显。
+
+### 根因
+
+iOS 上嵌套 Button 的命中/手势仲裁不可靠：外层 Button 的点击区域覆盖内层，
+内层 Button 不保证拿到事件，也没有「内层优先」的明确契约。
+
+### 修法
+
+- tab 本体改成 **`contentShape(RoundedRectangle(...)) + onTapGesture { 切 tab }`**
+  （不是 Button），负责「点空白/名字 = 切会话」
+- `ⓘ` / `×` 保持独立 `Button(.plain)`，各自 `onClick`，互不冒泡
+- 三个热区的语义跟 Android `SessionTabBar` 一一对应：tab 本体 / `onInfo` / `onClose`
+
+### 教训
+
+- SwiftUI 里「一个可点容器 + 里面还有几个可点元素」不要用 Button 嵌套表达；
+  容器用 `contentShape + onTapGesture`，内部元素各自是独立手势
+- 跨端对齐交互时，先把**热区划分**写清楚（谁点哪里），再选实现手段
+
+---

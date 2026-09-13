@@ -17,6 +17,7 @@ ios/chatroom/
 │   └── Vt100Style.swift           # ANSI 样式
 ├── Core/
 │   ├── SessionManager.swift       # 全局 Session 管理（@MainActor）
+│   ├── SessionStore.swift         # 会话持久化（Application Support JSON，原子写）
 │   └── Vt100Parser.swift          # ANSI escape 解析
 ├── Participants/
 │   ├── Participant.swift           # 参与者协议
@@ -31,7 +32,8 @@ ios/chatroom/
     │   ├── HomeView.swift         # 首页（编辑卡片列表）
     │   └── EditingCardData.swift  # 编辑卡片数据
     └── Chat/
-        ├── ChatView.swift         # 聊天界面（6种输入模式）
+        ├── ChatView.swift         # 聊天界面（6种输入模式）+ 重连面板
+        ├── ParticipantCardView.swift # 重连面板里的只读参与者卡片（样式对齐主页卡片）
         ├── MessageRowView.swift   # 消息行（气泡/灰字）
         ├── BubbleShape.swift       # 自定义气泡形状（每角不同半径）
         ├── DirectionPadView.swift  # 遥控 qwe 方向键 + 数字键盘 + FlexibleGrid3x3（撑满父容器）
@@ -121,6 +123,7 @@ ios/chatroom/
 - 改用 **`ZStack` + `opacity(selectedTab==id ? 1:0) + allowsHitTesting(selectedTab==id)`**
 - 所有 Home/Chat 页面常驻 view 树（`ForEach(chatSessions, id: \.self)` 保身份稳定），切 tab 不重建 view、不重连 TCP
 - 底部 TabBar 仍负责程序化切 `selectedTab`，没有 swipe 手势、没系统 tab bar
+- **tab 结构（2026-09-13）**：`[ⓘ] 名字 [×]`——tab 本体点击 = 切到该会话，`ⓘ` = 展开/收起重连面板，`×` = 关闭会话（首页 tab 只有名字）
 
 **VT100 解析**：`Vt100Parser.swift`
 - CSI SGR 序列解析（ANSI 颜色 + bold + underline）
@@ -131,6 +134,7 @@ ios/chatroom/
 - `@MainActor` 单例
 - `sessions: [String: [ParticipantConfig]]`
 - `messages: [String: [Message]]`
+- `sessionOrder: [String]`（= tab 顺序）/ `connected`（本进程是否激活过）/ `linkUp`（链路聚合，仅内存）
 
 **后台任务扩展**：`chatroomApp.swift` 的 `BackgroundTaskManager`
 - 监听 `scenePhase`：进入后台时 `UIApplication.shared.beginBackgroundTask(withName:expirationHandler:)` 申请 ~30s 后台运行时间
@@ -151,6 +155,84 @@ ios/chatroom/
 **BLUETOOTH**：`BluetoothParticipant.swift` — BLE 直接通信（Android Central ↔ iOS Peripheral，无需中转）
 
 **PTY 真机支持**：在 macOS Simulator 上可以用 `Process` + `forkpty()` 实现本地 shell
+
+---
+
+## 会话持久化 / tabbar / 重连面板（iOS，2026-09-13 对齐 Android）
+
+### 数据流
+
+```
+会话 / 参与者变更
+      │  SessionManager（@MainActor 单例，内存态）
+      ▼
+SessionStore.save() → Application Support/chatroom_sessions.json（.atomic 写）
+      │
+      │  App 下次启动
+      ▼
+SessionManager.restoreFromStore() → connected=false（一律未连接）→ MainContainerView 用 sessionOrder 建 tab
+```
+
+落盘内容 = `id` + `createdAt` + `participants[{id,type,name,params}]`。**不落盘**：聊天消息
+（`imageBytes` 体积不可控）、连接状态（重启后必然断开）、输入模式 / 输入区高度等 UI 状态。
+落盘用 `.atomic`（先写临时文件再 rename），会话刚建完进程就被杀也不会留下半截 JSON。
+
+`createdAt` 从 sessionId 反解（`session_<epochMillis>`，跟 Android 同一个约定）；解析不出来用 0，
+不让 App 崩。JSON 里的未知 `ParticipantType` **只跳过该参与者**，不丢整条会话。
+
+### tab 名字与删除线
+
+- 名字 = 创建时间 `YYMM-DDhh-mmss`（例 `2609-1301-4310`），纯文字、无 emoji
+- `!SessionManager.isSessionUp(id)` → 整个字串加删除线
+
+`isSessionUp(id) = connected[id] && (linkUp[id] ?? true)`：
+
+| 场景 | connected | linkUp | 显示 |
+|---|---|---|---|
+| 本进程新建 / 点过重连 | true | nil（无网络参与者）或 true | 正常 |
+| 正在连接 / 连不上 / 掉线 | true | false | ~~删除线~~ |
+| 程序重启恢复、还没重连 | false | — | ~~删除线~~ |
+
+`linkUp` 的 `nil` 表示「没有网络参与者可上报」（纯 ECHO / PTY / AI）或「还没上报」，
+按正常算——这样纯 ECHO 会话不会莫名其妙带删除线。
+
+### 链路状态链（谁把 false 报上来）
+
+```
+SocketParticipant / WsParticipant.onStateChange(Bool)
+      │  连上 → true；.failed / 读错误 / 被动断开 → false；主动 disconnect() 不上报
+      ▼
+ChatView.linkStates[configId] → refreshLinkState()（聚合：该会话还有任意一个 SOCKET 在线 = 正常）
+      ▼
+SessionManager.setSessionLinkUp(sessionId, up) → @Published → MainContainerView 重画 tab 删除线
+```
+
+- **主动 `disconnect()` 绝不能上报 `false`**：重连时先 `disconnect()` 再新建 participant，
+  老实例的迟到回调会把刚连好的会话标成断开。实现上用「`disconnect()` 先置 `running = false`，
+  所有上报路径都 `if running` 守卫」（TCP `.cancelled` 同理）
+- `running` 由裸 `var` 换成 `NSLock` 保护：`connect()/disconnect()` 在主线程，`NWConnection`
+  回调在自己的 queue 上，Swift 没有 `@Volatile` 这种关键字
+- 聚合只算 `type == .socket`（TCP/UDP/WS），跟 Android 一致——TELNET / AI / AGENT 不参与链路判定
+- **正在连接时 tab 会短暂带删除线**，连上后自动消失（跟 Android 行为一致）
+
+### 重连面板
+
+`ChatView` 底部（输入区下方 / tabbar 上方）一块面板，由 `MainContainerView` 的 `openPanels: Set<String>`
+经 `Binding<Bool>` 控制展开：
+
+- 标题：`🔌 参与者 · 已连接` / `🔌 参与者 · 未连接`（按 `isSessionUp` 而不是 `isConnected`，
+  这样「点过重连但连不上」也显示未连接）
+- 列表：`ParticipantCardView`（外壳对齐主页 `EditingCardView`：白底 + 12 圆角 + 阴影 + 蓝描边；
+  内容 = 图标 + 名称 + `参数 · 状态`），`ScrollView` 限高 200（对应 Android `reconnectScroll.maxHeightPx = dp(200)`）
+- 按钮：`🔁 重新连接` / `🔌 重连` → 先 `disconnect()` 清干净，再 `setSessionConnected(true)` + 按配置重连
+
+布局要点：面板展开时消息列表必须切到**弹性高度**（面板高度不定），面板收起时保留原来的显式高度算法
+（`geo.size.height - inputHeight`）——不动已验证过不振荡的拖拽路径。最大化状态下点 `ⓘ` 会先退出最大化。
+
+### 点击分流
+
+tab 用 `contentShape + onTapGesture` 承载「切到该会话」，`ⓘ` / `×` 各自是独立 `Button(.plain)`。
+**不要用 Button 套 Button**：外层 Button 会把内层 `ⓘ` / `×` 的点击吞掉。
 
 ---
 

@@ -14,6 +14,11 @@ final class SocketParticipant: Participant {
 
     var onMessage: ((Message) -> Void)?
 
+    /// 链路状态回调（主线程）：连上 = true，连不上 / 掉线 = false。
+    /// **主动 disconnect() 不会回调 false**——否则旧实例的迟到回调会把刚重连好的会话标成断开。
+    /// 对应 Android `SocketParticipant.onStateChange`。
+    var onStateChange: ((Bool) -> Void)?
+
     private let sessionId: String
     private let ip: String
     private let port: Int
@@ -26,7 +31,23 @@ final class SocketParticipant: Participant {
     // UDP
     private var udpConnection: NWConnection?
 
-    private var running = false
+    /// 线程安全：`running` 会被 connect / disconnect（主线程）和 NWConnection 回调（queue）同时读写，
+    /// 用 NSLock 而不是裸 var（Android 那边是 @Volatile，Swift 没有等价关键字）
+    private let stateLock = NSLock()
+    private var _running = false
+    private var running: Bool {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return _running
+        }
+        set {
+            stateLock.lock()
+            _running = newValue
+            stateLock.unlock()
+        }
+    }
+
     private let queue = DispatchQueue(label: "SocketParticipant", qos: .userInitiated)
 
     init(sessionId: String, ip: String, port: Int, sockType: SocketType) {
@@ -69,12 +90,18 @@ final class SocketParticipant: Participant {
             switch state {
             case .ready:
                 self.postInfo("🔗 TCP 已连接 \(self.ip):\(self.port)", true)
+                // 已主动 disconnect 的老实例（running=false）不再上报：否则迟到回调会把
+                // 刚重连好的会话标成断开
+                if self.running { self.reportState(true) }
                 self.startTcpReader()
             case .failed(let error):
                 let errMsg = String(describing: error)
                 self.postInfo("❌ TCP 连接失败: \(errMsg)", true)
+                if self.running { self.reportState(false) }
             case .cancelled:
                 self.postInfo("⚠️ TCP 连接已取消", true)
+                // 主动 disconnect()（running=false）导致的 cancelled 不上报，避免污染重连后的状态
+                if self.running { self.reportState(false) }
             default:
                 break
             }
@@ -104,12 +131,15 @@ final class SocketParticipant: Participant {
             if let error = error {
                 DispatchQueue.main.async {
                     self.postInfo("❌ TCP 读取错误: \(error)", true)
+                    // 非主动断开（对端 RST / 网络切换）→ 链路已断
+                    if self.running { self.reportState(false) }
                 }
                 return
             }
             if isComplete {
                 DispatchQueue.main.async {
                     self.postInfo("⚠️ TCP 连接已关闭", true)
+                    if self.running { self.reportState(false) }
                 }
                 return
             }
@@ -131,12 +161,15 @@ final class SocketParticipant: Participant {
             switch state {
             case .ready:
                 self.postInfo("📡 UDP 已连接 \(self.ip):\(self.port)", true)
+                if self.running { self.reportState(true) }
                 self.startUdpReader()
             case .failed(let error):
                 let errMsg = String(describing: error)
                 self.postInfo("❌ UDP 连接失败: \(errMsg)", true)
+                if self.running { self.reportState(false) }
             case .cancelled:
                 self.postInfo("⚠️ UDP 连接已取消", true)
+                if self.running { self.reportState(false) }
             default:
                 break
             }
@@ -166,6 +199,7 @@ final class SocketParticipant: Participant {
             if let error = error {
                 DispatchQueue.main.async {
                     self.postInfo("❌ UDP 读取错误: \(error)", true)
+                    if self.running { self.reportState(false) }
                 }
                 return
             }
@@ -217,11 +251,19 @@ final class SocketParticipant: Participant {
     }
 
     func disconnect() {
+        // 先置 running=false：后面 NWConnection 回调里的 cancelled 才不会上报 false
         running = false
         tcpConnection?.cancel()
         tcpConnection = nil
         udpConnection?.cancel()
         udpConnection = nil
+    }
+
+    /// 上报链路状态（统一回主线程，SessionManager 是 @MainActor）
+    private func reportState(_ up: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onStateChange?(up)
+        }
     }
 
     private func postInfo(_ content: String, _ isInfo: Bool) {

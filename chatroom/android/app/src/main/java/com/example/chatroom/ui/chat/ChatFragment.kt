@@ -124,7 +124,7 @@ class ChatFragment : Fragment() {
 
     /** 从磁盘恢复出来的会话还没连过时，聊天区贴一次的提示 */
     private val restoredHintText =
-        "🔌 该会话已从本地恢复，当前处于未连接状态\n再次点击底部该会话标签可展开重连面板"
+        "🔌 该会话已从本地恢复，当前处于未连接状态\n点该会话标签左边的 ⓘ 可展开重连面板"
 
     // ===== 语音（VOICE mode）相关 =====
     private lateinit var btnVoiceStart: Button
