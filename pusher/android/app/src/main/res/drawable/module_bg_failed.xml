@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 该环节失败时的卡片底图：白底 + 红色边框 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#FFFFFF"/>
+    <corners android:radius="10dp"/>
+    <stroke android:width="2dp" android:color="#E53935"/>
+</shape>

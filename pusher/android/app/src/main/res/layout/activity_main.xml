@@ -1,911 +1,1303 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root_layout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="0dp"
-    android:fitsSystemWindows="false">
+    android:background="@android:color/white">
 
-    <!-- ========== 区域1上方箭头：指向云端和硬盘 ========== -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:padding="2dp">
-
-        <!-- 左侧箭头：指向云端 -->
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="↑ 云端 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-
-        <!-- 右侧箭头：指向硬盘 -->
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="↑ 硬盘 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-    </LinearLayout>
-
-    <!-- ========== 区域1：左右并排（RTMP推流 + 本地录制） ========== -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="2"
-        android:orientation="horizontal"
-        android:weightSum="2"
-        android:layout_margin="1dp">
-
-        <!-- 区域1左：RTMP 推流模块 -->
-        <FrameLayout
-            android:id="@+id/frame_rtmp"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="@drawable/module_bg_state">
-
-            <LinearLayout
-                android:id="@+id/content_rtmp"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="vertical"
-                android:background="@android:color/transparent"
-                android:padding="4dp">
-
-                <!-- 标题行：文字 + Switch -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="📡 RTMP 推流"
-                        android:textStyle="bold"
-                        android:textSize="8sp"/>
-
-                    <Switch
-                        android:id="@+id/switch_rtmp"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="false"
-                        android:scaleX="0.7"
-                        android:scaleY="0.7"/>
-                </LinearLayout>
-
-                <!-- 第一行：协议 + 服务器 + 端口 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginTop="1dp">
-
-                    <Spinner
-                        android:id="@+id/spinner_protocol"
-                        android:layout_width="59dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="0dp"
-                        android:background="@android:color/transparent"
-                        android:entries="@array/protocols" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="://"
-                        android:textSize="8sp"/>
-
-                    <EditText
-                        android:id="@+id/et_server_host"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:hint="服务器"
-                        android:text="192.168.5.129"
-                        android:textSize="8sp"
-                        android:padding="1dp"
-                        android:layout_marginStart="2dp"
-                        android:layout_marginEnd="2dp"
-                        android:background="@android:color/transparent"
-                        android:singleLine="true"/>
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text=":"
-                        android:textSize="8sp"/>
-
-                    <EditText
-                        android:id="@+id/et_port"
-                        android:layout_width="36dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="2dp"
-                        android:layout_marginEnd="2dp"
-                        android:hint="端口"
-                        android:text="1935"
-                        android:textSize="8sp"
-                        android:padding="1dp"
-                        android:background="@android:color/transparent"
-                        android:singleLine="true"/>
-                </LinearLayout>
-
-                <!-- 第二行：应用路径 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginTop="1dp">
-
-                    <EditText
-                        android:id="@+id/et_app_path"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:hint="应用/流名"
-                        android:text="/live/test"
-                        android:textSize="8sp"
-                        android:padding="1dp"
-                        android:background="@android:color/transparent"
-                        android:singleLine="true"/>
-                </LinearLayout>
-
-                <!-- RTMP 数据预览标题 -->
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="RTMP 数据预览"
-                    android:textStyle="bold"
-                    android:textSize="8sp"
-                    android:layout_marginTop="1dp"/>
-
-                <!-- 预览区域 -->
-                <com.example.pusher.ui.PreviewLogView
-                    android:id="@+id/preview_rtmp"
-                    android:layout_width="match_parent"
-                    android:layout_height="0dp"
-                    android:layout_weight="1"
-                    android:background="#FFF0F0"
-                    android:padding="0dp"/>
-            </LinearLayout>
-        </FrameLayout>
-
-        <!-- 区域1右：本地录制模块 -->
-        <FrameLayout
-            android:id="@+id/frame_record"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginEnd="1dp"
-            android:background="@drawable/module_bg_state">
-
-            <LinearLayout
-                android:id="@+id/content_record"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="vertical"
-                android:background="@android:color/transparent"
-                android:padding="8dp">
-
-                <!-- 标题行：文字 + Switch -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="💾 本地录制"
-                        android:textStyle="bold"
-                        android:textSize="8sp"/>
-
-                    <Switch
-                        android:id="@+id/switch_record"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="false"
-                        android:scaleX="0.7"
-                        android:scaleY="0.7"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-                    <EditText
-                        android:id="@+id/et_file_path"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:hint="文件保存路径"
-                        android:textSize="10sp"
-                        android:padding="4dp"/>
-
-                    <Button
-                        android:id="@+id/btn_browse"
-                        android:layout_width="46dp"
-                        android:layout_height="wrap_content"
-                        android:text="浏览"
-                        android:textSize="10sp" />
-                </LinearLayout>
-            </LinearLayout>
-        </FrameLayout>
-    </LinearLayout>
-
-    <!-- ========== 区域1下方箭头：FLV流向RTMP和文件 ========== -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:padding="1dp">
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="↑ FLV → RTMP ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="↑ FLV → 文件 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-    </LinearLayout>
-
-    <!-- ========== 区域2：FLV 封装层（整块） ========== -->
+    <!-- ============================================================
+         首页按钮面板：放在以屏幕中心为中心、边长 = min(屏宽,屏高) 的正方形区域内。
+         区域内全部使用固定 dp，因此横竖屏切换时渲染完全一致（只是整体位置变化）。
+         ============================================================ -->
     <FrameLayout
-        android:id="@+id/frame_flv"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="2"
-        android:layout_margin="2dp"
-        android:background="@drawable/module_bg_state">
+        android:id="@+id/panel_area"
+        android:layout_width="360dp"
+        android:layout_height="360dp"
+        android:layout_gravity="center">
 
         <LinearLayout
-            android:id="@+id/content_flv"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:id="@+id/panel_modules"
+            android:layout_width="320dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
             android:orientation="vertical"
-            android:background="@android:color/transparent"
-            android:padding="2dp">
+            android:gravity="center">
 
-            <!-- 标题行：文字 + Switch -->
+            <!-- 输出行：推流 / 本地录制 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:gravity="center_vertical">
-
-                <TextView
+                android:gravity="center">
+                <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="📦 FLV 封装层"
-                    android:textStyle="bold"
-                    android:textSize="8sp"
-                    android:lineSpacingExtra="1dp"/>
-
-                <Switch
-                    android:id="@+id/switch_flv"
-                    android:layout_width="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_rtmp"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="18dp"
+                        android:paddingRight="18dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="16sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="☁ 推流"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:checked="false"
-                    android:scaleX="0.8"
-                    android:scaleY="0.8"/>
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_record"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="18dp"
+                        android:paddingRight="18dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="16sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="💾 本地录制"/>
+                </LinearLayout>
             </LinearLayout>
 
-            <Spinner
-                android:id="@+id/spinner_format"
+            <!-- 封装到输出：两条斜箭头 -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:entries="@array/formats"
-                android:layout_marginTop="1dp"/>
+                android:orientation="horizontal"
+                android:gravity="center">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"
+                        android:rotation="-45"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"
+                        android:rotation="45"/>
+                </LinearLayout>
+            </LinearLayout>
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="封装数据预览"
-                android:textStyle="bold"
-                android:textSize="9sp"
-                android:lineSpacingExtra="1dp"
-                android:layout_marginTop="1dp"/>
-
-            <com.example.pusher.ui.PreviewLogView
-                android:id="@+id/preview_mux"
+            <!-- 封装 -->
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1"
-                android:background="#FFF8F0"
-                android:padding="0dp"/>
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_flv"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="18dp"
+                        android:paddingRight="18dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="16sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="📦 封装"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 编码到封装：两条斜箭头 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"
+                        android:rotation="45"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"
+                        android:rotation="-45"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 编码行 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_video_encoder"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="6dp"
+                        android:paddingRight="6dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="🎬 视频编码"/>
+                </LinearLayout>
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1"/>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_audio_encoder"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="6dp"
+                        android:paddingRight="6dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="🎵 音频编码"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 采集到编码：两条竖直箭头 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="↑"
+                        android:textSize="22sp"
+                        android:textStyle="bold"
+                        android:textColor="#000000"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 采集行 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_video_preview"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="6dp"
+                        android:paddingRight="6dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="📷 视频采集"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_subtitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="10dp"
+                        android:paddingRight="10dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="💬 字幕"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+                    <Button
+                        android:id="@+id/btn_open_audio_preview"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="56dp"
+                        android:paddingLeft="6dp"
+                        android:paddingRight="6dp"
+                        android:paddingTop="12dp"
+                        android:paddingBottom="12dp"
+                        android:layout_margin="3dp"
+                        android:textSize="14sp"
+                        android:textColor="#FFFFFF"
+                        android:backgroundTint="#546E7A"
+                        android:text="🎙 音频采集"/>
+                </LinearLayout>
+            </LinearLayout>
         </LinearLayout>
     </FrameLayout>
 
-    <!-- ========== 区域2下方箭头：编码器输出到封装 ========== -->
-    <LinearLayout
+    <!-- ============================================================
+         展开层：点卡片外区域折叠
+         ============================================================ -->
+    <FrameLayout
+        android:id="@+id/overlay_expanded"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:padding="1dp">
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="视频码流→封装 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="音频码流→封装 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-    </LinearLayout>
+        android:layout_height="match_parent"
+        android:background="#99000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
 
-    <!-- ========== 区域3左 + 区域3右：视频编码 + 音频编码（左右并排） ========== -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="3"
-        android:orientation="horizontal"
-        android:weightSum="2"
-        android:layout_margin="2dp">
-
-        <!-- 区域3左：视频编码 -->
         <FrameLayout
-            android:id="@+id/frame_video_encoder"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="@drawable/module_bg_state">
+            android:id="@+id/card_expanded"
+            android:layout_width="320dp"
+            android:layout_height="480dp"
+            android:layout_gravity="center"
+            android:clickable="true"
+            android:focusable="true">
 
-            <LinearLayout
-                android:id="@+id/content_video_encoder"
+            <FrameLayout
+                android:id="@+id/card_content"
                 android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="vertical"
-                android:background="@android:color/transparent"
-                android:padding="1dp">
+                android:layout_height="match_parent">
 
-                <!-- 标题行：文字 + Switch -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="🎬 视频编码"
-                        android:textStyle="bold"
-                        android:textSize="8sp"/>
-
-                    <Switch
-                        android:id="@+id/switch_video_encoder"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="false"
-                        android:scaleX="0.8"
-                        android:scaleY="0.8"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginTop="1dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="编码器:"
-                        android:textSize="9sp"/>
-                    <Spinner
-                        android:id="@+id/spinner_video_codec"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="码率:"
-                        android:textSize="9sp"/>
-                    <EditText
-                        android:id="@+id/et_video_bitrate"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="2500"
-                        android:textSize="9sp"
-                        android:padding="2dp"/>
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="kbps"
-                        android:textSize="8sp"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="帧率:"
-                        android:textSize="9sp"/>
-                    <EditText
-                        android:id="@+id/et_video_fps"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="30"
-                        android:textSize="9sp"
-                        android:padding="2dp"/>
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="fps"
-                        android:textSize="8sp"/>
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="视频码流预览"
-                    android:textStyle="bold"
-                    android:textSize="9sp"
-                    android:lineSpacingExtra="2dp"
-                    android:layout_marginTop="1dp"/>
-
-                <com.example.pusher.ui.PreviewLogView
-                    android:id="@+id/preview_video"
-                    android:layout_width="match_parent"
-                    android:layout_height="0dp"
-                    android:layout_weight="1"
-                    android:background="#F1F8E9"
-                    android:padding="0dp"/>
-            </LinearLayout>
-        </FrameLayout>
-
-        <!-- 区域3右：音频编码 -->
-        <FrameLayout
-            android:id="@+id/frame_audio_encoder"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginStart="1dp"
-            android:background="@drawable/module_bg_state">
-
-            <LinearLayout
-                android:id="@+id/content_audio_encoder"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="vertical"
-                android:background="@android:color/transparent"
-                android:padding="2dp">
-
-                <!-- 标题行：文字 + Switch -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="🎵 音频编码"
-                        android:textStyle="bold"
-                        android:textSize="8sp"/>
-
-                    <Switch
-                        android:id="@+id/switch_audio_encoder"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="false"
-                        android:scaleX="0.8"
-                        android:scaleY="0.8"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginTop="1dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="编码器:"
-                        android:textSize="9sp"/>
-                    <Spinner
-                        android:id="@+id/spinner_audio_codec"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="码率:"
-                        android:textSize="8sp"/>
-                    <EditText
-                        android:id="@+id/et_audio_bitrate"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="128"
-                        android:textSize="8sp"
-                        android:padding="1dp"/>
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="kbps"
-                        android:textSize="8sp"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="采样率:"
-                        android:textSize="8sp"/>
-                    <EditText
-                        android:id="@+id/et_audio_samplerate"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="44.1"
-                        android:textSize="9sp"
-                        android:padding="1dp"/>
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="kHz"
-                        android:textSize="8sp"/>
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="音频码流预览"
-                    android:textStyle="bold"
-                    android:textSize="8sp"
-                    android:lineSpacingExtra="1dp"
-                    android:layout_marginTop="1dp"/>
-
-                <com.example.pusher.ui.PreviewLogView
-                    android:id="@+id/preview_audio"
-                    android:layout_width="match_parent"
-                    android:layout_height="0dp"
-                    android:layout_weight="1"
-                    android:background="#F0F8FF"
-                    android:padding="0dp"/>
-            </LinearLayout>
-        </FrameLayout>
-    </LinearLayout>
-
-    <!-- ========== 区域3下方箭头：预览到编码器 ========== -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:padding="2dp">
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="视频预览→编码 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="音频预览→编码 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-    </LinearLayout>
-
-    <!-- ========== 区域4左 + 区域4右：视频采集 + 音频采集（左右并排） ========== -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="4"
-        android:orientation="horizontal"
-        android:weightSum="2"
-        android:layout_margin="1dp">
-
-        <!-- 区域4左：视频采集 -->
-        <FrameLayout
-            android:id="@+id/frame_video_preview"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginEnd="1dp"
-            android:background="@drawable/module_bg_state">
-
-            <LinearLayout
-                android:id="@+id/content_video_preview"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="vertical"
-                android:background="@android:color/transparent"
-                android:padding="8dp">
-
-                <!-- 标题行：文字 + Switch -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="📷 视频采集"
-                        android:textStyle="bold"
-                        android:textSize="8sp"/>
-
-                    <Switch
-                        android:id="@+id/switch_video_preview"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="false"
-                        android:scaleX="0.8"
-                        android:scaleY="0.8"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginTop="1dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="相机:"
-                        android:textSize="9sp"/>
-                    <Spinner
-                        android:id="@+id/spinner_camera"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="分辨率:"
-                        android:textSize="9sp"/>
-                    <Spinner
-                        android:id="@+id/spinner_resolution"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"/>
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="视频预览"
-                    android:textStyle="bold"
-                    android:textSize="9sp"
-                    android:lineSpacingExtra="1dp"
-                    android:layout_marginTop="1dp"/>
-
+                <!-- ==================== 视频采集 ==================== -->
                 <FrameLayout
+                    android:id="@+id/frame_video_preview"
                     android:layout_width="match_parent"
-                    android:layout_height="0dp"
-                    android:layout_weight="1"
-                    android:background="#000000"
-                    android:gravity="center">
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
 
-                    <TextureView
-                        android:id="@+id/texture_preview"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_gravity="center"/>
+                    <LinearLayout
+                        android:id="@+id/content_video_preview"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="📷 视频采集"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="摄像头:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_camera"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="分辨率:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_resolution"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="视频预览"
+                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:layout_marginTop="6dp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <FrameLayout
+                            android:id="@+id/preview_slot"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:background="@android:color/transparent">
+
+                            <!-- 黑框 = 推流画面的形状：宽高由 CameraHelper 按“原始画面比例”设置并居中，
+                                 画面正好铺满它（不留黑边、不裁剪、不拉伸） -->
+                            <FrameLayout
+                                android:id="@+id/preview_frame"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:layout_gravity="center"
+                                android:background="#000000"
+                                android:clipChildren="false">
+
+                                <TextureView
+                                    android:id="@+id/texture_preview"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="match_parent"/>
+                            </FrameLayout>
+                        </FrameLayout>
+                    </LinearLayout>
                 </FrameLayout>
-            </LinearLayout>
+
+                <!-- ==================== 音频采集 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_audio_preview"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_audio_preview"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="🎙️ 音频采集"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="麦克风:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_mic"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="声道:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_channels"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="音频波形预览（1 秒窗口）"
+                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:layout_marginTop="6dp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <com.example.pusher.ui.AudioWaveformView
+                            android:id="@+id/waveform_view"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:background="#FFF0F8"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- ==================== 视频编码 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_video_encoder"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_video_encoder"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="🎬 视频编码"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="编码器:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_video_codec"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="码率:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_video_bitrate"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="2500"
+                                android:textSize="14sp"
+                                android:hint="视频码率"/>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="kbps"
+                                android:textSize="13sp"
+                                android:layout_marginStart="8dp"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="帧率:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_video_fps"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="30"
+                                android:textSize="14sp"
+                                android:hint="视频帧率"/>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="fps"
+                                android:textSize="13sp"
+                                android:layout_marginStart="8dp"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="视频码流预览"
+                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:layout_marginTop="6dp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <com.example.pusher.ui.PreviewLogView
+                            android:id="@+id/preview_video"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:background="#F1F8E9"
+                            android:padding="0dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- ==================== 字幕 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_subtitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_subtitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="💬 字幕"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="来源:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_subtitle"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="固定文字:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_subtitle_text"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:hint="固定文字内容"
+                                android:textSize="14sp"
+                                android:inputType="text"
+                                android:maxLines="1"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="字幕链路尚未接入：这里先定“来源”，选“关闭”时这一路不启用（按钮变灰）"
+                            android:textSize="12sp"
+                            android:textColor="#757575"
+                            android:layout_marginTop="6dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- ==================== 音频编码 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_audio_encoder"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_audio_encoder"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="🎵 音频编码"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="编码器:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_audio_codec"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="码率:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_audio_bitrate"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="128"
+                                android:textSize="14sp"
+                                android:hint="音频码率"/>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="kbps"
+                                android:textSize="13sp"
+                                android:layout_marginStart="8dp"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="采样率:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_audio_samplerate"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="44.1"
+                                android:textSize="14sp"
+                                android:hint="采样率"/>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="kHz"
+                                android:textSize="13sp"
+                                android:layout_marginStart="8dp"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="音频码流预览"
+                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:layout_marginTop="6dp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <com.example.pusher.ui.PreviewLogView
+                            android:id="@+id/preview_audio"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:background="#F0F8FF"
+                            android:padding="0dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- ==================== 封装 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_flv"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_flv"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="📦 封装"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="格式:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_format"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="封装数据预览"
+                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:layout_marginTop="6dp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <com.example.pusher.ui.PreviewLogView
+                            android:id="@+id/preview_mux"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:background="#FFF8F0"
+                            android:padding="0dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- ==================== 推流 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_rtmp"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_rtmp"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="📡 推流"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="2dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="1dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:minHeight="0dp"
+                                android:text="协议:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_protocol"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:minHeight="0dp"
+                                android:includeFontPadding="false"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="1dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:minHeight="0dp"
+                                android:text="服务器:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_server_host"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:minHeight="0dp"
+                                android:includeFontPadding="false"
+                                android:layout_weight="1"
+                                android:text="192.168.5.129"
+                                android:textSize="14sp"
+                                android:hint="服务器"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="1dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:minHeight="0dp"
+                                android:text="端口:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_port"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:minHeight="0dp"
+                                android:includeFontPadding="false"
+                                android:layout_weight="1"
+                                android:text="1935"
+                                android:textSize="14sp"
+                                android:hint="端口"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="1dp">
+
+                            <TextView
+                                android:id="@+id/tv_app_path_label"
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:minHeight="0dp"
+                                android:text="应用/流名:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_app_path"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:minHeight="0dp"
+                                android:includeFontPadding="false"
+                                android:layout_weight="1"
+                                android:text="/live/test"
+                                android:textSize="14sp"
+                                android:hint="应用/流名"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="推流数据预览"
+                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:layout_marginTop="2dp"
+                            android:layout_marginBottom="2dp"/>
+
+                        <com.example.pusher.ui.PreviewLogView
+                            android:id="@+id/preview_rtmp"
+                            android:layout_width="match_parent"
+                            android:minHeight="60dp"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:background="#FFF0F0"
+                            android:padding="0dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- ==================== 本地录制 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_record"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/module_bg_state"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_record"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:background="@android:color/transparent"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="💾 本地录制"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="启用:"
+                                android:textSize="14sp"/>
+
+                            <Spinner
+                                android:id="@+id/spinner_record_enabled"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="2dp">
+
+                            <TextView
+                                android:layout_width="80dp"
+                                android:layout_height="wrap_content"
+                                android:text="文件路径:"
+                                android:textSize="14sp"/>
+
+                            <EditText
+                                android:id="@+id/et_file_path"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:textSize="14sp"
+                                android:text="/sdcard/Download/pusher.flv"
+                                android:hint="文件保存路径"/>
+                        </LinearLayout>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="录制数据预览"
+                            android:textStyle="bold"
+                            android:textSize="13sp"
+                            android:layout_marginTop="4dp"
+                            android:layout_marginBottom="2dp"/>
+
+                        <com.example.pusher.ui.PreviewLogView
+                            android:id="@+id/preview_record"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:minHeight="60dp"
+                            android:layout_weight="1"
+                            android:background="#F3E5F5"
+                            android:padding="0dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+                <!-- ==================== 特殊日志 ==================== -->
+                <FrameLayout
+                    android:id="@+id/frame_applog"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/card_bg_plain"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/content_applog"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="📋 特殊日志（应用关键事件）"
+                            android:textStyle="bold"
+                            android:textSize="16sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <com.example.pusher.ui.PreviewLogView
+                            android:id="@+id/preview_applog"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:background="#FFFFFF"
+                            android:padding="0dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+            </FrameLayout>
+
+            <!-- 右上角折叠按钮 -->
+            <Button
+                android:id="@+id/btn_collapse"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="top|end"
+                android:layout_margin="8dp"
+                android:minWidth="48dp"
+                android:minHeight="48dp"
+                android:gravity="center"
+                android:paddingLeft="0dp"
+                android:paddingRight="0dp"
+                android:paddingTop="0dp"
+                android:paddingBottom="0dp"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#CC000000"
+                android:text="✕"/>
         </FrameLayout>
+    </FrameLayout>
 
-        <!-- 区域4右：音频采集 -->
-        <FrameLayout
-            android:id="@+id/frame_audio_preview"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginStart="1dp"
-            android:background="@drawable/module_bg_state">
-
-            <LinearLayout
-                android:id="@+id/content_audio_preview"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="vertical"
-                android:background="@android:color/transparent"
-                android:padding="8dp">
-
-                <!-- 标题行：文字 + Switch -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="🎙️ 音频采集"
-                        android:textStyle="bold"
-                        android:textSize="8sp"/>
-
-                    <Switch
-                        android:id="@+id/switch_audio_preview"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="false"
-                        android:scaleX="0.8"
-                        android:scaleY="0.8"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginTop="1dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="麦克风:"
-                        android:textSize="9sp"/>
-                    <Spinner
-                        android:id="@+id/spinner_mic"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="声道:"
-                        android:textSize="9sp"/>
-                    <Spinner
-                        android:id="@+id/spinner_channels"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"/>
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="音频波形预览"
-                    android:textStyle="bold"
-                    android:textSize="9sp"
-                    android:lineSpacingExtra="1dp"
-                    android:layout_marginTop="1dp"/>
-
-                <com.example.pusher.ui.AudioWaveformView
-                    android:id="@+id/waveform_view"
-                    android:layout_width="match_parent"
-                    android:layout_height="0dp"
-                    android:layout_weight="1"
-                    android:background="#FFF0F8"/>
-            </LinearLayout>
-        </FrameLayout>
-    </LinearLayout>
-
-    <!-- ========== 区域4下方箭头：采集到编码器 ========== -->
-    <LinearLayout
-        android:layout_width="match_parent"
+    <!-- 左下角：特殊日志入口（默认折叠） -->
+    <Button
+        android:id="@+id/btn_open_applog"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:padding="2dp">
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="24dp"
+        android:minWidth="0dp"
+        android:minHeight="52dp"
+        android:paddingLeft="18dp"
+        android:paddingRight="18dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:textSize="15sp"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#455A64"
+        android:text="📋 特殊日志"/>
 
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="↑ 视频采集 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
+    <!-- 右下角：开始/停止合并按钮，按钮文字即当前状态 -->
+    <Button
+        android:id="@+id/btn_toggle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="24dp"
+        android:minWidth="0dp"
+        android:minHeight="52dp"
+        android:paddingLeft="22dp"
+        android:paddingRight="22dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:textSize="16sp"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#757575"
+        android:text="已停止"/>
 
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="↑ 音频采集 ↑"
-            android:textAlignment="center"
-            android:textSize="8sp"
-            android:textColor="#000"/>
-    </LinearLayout>
-
-<!--    &lt;!&ndash; ========== 底部控制按钮（保留用于调试） ========== &ndash;&gt;-->
-<!--    <LinearLayout-->
-<!--        android:layout_width="match_parent"-->
-<!--        android:layout_height="wrap_content"-->
-<!--        android:orientation="horizontal"-->
-<!--        android:padding="0dp"-->
-<!--        android:layout_marginTop="1dp">-->
-
-<!--        <Button-->
-<!--            android:id="@+id/btn_start"-->
-<!--            android:layout_width="0dp"-->
-<!--            android:layout_height="wrap_content"-->
-<!--            android:layout_weight="1"-->
-<!--            android:text="▶ 开始推流"-->
-<!--            android:textSize="11sp"-->
-<!--            android:padding="6dp"-->
-<!--            android:background="#4CAF50"-->
-<!--            android:textColor="#FFFFFF"/>-->
-
-<!--        <Button-->
-<!--            android:id="@+id/btn_stop"-->
-<!--            android:layout_width="0dp"-->
-<!--            android:layout_height="wrap_content"-->
-<!--            android:layout_weight="1"-->
-<!--            android:text="⏹ 停止推流"-->
-<!--            android:textSize="11sp"-->
-<!--            android:padding="6dp"-->
-<!--            android:background="#F44336"-->
-<!--            android:textColor="#FFFFFF"-->
-<!--            android:layout_marginStart="4dp"/>-->
-<!--    </LinearLayout>-->
-
-</LinearLayout>
+</FrameLayout>

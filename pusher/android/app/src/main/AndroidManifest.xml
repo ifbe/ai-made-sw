@@ -1,12 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- 基本权限 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- 前台服务权限 (Android 9+ 需要) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -15,10 +13,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
+    <!-- Android 13+ 通知权限：只影响状态栏那条"推流中/停止推流"通知，
+         不给也不影响推流本身（服务照常在前台运行） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 息屏继续推流：前台服务不会阻止系统进 Doze，需要自己持有 CPU/WiFi 唤醒锁 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 本地录制写到公共下载目录 /sdcard/Download：
+         Android 10 及以下需要它（maxSdkVersion=29）；
+         Android 11+ 走 MediaStore.Downloads，不需要存储权限，也不申请“所有文件访问” -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
     <uses-feature android:name="android.hardware.camera" />
     <uses-feature android:name="android.hardware.camera.autofocus" />
 
     <application
+        android:name=".PusherApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -28,26 +41,20 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Pusher"
         android:hardwareAccelerated="true"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true">
 
+        <!-- configChanges：旋转屏幕时不重建 Activity，否则推流会被打断、UI 状态也会错乱 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name">
+            android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-<!--        <activity-->
-<!--            android:name=".TestCameraActivity"-->
-<!--            android:exported="true">-->
-<!--            <intent-filter>-->
-<!--                <action android:name="android.intent.action.MAIN" />-->
-<!--                <category android:name="android.intent.category.LAUNCHER" />-->
-<!--            </intent-filter>-->
-<!--        </activity>-->
 
         <service
             android:name=".PushService"

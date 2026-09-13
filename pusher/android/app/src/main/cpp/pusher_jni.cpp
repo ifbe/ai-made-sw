@@ -23,16 +23,24 @@ extern int audio_stream_index;
 // 外部函数声明
 extern int init_ffmpeg_pusher(const char* url, const char* format_name,
                               int video_width, int video_height,
-                              int sample_rate, int channel_count);
-extern int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame);
+                              int sample_rate, int channel_count,
+                              int fps, int video_bitrate, int audio_bitrate,
+                              int video_codec, int enable_subtitle);
+extern int write_subtitle_frame(const char* text, int64_t pts_ms, int64_t duration_ms);
+extern void set_subtitle_text(const char* text);
+extern int write_video_frame(uint8_t* data, int size, int64_t pts_ms, int is_key_frame, int is_csd);
 extern int write_audio_frame(uint8_t* data, int size, int64_t pts_ms);
 extern void close_ffmpeg_pusher();
+extern const char* get_last_error();
+extern std::string supported_output_protocols();
+extern void start_recording_fd(int fd);
+extern long long stop_recording_fd();
 //extern void set_avio_callback(JNIEnv* env, jobject listener);
 
 // 全局 JVM 引用
 JavaVM* g_jvm = nullptr;
 jmethodID g_onSendData = nullptr;
-jmethodID g_onRecvData = nullptr;
+jmethodID g_onMuxData = nullptr;
 jmethodID g_onRtmpError = nullptr;
 jobject g_listener = nullptr;
 
@@ -53,7 +61,12 @@ Java_com_example_pusher_push_JniWrapper_initPusher(
         jint video_width,
         jint video_height,
         jint sample_rate,
-        jint channel_count) {
+        jint channel_count,
+        jint fps,
+        jint video_bitrate,
+        jint audio_bitrate,
+        jint video_codec,
+        jboolean enable_subtitle) {
 
     LOGI("=== initPusher START ===");
 
@@ -64,6 +77,14 @@ Java_com_example_pusher_push_JniWrapper_initPusher(
 
     if (url != nullptr) {
         c_url = env->GetStringUTFChars(url, nullptr);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
+        if (c_url == nullptr) {
+            LOGE("GetStringUTFChars(url) failed, abort init");
+            return nullptr;
+        }
         LOGI("URL: %s", c_url);
     } else {
         LOGE("URL is null");
@@ -72,7 +93,11 @@ Java_com_example_pusher_push_JniWrapper_initPusher(
 
     if (protocol != nullptr) {
         c_protocol = env->GetStringUTFChars(protocol, nullptr);
-        LOGI("Protocol: %s", c_protocol);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
+        LOGI("Protocol: %s", c_protocol ? c_protocol : "(null)");
     } else {
         LOGI("Protocol is null");
         c_protocol = "";
@@ -80,7 +105,11 @@ Java_com_example_pusher_push_JniWrapper_initPusher(
 
     if (format != nullptr) {
         c_format = env->GetStringUTFChars(format, nullptr);
-        LOGI("Format: %s", c_format);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
+        LOGI("Format: %s", c_format ? c_format : "(null)");
     } else {
         LOGI("Format is null");
         c_format = "";
@@ -88,10 +117,15 @@ Java_com_example_pusher_push_JniWrapper_initPusher(
 
     LOGI("Video: %dx%d", video_width, video_height);
     LOGI("Audio: %dHz %dch", sample_rate, channel_count);
+    LOGI("Fps: %d, video bitrate: %d, audio bitrate: %d, codec: %s",
+         fps, video_bitrate, audio_bitrate, video_codec == 1 ? "H.265" : "H.264");
 
     // 初始化 FFmpeg 推流器
     LOGI("Calling init_ffmpeg_pusher...");
-    int ret = init_ffmpeg_pusher(c_url, c_format, video_width, video_height, sample_rate, channel_count);
+    int ret = init_ffmpeg_pusher(c_url, c_format, video_width, video_height,
+                                 sample_rate, channel_count,
+                                 fps, video_bitrate, audio_bitrate, video_codec,
+                                 enable_subtitle ? 1 : 0);
     LOGI("init_ffmpeg_pusher returned: %d", ret);
 
     // 释放字符串
@@ -146,7 +180,11 @@ Java_com_example_pusher_push_JniWrapper_initPusher(
     // 创建错误信息字符串
     const char* errorMsgStr = "";
     if (ret != 0) {
-        errorMsgStr = "FFmpeg initialization failed";
+        const char* detail = get_last_error();
+        errorMsgStr = (detail != nullptr && detail[0] != '\0')
+                ? detail
+                : "FFmpeg initialization failed";
+        LOGE("initPusher failed, reason: %s", errorMsgStr);
     }
     jstring errorMsg = env->NewStringUTF(errorMsgStr);
     if (errorMsg == nullptr) {
@@ -163,6 +201,38 @@ Java_com_example_pusher_push_JniWrapper_initPusher(
 
     LOGI("=== initPusher SUCCESS, returning Pair ===");
     return pair;
+}
+
+/**
+ * 查找监听器方法。
+ *
+ * 关键点：GetMethodID 找不到方法时会挂一个 NoSuchMethodError 到当前线程，
+ * 如果不清掉，后面所有 JNI 调用都会受影响（表现为“某些回调莫名其妙不工作”）。
+ * 典型场景：native 库和 Java 接口版本不一致（例如 .so 没重新编译）。
+ */
+static jmethodID find_listener_method(JNIEnv* env, jclass clazz, const char* name, const char* sig) {
+    jmethodID id = env->GetMethodID(clazz, name, sig);
+    if (env->ExceptionCheck()) {
+        LOGE("listener method lookup threw: %s%s", name, sig);
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+    if (id == nullptr) {
+        LOGE("listener method NOT FOUND: %s%s —— native 与 Java 版本不一致？请重新编译 native 库",
+             name, sig);
+    }
+    return id;
+}
+
+/**
+ * 最近一次失败的真实原因（给 Java 侧展示/记录用）
+ */
+JNIEXPORT jstring JNICALL
+Java_com_example_pusher_push_JniWrapper_getLastError(
+        JNIEnv* env,
+        jobject thiz) {
+    const char* msg = get_last_error();
+    return env->NewStringUTF((msg != nullptr) ? msg : "");
 }
 
 /**
@@ -193,49 +263,12 @@ Java_com_example_pusher_push_JniWrapper_setAvioCallback(
     g_listener = env->NewGlobalRef(listener);
 
     jclass clazz = env->GetObjectClass(listener);
-    g_onSendData = env->GetMethodID(clazz, "onSendData", "([BJ)V");
-    g_onRecvData = env->GetMethodID(clazz, "onRecvData", "([BJ)V");
-    g_onRtmpError = env->GetMethodID(clazz, "onRtmpError", "(Ljava/lang/String;)V");
+    g_onSendData = find_listener_method(env, clazz, "onSendData", "([BJI)V");
+    g_onMuxData = find_listener_method(env, clazz, "onMuxData", "([BJ)V");
+    g_onRtmpError = find_listener_method(env, clazz, "onRtmpError", "(Ljava/lang/String;)V");
 
-    LOGI("setAvioCallback completed");
-}
-
-JNIEXPORT jboolean JNICALL
-Java_com_example_pusher_push_JniWrapper_setVideoExtradata(
-        JNIEnv* env,
-        jobject thiz,
-        jbyteArray data) {
-
-    LOGI("setVideoExtradata called");
-
-    jsize size = env->GetArrayLength(data);
-    jbyte* bytes = env->GetByteArrayElements(data, nullptr);
-
-    if (format_ctx != nullptr && video_stream != nullptr) {
-        // 释放旧的 extradata
-        if (video_stream->codecpar->extradata) {
-            av_free(video_stream->codecpar->extradata);
-            video_stream->codecpar->extradata = nullptr;
-            video_stream->codecpar->extradata_size = 0;
-        }
-
-        // 分配新的 extradata
-        video_stream->codecpar->extradata = (uint8_t*)av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
-        if (video_stream->codecpar->extradata) {
-            memcpy(video_stream->codecpar->extradata, bytes, size);
-            video_stream->codecpar->extradata_size = size;
-            LOGI("Video extradata set, size=%d", size);
-            // 打印前16字节用于调试
-            LOGI("Extradata preview: %02x %02x %02x %02x %02x %02x %02x %02x...",
-                 bytes[0] & 0xFF, bytes[1] & 0xFF, bytes[2] & 0xFF, bytes[3] & 0xFF,
-                 bytes[4] & 0xFF, bytes[5] & 0xFF, bytes[6] & 0xFF, bytes[7] & 0xFF);
-            env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
-            return JNI_TRUE;
-        }
-    }
-
-    env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
-    return JNI_FALSE;
+    LOGI("setAvioCallback completed (send=%p mux=%p error=%p)",
+         g_onSendData, g_onMuxData, g_onRtmpError);
 }
 
 /**
@@ -247,9 +280,8 @@ Java_com_example_pusher_push_JniWrapper_writeVideoFrame(
         jobject thiz,
         jbyteArray data,
         jlong pts_ms,
-        jboolean is_key_frame) {
-
-    LOGI("writeVideoFrame called, pts=%ld, key=%d", pts_ms, is_key_frame);
+        jboolean is_key_frame,
+        jboolean is_csd) {
 
     if (data == nullptr) {
         LOGE("writeVideoFrame: data is null");
@@ -258,7 +290,6 @@ Java_com_example_pusher_push_JniWrapper_writeVideoFrame(
 
     // 获取字节数组数据
     jsize size = env->GetArrayLength(data);
-    LOGI("Video frame size: %d", size);
 
     jbyte* bytes = env->GetByteArrayElements(data, nullptr);
     if (bytes == nullptr) {
@@ -270,18 +301,17 @@ Java_com_example_pusher_push_JniWrapper_writeVideoFrame(
     int ret = write_video_frame(reinterpret_cast<uint8_t*>(bytes),
                                 size,
                                 static_cast<int64_t>(pts_ms),
-                                is_key_frame ? 1 : 0);
+                                is_key_frame ? 1 : 0,
+                                is_csd ? 1 : 0);
 
     // 释放字节数组
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 
-    if (ret == 0) {
-        LOGI("writeVideoFrame SUCCESS");
-        return JNI_TRUE;
-    } else {
+    if (ret != 0) {
         LOGE("writeVideoFrame failed: %d", ret);
         return JNI_FALSE;
     }
+    return JNI_TRUE;
 }
 
 /**
@@ -303,7 +333,6 @@ Java_com_example_pusher_push_JniWrapper_writeAudioFrame(
 
     // 获取字节数组数据
     jsize size = env->GetArrayLength(data);
-    LOGI("Audio frame size: %d", size);
 
     jbyte* bytes = env->GetByteArrayElements(data, nullptr);
     if (bytes == nullptr) {
@@ -319,13 +348,11 @@ Java_com_example_pusher_push_JniWrapper_writeAudioFrame(
     // 释放字节数组
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 
-    if (ret == 0) {
-        LOGI("writeAudioFrame SUCCESS");
-        return JNI_TRUE;
-    } else {
+    if (ret != 0) {
         LOGE("writeAudioFrame failed: %d", ret);
         return JNI_FALSE;
     }
+    return JNI_TRUE;
 }
 
 /**
@@ -361,6 +388,7 @@ Java_com_example_pusher_push_JniWrapper_closePusher(
  */
 extern "C" void java_on_send_callback(const uint8_t* buf, int buf_size, int64_t ts_ms) {
     if (!g_jvm || !g_listener || !g_onSendData) return;
+    if (buf_size <= 0) return;
     JNIEnv* env = nullptr;
     int attached = 0;
     if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
@@ -369,21 +397,32 @@ extern "C" void java_on_send_callback(const uint8_t* buf, int buf_size, int64_t 
     }
     if (!env) return;
 
+    // 预览只需要前 16 字节（PreviewLogView 也是按 16 字节显示/存储），
+    // 本地录制已经改到 native 侧直接写 fd，不再依赖这份拷贝 —— 保持最小开销。
     int copy_len = buf_size > 16 ? 16 : buf_size;
     jbyteArray data = env->NewByteArray(copy_len);
     if (data) {
         env->SetByteArrayRegion(data, 0, copy_len, reinterpret_cast<const jbyte*>(buf));
-        env->CallVoidMethod(g_listener, g_onSendData, data, ts_ms);
+        // 第三个参数是这次写入的**真实长度**（data 里只有前 16 字节，供预览/录制自检用）
+        env->CallVoidMethod(g_listener, g_onSendData, data, ts_ms, (jint)buf_size);
+        // Java 回调抛出的异常必须就地清除：否则异常会挂在本线程上，
+        // 影响后续 JNI 调用，并且在 attach 线程 detach 时变成“未捕获异常”杀进程。
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
         env->DeleteLocalRef(data);
     }
     if (attached) g_jvm->DetachCurrentThread();
 }
 
 /**
- * 回调 Java AvioDataListener.onRecvData
+ * 回调 Java AvioDataListener.onMuxData
+ * 用于“封装数据预览”：把交给 muxer 的包（前若干字节）回传给 Java。
  */
-extern "C" void java_on_recv_callback(const uint8_t* buf, int buf_size, int64_t ts_ms) {
-    if (!g_jvm || !g_listener || !g_onRecvData) return;
+extern "C" void java_on_mux_callback(const uint8_t* buf, int buf_size, int64_t ts_ms) {
+    if (!g_jvm || !g_listener || !g_onMuxData) return;
+    if (buf_size <= 0) return;
     JNIEnv* env = nullptr;
     int attached = 0;
     if (g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
@@ -396,7 +435,11 @@ extern "C" void java_on_recv_callback(const uint8_t* buf, int buf_size, int64_t 
     jbyteArray data = env->NewByteArray(copy_len);
     if (data) {
         env->SetByteArrayRegion(data, 0, copy_len, reinterpret_cast<const jbyte*>(buf));
-        env->CallVoidMethod(g_listener, g_onRecvData, data, ts_ms);
+        env->CallVoidMethod(g_listener, g_onMuxData, data, ts_ms);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
         env->DeleteLocalRef(data);
     }
     if (attached) g_jvm->DetachCurrentThread();
@@ -414,12 +457,81 @@ extern "C" void java_on_rtmp_error_callback(const char* error_msg) {
         attached = 1;
     }
     if (!env) return;
-    jstring jmsg = env->NewStringUTF(error_msg);
+    jstring jmsg = env->NewStringUTF(error_msg ? error_msg : "");
     if (jmsg) {
         env->CallVoidMethod(g_listener, g_onRtmpError, jmsg);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
         env->DeleteLocalRef(jmsg);
     }
     if (attached) g_jvm->DetachCurrentThread();
+}
+
+/**
+ * 当前 FFmpeg 库支持的输出协议（逗号分隔）。
+ * Java 侧启动时打一条日志：选了 srt/tcp 但这里没有，就说明需要重编 FFmpeg。
+ */
+JNIEXPORT jstring JNICALL
+Java_com_example_pusher_push_JniWrapper_nativeGetOutputProtocols(JNIEnv* env, jclass clazz) {
+    const std::string protos = supported_output_protocols();
+    LOGI("supported output protocols: %s", protos.c_str());
+    return env->NewStringUTF(protos.c_str());
+}
+
+/**
+ * 开始本地录制：fd 由 Java 从 File/MediaStore 打开后 detachFd 传入（-1 = 关闭录制）
+ */
+JNIEXPORT void JNICALL
+Java_com_example_pusher_push_JniWrapper_nativeStartRecord(JNIEnv* env, jclass clazz, jint fd) {
+    start_recording_fd((int)fd);
+}
+
+/**
+ * 停止本地录制并关闭 fd，返回写入的总字节数
+ */
+JNIEXPORT jlong JNICALL
+Java_com_example_pusher_push_JniWrapper_nativeStopRecord(JNIEnv* env, jclass clazz) {
+    return (jlong)stop_recording_fd();
+}
+
+/**
+ * 设置要显示的字幕文本（只对 mp4/fMP4 有效）。
+ * 真正的样本会在**视频关键帧**处写入，和分片边界对齐。
+ */
+JNIEXPORT void JNICALL
+Java_com_example_pusher_push_JniWrapper_setSubtitleText(
+        JNIEnv* env,
+        jobject thiz,
+        jstring text) {
+    if (text == nullptr) {
+        set_subtitle_text(nullptr);
+        return;
+    }
+    const char* c_text = env->GetStringUTFChars(text, nullptr);
+    if (c_text == nullptr) return;
+    set_subtitle_text(c_text);
+    env->ReleaseStringUTFChars(text, c_text);
+}
+
+/**
+ * 写一条字幕样本（只对 mp4/fMP4 有效；没有字幕流时返回 false）
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_example_pusher_push_JniWrapper_writeSubtitleFrame(
+        JNIEnv* env,
+        jobject thiz,
+        jstring text,
+        jlong pts_ms,
+        jlong duration_ms) {
+
+    if (text == nullptr) return JNI_FALSE;
+    const char* c_text = env->GetStringUTFChars(text, nullptr);
+    if (c_text == nullptr) return JNI_FALSE;
+    int ret = write_subtitle_frame(c_text, (int64_t)pts_ms, (int64_t)duration_ms);
+    env->ReleaseStringUTFChars(text, c_text);
+    return ret >= 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 } // extern "C"

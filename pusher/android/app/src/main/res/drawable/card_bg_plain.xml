@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 日志卡片等中性模块的底图：纯白底 + 浅灰边框 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#FFFFFF"/>
+    <corners android:radius="10dp"/>
+    <stroke android:width="1dp" android:color="#BDBDBD"/>
+</shape>

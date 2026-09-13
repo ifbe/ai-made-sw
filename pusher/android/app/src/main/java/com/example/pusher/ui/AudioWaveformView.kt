@@ -5,6 +5,10 @@ import android.graphics.*
 import android.util.AttributeSet
 import android.view.View
 
+/**
+ * 音频包络显示：每个横坐标点画一条从该区间 min 到 max 的竖线。
+ * 左右声道叠在同一张图里，用颜色区分（左绿、右青）。
+ */
 class AudioWaveformView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -20,45 +24,54 @@ class AudioWaveformView @JvmOverloads constructor(
         color = Color.DKGRAY
         style = Paint.Style.FILL
     }
-    private var leftAmplitudes = FloatArray(0)
-    private var rightAmplitudes = FloatArray(0)
+
+    private var leftMin = FloatArray(0)
+    private var leftMax = FloatArray(0)
+    private var rightMin = FloatArray(0)
+    private var rightMax = FloatArray(0)
     private var channelMode = 2  // 1: mono, 2: stereo
 
-    fun setWaveformData(left: FloatArray, right: FloatArray) {
-        leftAmplitudes = left
-        rightAmplitudes = right
+    fun setWaveformData(leftMin: FloatArray, leftMax: FloatArray, rightMin: FloatArray, rightMax: FloatArray) {
+        this.leftMin = leftMin
+        this.leftMax = leftMax
+        this.rightMin = rightMin
+        this.rightMax = rightMax
         invalidate()
     }
 
     fun setChannelMode(mode: Int) {
-        channelMode = mode
-        invalidate()
+        if (channelMode != mode) {
+            channelMode = mode
+            invalidate()
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
 
-        if (channelMode == 1) {
-            drawChannel(canvas, leftAmplitudes, 0f, height.toFloat(), Color.GREEN)
-        } else {
-            val halfHeight = height / 2f
-            drawChannel(canvas, leftAmplitudes, 0f, halfHeight, Color.GREEN)
-            drawChannel(canvas, rightAmplitudes, halfHeight, halfHeight, Color.CYAN)
+        drawChannel(canvas, leftMin, leftMax, Color.GREEN)
+        if (channelMode != 1) {
+            drawChannel(canvas, rightMin, rightMax, Color.CYAN)
         }
     }
 
-    private fun drawChannel(canvas: Canvas, amplitudes: FloatArray, topY: Float, channelHeight: Float, color: Int) {
-        if (amplitudes.isEmpty()) return
+    private fun drawChannel(canvas: Canvas, min: FloatArray, max: FloatArray, color: Int) {
+        val n = min.size
+        if (n == 0 || width <= 0 || height <= 0) return
         paint.color = color
-        val step = width.toFloat() / amplitudes.size
-        var x = 0f
-        val midY = topY + channelHeight / 2
-        for (i in amplitudes.indices) {
-            val amp = amplitudes[i].coerceIn(0f, 1f) * (channelHeight / 2)
-            val startY = midY - amp
-            val endY = midY + amp
-            canvas.drawLine(x, startY, x, endY, paint)
+        val step = width.toFloat() / n
+        val midY = height / 2f
+        val halfHeight = height / 2f
+        var x = step / 2f
+        for (i in 0 until n) {
+            val top = midY - max[i].coerceIn(-1f, 1f) * halfHeight
+            var bottom = midY - min[i].coerceIn(-1f, 1f) * halfHeight
+            if (bottom - top < 1f) {
+                // 静音/极小信号也画 1px，免得整段消失
+                bottom = top + 1f
+            }
+            canvas.drawLine(x, top, x, bottom, paint)
             x += step
         }
     }

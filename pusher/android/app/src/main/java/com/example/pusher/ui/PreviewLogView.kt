@@ -23,6 +23,9 @@ class PreviewLogView @JvmOverloads constructor(
     private val entries = mutableListOf<PreviewEntry>()
     private var maxEntries = 20
 
+    // 复用的行视图：刷新时只改文本，不再整段重建（视觉完全一致）
+    private val rowViews = mutableListOf<TextView>()
+
     // Batching: accumulate entries, refresh at most every FLUSH_INTERVAL_MS or when batch is full
     private val pendingEntries = mutableListOf<PreviewEntry>()
     private var pendingFlushRunnable: Runnable? = null
@@ -30,6 +33,12 @@ class PreviewLogView @JvmOverloads constructor(
     private companion object {
         private const val FLUSH_INTERVAL_MS = 1000L
         private const val BATCH_SIZE = 10
+
+        // toShortString() 只展示前 16 字节
+        private const val LOG_HEX_BYTES = 16
+
+        // 日志行文字大小（sp）
+        private const val ROW_TEXT_SIZE_SP = 11f
     }
 
     init {
@@ -38,14 +47,27 @@ class PreviewLogView @JvmOverloads constructor(
         isFillViewport = true
     }
 
+    /** 面板最多保留多少行（默认 20；日志类面板可以调大） */
     fun setMaxEntries(max: Int) {
         maxEntries = max
         trimEntries()
     }
 
+    /**
+     * 日志只展示前 16 字节，没必要把整帧编码数据一直留在列表里
+     * （视频帧可能几十 KB，20+40 条常驻会造成持续的 GC 压力）。
+     */
+    private fun normalized(entry: PreviewEntry): PreviewEntry =
+        if (entry.data.size > LOG_HEX_BYTES) {
+            entry.copy(data = entry.data.copyOf(LOG_HEX_BYTES))
+        } else {
+            entry
+        }
+
     fun addEntry(entry: PreviewEntry) {
+        val stored = normalized(entry)
         synchronized(pendingLock) {
-            pendingEntries.add(entry)
+            pendingEntries.add(stored)
             // Keep pendingEntries bounded too
             while (pendingEntries.size > maxEntries * 2) {
                 pendingEntries.removeAt(0)
@@ -56,31 +78,6 @@ class PreviewLogView @JvmOverloads constructor(
                 pendingFlushRunnable = Runnable { flushInternal() }
                 postDelayed(pendingFlushRunnable!!, FLUSH_INTERVAL_MS)
             }
-        }
-    }
-
-    /**
-     * Replace all entries at once (used for bulk updates), no batching.
-     */
-    fun setEntries(newEntries: List<PreviewEntry>) {
-        synchronized(pendingLock) {
-            pendingFlushRunnable?.let { removeCallbacks(it) }
-            pendingFlushRunnable = null
-            pendingEntries.clear()
-        }
-        entries.clear()
-        entries.addAll(newEntries)
-        trimEntries()
-        refreshUI()
-        post { fullScroll(FOCUS_DOWN) }
-    }
-
-    /**
-     * Force flush any pending entries immediately (e.g. when stopping streaming).
-     */
-    fun flush() {
-        synchronized(pendingLock) {
-            flushInternal()
         }
     }
 
@@ -102,27 +99,25 @@ class PreviewLogView @JvmOverloads constructor(
     }
 
     private fun refreshUI() {
-        container.removeAllViews()
-        entries.forEach { entry ->
+        // 复用已有的 TextView：只更新文本，避免每次刷新都 removeAllViews + 重新 new。
+        // 高频刷新时（音视频帧回调）这是主线程最大的开销来源。
+        while (rowViews.size < entries.size) {
             val tv = TextView(context).apply {
-                text = entry.toShortString()
-                textSize = 5f
+                textSize = ROW_TEXT_SIZE_SP
                 typeface = Typeface.MONOSPACE
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
             }
+            rowViews.add(tv)
             container.addView(tv)
         }
-    }
-
-    fun clear() {
-        synchronized(pendingLock) {
-            pendingFlushRunnable?.let { removeCallbacks(it) }
-            pendingFlushRunnable = null
-            pendingEntries.clear()
+        while (rowViews.size > entries.size) {
+            val tv = rowViews.removeAt(rowViews.size - 1)
+            container.removeView(tv)
         }
-        entries.clear()
-        refreshUI()
+        for (i in entries.indices) {
+            rowViews[i].text = entries[i].toShortString()
+        }
     }
 }
 
@@ -134,6 +129,10 @@ data class PreviewEntry(
 ) {
     fun toShortString(): String {
         val timeStr = TimeUtils.formatMillis(timestamp)
+        // extra 非空表示这是一条“文本日志”（例如特殊日志面板），直接显示文字
+        if (extra.isNotEmpty()) {
+            return "[$timeStr] $extra"
+        }
         val dirStr = when (direction) {
             0 -> "send"
             1 -> "recv"
