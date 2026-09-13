@@ -326,6 +326,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._api_keys()
         if path == '/api/search':
             return self._api_search(qs)
+        if path == '/find/byname':
+            return self._api_search(qs, mode='name')
+        if path == '/find/bypath':
+            return self._api_search(qs, mode='path')
+        if path == '/find/byai':
+            return self._api_search(qs, mode='ai')
+        if path == '/find/bytime':
+            return self._api_search(qs, mode='time')
         if path == '/api/timeline':
             return self._api_timeline()
         if path == '/api/fs':
@@ -539,8 +547,16 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _api_search(self, qs):
-        q = (qs.get('q', [''])[0] or '').strip()
+    def _api_search(self, qs, mode='legacy'):
+        """搜索入口
+
+        mode:
+          'legacy'  - 原始 /api/search：按 4 维度互斥（q / type+tag / path / time）
+          'name'    - /find/byname?q=    关键词查（空 q = 全部）
+          'path'    - /find/bypath?q=    路径（q 为路径片段）
+          'ai'      - /find/byai?tag=... AI 标签（支持多 tag AND）
+          'time'    - /find/bytime?q=YYYY-MM..YYYY-MM  时间范围
+        """
         mtype = qs.get('type', [''])[0]
         tag_filters = qs.get('tag', [])  # 多个 ?tag=key:value
         path_present = 'path' in qs
@@ -550,6 +566,45 @@ class Handler(BaseHTTPRequestHandler):
         has_json_filter = qs.get('has_json', [''])[0] == '1'
         limit = max(1, min(500, int(qs.get('limit', ['200'])[0])))
 
+        # 名称 / 路径 / 时间 三者都走 q
+        q = (qs.get('q', [''])[0] or '').strip()
+
+        # byai 专用：tag 参数重复
+        if mode == 'ai':
+            tag_filters = list(qs.get('tag', []))
+
+        # bypath 专用：path = q
+        if mode == 'path':
+            path_present = True
+            path = q.strip().strip('/')
+
+        # bytime 专用：解析 q="YYYY-MM..YYYY-MM" 成 tmin/tmax
+        if mode == 'time' and q and '..' in q:
+            tmin_s, tmax_s = q.split('..', 1)
+            tmin_s = tmin_s.strip()
+            tmax_s = tmax_s.strip()
+            if tmin_s:
+                try:
+                    tmin_s = str(int(datetime.fromisoformat(tmin_s).timestamp()))
+                except ValueError:
+                    tmin_s = ''
+            if tmax_s:
+                try:
+                    # +1 day to make upper bound inclusive (end of month)
+                    dt = datetime.fromisoformat(tmax_s)
+                    if len(tmax_s) == 7:  # YYYY-MM → next month
+                        if dt.month == 12:
+                            dt = dt.replace(year=dt.year + 1, month=1, day=1)
+                        else:
+                            dt = dt.replace(month=dt.month + 1, day=1)
+                    else:
+                        dt = dt.replace(hour=23, minute=59, second=59)
+                    tmax_s = str(int(dt.timestamp()))
+                except ValueError:
+                    tmax_s = ''
+
+        # byname 专用：q 走全文字段
+        # legacy 保留兼容：原逻辑
         conn = self._db()
         try:
             where: list[str] = []
@@ -568,8 +623,17 @@ class Handler(BaseHTTPRequestHandler):
                     where.append('EXISTS (SELECT 1 FROM tags t '
                                  'WHERE t.media_id=m.id AND t.key=? AND t.value=?)')
                     params.extend([k, v])
+                elif mode == 'ai':
+                    # byai: tag=indoor → value 匹配（不限定 key）
+                    where.append('EXISTS (SELECT 1 FROM tags t '
+                                 'WHERE t.media_id=m.id AND t.value=?)')
+                    params.append(tf)
 
-            if q:
+            if mode == 'ai' and not tag_filters:
+                pass  # 无 tag = 全部
+            elif mode in ('time', 'path'):
+                pass  # q 已被专用为时间区间/路径，不再走 LIKE 搜 path/tags
+            elif q:
                 like = f'%{q}%'
                 ids: set[int] = set()
                 for r in conn.execute(
@@ -579,25 +643,24 @@ class Handler(BaseHTTPRequestHandler):
                         'SELECT DISTINCT media_id AS id FROM tags WHERE value LIKE ?', (like,)):
                     ids.add(r['id'])
                 if not ids:
-                    return self._json({'hits': [], 'total': 0, 'q': q})
+                    return self._json({'hits': [], 'total': 0, 'mode': mode, 'q': q})
                 where.append(f'm.id IN ({",".join("?" * len(ids))})')
                 params.extend(list(ids))
 
             # 路径筛选：本层媒体（不递归子文件夹）
             if path_present:
-                # 有 path 参数就应用路径筛选；空 path 表示"根目录本层"
                 abs_path = INDEX_ROOT.resolve() if not path else (INDEX_ROOT / path).resolve()
                 try:
                     abs_path.relative_to(INDEX_ROOT.resolve())
                 except ValueError:
-                    return self._json({'hits': [], 'total': 0, 'q': q, 'path': path, 'error': 'path escapes root'})
+                    return self._json({'hits': [], 'total': 0, 'mode': mode, 'q': q, 'path': path, 'error': 'path escapes root'})
                 abs_str = str(abs_path)
                 where.append("m.path LIKE ?")
                 params.append(abs_str + '/%')
                 where.append("m.path NOT LIKE ?")
                 params.append(abs_str + '/%/%')
 
-            # 时间范围筛选（用于时间轴选区）
+            # 时间范围筛选
             if tmin_s:
                 try:
                     where.append('m.mtime >= ?')
@@ -626,7 +689,7 @@ class Handler(BaseHTTPRequestHandler):
                 d['tags'] = [dict(t) for t in tag_rows]
                 hits.append(d)
 
-            return self._json({'hits': hits, 'total': len(hits), 'q': q, 'path': path})
+            return self._json({'hits': hits, 'total': len(hits), 'mode': mode, 'q': q, 'path': path})
         finally:
             conn.close()
 

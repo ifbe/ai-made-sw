@@ -84,28 +84,51 @@ async function search() {
     return;
   }
 
+  // 4 个独立 endpoint（互不打架）：
+  //   优先级: time > path > ai > name（time 是最强"选区"语义）
+  //   aiLabelsActive / path / timeRange / q 同时存在 → 选 1 个 → 其它丢进"附加参数"
+  let endpoint, main = '';
   const params = new URLSearchParams();
-  if (q) params.set('q', q);
-  if (typeVal) params.set('type', typeVal);
-  $$('#tag-filters select').forEach(sel => {
-    if (sel.value) params.append('tag', `${sel.dataset.key}:${sel.value}`);
-  });
-  // AI 标签模式激活 → 始终只显带 JSON 的文件（AI标签模式的本质：看 metadata）
-  if (aiLabelsActive) {
-    params.set('has_json', '1');
-  }
-  if (currentPath !== null) params.set('path', currentPath);
-  if (currentTimeRange) {
-    params.set('tmin', String(currentTimeRange.min));
-    params.set('tmax', String(currentTimeRange.max));
-  }
   params.set('limit', '500');
 
-  // 调试：打印本次查询的实际条件 + 模式来源
-  console.log('[search params]', params.toString(), '| aiLabelsActive=', aiLabelsActive, '| path=', currentPath, '| time=', currentTimeRange ? `${currentTimeRange.min}~${currentTimeRange.max}` : null);
+  if (currentTimeRange) {
+    // bytime 模式：q = YYYY-MM..YYYY-MM；附加 has_json / type 允许叠加
+    const min = new Date(currentTimeRange.min * 1000);
+    const max = new Date(currentTimeRange.max * 1000);
+    const fmt = (d, isEnd) => isEnd
+      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`  // 月份表示
+      : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    // 如果两端同月 → 用 YYYY-MM..YYYY-MM
+    const tmin = `${min.getFullYear()}-${String(min.getMonth() + 1).padStart(2, '0')}-${String(min.getDate()).padStart(2, '0')}`;
+    const tmax = `${max.getFullYear()}-${String(max.getMonth() + 1).padStart(2, '0')}-${String(max.getDate()).padStart(2, '0')}`;
+    main = `${tmin}..${tmax}`;
+    endpoint = '/find/bytime';
+  } else if (currentPath !== null) {
+    // bypath 模式：q = 路径
+    main = currentPath;
+    endpoint = '/find/bypath';
+    if (typeVal) params.set('type', typeVal);
+  } else if (aiLabelsActive || hasTag || typeVal) {
+    // byai 模式：tag=key:value 多个 AND
+    endpoint = '/find/byai';
+    $$('#tag-filters select').forEach(sel => {
+      if (sel.value) params.append('tag', `${sel.dataset.key}:${sel.value}`);
+    });
+    if (typeVal) params.set('type', typeVal);
+    if (aiLabelsActive) params.set('has_json', '1');
+  } else {
+    // byname 模式（默认）
+    endpoint = '/find/byname';
+    main = q;
+  }
+
+  if (main) params.set('q', main);
+
+  // 调试：打印本次查询的实际 endpoint + 条件
+  console.log('[search]', endpoint, params.toString(), '| aiLabelsActive=', aiLabelsActive, '| path=', currentPath, '| time=', currentTimeRange ? `${currentTimeRange.min}~${currentTimeRange.max}` : null);
 
   try {
-    const r = await fetchJSON('/api/search?' + params.toString());
+    const r = await fetchJSON(endpoint + '?' + params.toString());
     renderResults(r.hits);
     updateRootBadge();
     updateModeHighlights();
@@ -141,7 +164,7 @@ function renderResults(hits) {
     const typeLabel = { image: 'IMG', audio: 'AUD', video: 'VID' }[h.type] || h.type.toUpperCase();
     let thumb;
     if (h.type === 'image') {
-      thumb = `<div class="thumb"><img data-src="/raw/${h.id}" alt=""></div>`;
+      thumb = `<div class="thumb"><img data-src="/raw/${h.id}" data-name="${escapeHtml(h.filename || '')}" alt=""></div>`;
     } else if (h.type === 'audio') {
       thumb = `<div class="thumb audio">♪</div>`;
     } else if (h.type === 'video') {
@@ -215,7 +238,7 @@ async function openDetail(id) {
     const d = await fetchJSON('/api/media/' + id);
     let media = '';
     if (d.type === 'image') {
-      media = `<img src="/raw/${d.id}">`;
+      media = `<img src="/raw/${d.id}" download="${escapeHtml(d.filename || '')}">`;
     } else if (d.type === 'audio') {
       media = `<audio controls src="/raw/${d.id}"></audio>`;
     } else if (d.type === 'video') {
@@ -324,6 +347,9 @@ const imageObserver = new IntersectionObserver((entries) => {
         }, { once: true });
         img.src = src;
         img.removeAttribute('data-src');
+        // 右击下载时用真实文件名，不用 /raw/<id>
+        const name = img.dataset.name;
+        if (name) img.download = name;
       }
       imageObserver.unobserve(img);
     }
