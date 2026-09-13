@@ -24,7 +24,9 @@ class SocketParticipant(
     private val ip: String,
     private val port: Int,
     private val sockType: SocketType,
-    private val onMessage: (Message) -> Unit
+    private val onMessage: (Message) -> Unit,
+    /** 链路状态变化：true=连上了 / false=连接失败或断开。service 用它维护会话的 tab 状态 */
+    private val onStateChange: ((Boolean) -> Unit)? = null
 ) {
     // TCP
     private var socket: Socket? = null
@@ -36,6 +38,9 @@ class SocketParticipant(
     private var datagramSocket: DatagramSocket? = null
     private var udpThread: Thread? = null
 
+    // disconnect() 由别的线程改它、读循环线程读它 → 加 @Volatile 保证可见性，
+    // 否则主动断开会被误判成「异常掉线」并回调 onStateChange(false)
+    @Volatile
     private var running = false
 
     val type: ParticipantType = ParticipantType.SOCKET
@@ -65,11 +70,13 @@ class SocketParticipant(
 
             running = true
             mainHandler.post { postMessage("🔗 TCP 已连接 $ip:$port", true) }
+            onStateChange?.invoke(true)
             readerThread = Thread({ readLoopTcp() }, "TcpReader")
             readerThread!!.start()
         } catch (e: Exception) {
             val detail = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
             mainHandler.post { postMessage("❌ TCP 连接失败: $detail", true) }
+            onStateChange?.invoke(false)
         }
     }
 
@@ -80,21 +87,30 @@ class SocketParticipant(
             val localPort = datagramSocket!!.localPort
             running = true
             mainHandler.post { postMessage("📡 UDP 已绑定 本地端口=$localPort（让对方发到这个端口）远端=$ip:$port", true) }
+            onStateChange?.invoke(true)
             udpThread = Thread({ readLoopUdp() }, "UdpReader")
             udpThread!!.start()
         } catch (e: Exception) {
             val detail = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
             mainHandler.post { postMessage("❌ UDP 连接失败: $detail", true) }
+            onStateChange?.invoke(false)
         }
     }
 
     private fun readLoopTcp() {
+        // abnormal = 非我方主动 disconnect 导致的结束（对端关了 / 读异常）→ 才算链路掉线。
+        // 主动 disconnect（重连 / 关会话）时 running 已被置 false，不上报 false，
+        // 避免老实例的迟到回调把刚建好的新连接标成断开。
+        var abnormal = false
         try {
             val buffer = CharArray(4096)
             while (running) {
                 val n = reader!!.read(buffer)
                 if (n <= 0) {
-                    if (running) postMessage("⚠️ TCP 连接已断开", true)
+                    if (running) {
+                        postMessage("⚠️ TCP 连接已断开", true)
+                        abnormal = true
+                    }
                     break
                 }
                 val text = String(buffer, 0, n)
@@ -104,14 +120,17 @@ class SocketParticipant(
             if (running) {
                 val detail = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
                 postMessage("⚠️ TCP 读取异常: $detail", true)
+                abnormal = true
             }
         }
 
         running = false
+        if (abnormal) onStateChange?.invoke(false)
     }
 
     private fun readLoopUdp() {
         val buffer = ByteArray(4096)
+        var abnormal = false
 
         while (running) {
             try {
@@ -129,12 +148,14 @@ class SocketParticipant(
                 if (running) {
                     val detail = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
                     mainHandler.post { postMessage("⚠️ UDP 读取异常: $detail", true) }
+                    abnormal = true
                 }
                 break
             }
         }
 
         running = false
+        if (abnormal) onStateChange?.invoke(false)
     }
 
     fun sendInput(text: String) {

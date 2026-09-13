@@ -157,6 +157,166 @@ data class Message(
 
 ---
 
+## 会话持久化 + 重连面板（2026-09）
+
+### 背景
+
+`SessionManager` 是纯内存 object。进程被系统杀掉（后台 LMK / 用户强杀 / OEM 省电策略）后重建时，
+会话和参与者配置全丢，之前建的会话再也找不回来，也没有任何重连入口。
+
+### `core/SessionStore.kt`（SharedPreferences + JSON）
+
+- 存储 key：`chatroom_sessions` / `sessions_json_v1`，内容形如
+  `[{ id, createdAt, participants: [{ id, type, name, params }] }]`
+- **落盘时机**：`SessionManager.createSession / restoreSession / removeSession / addParticipant /
+  removeParticipant` 每次变更都调 `SessionManager.persist()`；写盘用 `commit()` 而不是 `apply()`，
+  保证「会话刚创建完进程就被杀」时数据已经在磁盘上
+- **不落盘**：聊天消息（`imageBytes` 体积不可控）、连接状态、输入模式 / 拖出来的输入区高度
+- 解析容错：整段 JSON 坏掉 → 当作没有历史会话；单个 participant 类型枚举不认识 → 跳过该条，
+  不让整条会话丢
+
+### 恢复流程
+
+1. `MainActivity.onCreate` → `SessionStore.init(applicationContext)` + `SessionManager.restoreFromStore()`
+2. 恢复出来的会话 `connected = false`（`SessionManager.isSessionConnected`），消息列表为空
+3. 按 `SessionManager.getSessionOrder()`（单独的创建顺序列表；`ConcurrentHashMap` 本身无序）
+   逐个 `addSessionTab(select = false)`，tab 顺序 = 会话创建顺序
+4. `ChatFragment.onViewCreated`：`isSessionConnected` 为 true → `connectParticipants()`；
+   为 false → 只贴一条「已从本地恢复，当前未连接」的提示，**不自动连**
+5. tab 文案 = 会话创建时间 `YYMM-DDhh-mmss`（年月-日时-分秒，例 `2609-1301-2716`），
+   直接从 `sessionId` 里的 epoch 毫秒解析（`SimpleDateFormat("yyMM-ddHH-mmss")`）；
+   **未连接 / 链路失败时整个字串加删除线**（不额外加符号）。重连 / 连上 / 断线都会
+   经 `SessionManager.setSessionLinkUp()` + `linkStateCallbacks` 回调 MainActivity 调
+   `SessionTabBar.updateTabName(id, name, strikeThrough)` 刷新
+6. tab → fragment 统一走 `MainActivity.chatFragmentAt() / homeFragment()`：优先
+   `supportFragmentManager.findFragmentByTag("f<position>")`（进程被杀后系统恢复出来的实例），
+   找不到才退回 `pagerAdapter.fragments[position]`（本次进程新建、可能还没 attach）。
+   否则回调会设在没挂载的实例上——首页点「创建」没反应、重连后 tab 文案不刷新
+
+### 重连面板（输入区下方 / tabbar 上方）
+
+- tab 结构（`SessionTabBar.makeTabView`）：`[ⓘ] 时间戳 [×]`，首页 tab 是 `首页`（没有 ⓘ / ×）。
+  tab 本体点击 = 切到该会话；**ⓘ = 展开 / 收起重连面板**；× = 关闭会话。
+  ⓘ / × 各有自己的 click listener，不会冒泡到 tab 本体
+- tab 比原来长：名字是 14 字符时间戳，横向 padding `8dp → 14dp`，`minimumWidth = 128dp`
+- 点 ⓘ（`MainActivity.onSessionInfoClick` → `ChatFragment.toggleReconnectPanel()`）：
+  已展开 → `collapseReconnectPanel()` 收起回到会话；未展开 → `expandReconnectPanel()`
+- 点 ⓘ 的如果不是当前会话，先 `setCurrentItem` 切过去；这时 fragment view 可能还没建好，
+  `toggleReconnectPanel()` 会把请求记在 `pendingReconnectPanelOpen`，`onViewCreated` 里补展开
+- 面板是 `fragment_chat.xml` 根 LinearLayout 中 `inputArea` **之后**的 `reconnectPanel`：
+  标题行（`🔌 参与者 · 未连接/已连接` + `收起 ✕`）+ `MaxHeightScrollView`（200dp 上限的卡片列表）
+  + 通栏 `🔌 重连` 按钮。因为排在 `inputArea` 后面、`recyclerMessages` 是 `weight=1`，
+  展开时聊天区收缩、**输入区整体上移**，面板正好落在输入区和 tabbar 之间
+- 参与者卡片直接 inflate 主页的 `item_participant_card.xml` 并把 `btnDelete` 设 `GONE`，
+  样式与主页一致
+- 「重连」= `disconnectActiveParticipants()`（本地 PTY/SERIAL/AI/AGENT/ECHO `disconnect()` +
+  service 里确实存在的 SOCKET `removeNetworkParticipant`，用新增的
+  `TcpForegroundService.hasNetworkParticipant(configId)` 过滤）→ `SessionManager.setSessionConnected(true)`
+  → `connectParticipants()` → 刷新面板 + tab 文案
+- service 的 started 状态由 `TcpForegroundService.ensureStarted()`（第一个网络 participant 加入时
+  `startService` 自己）补齐：断开老连接可能把 participant 清空过一次（触发 `stopSelf()`），
+  没有这一步之后 `unbind` 时后台保活会失效
+- 展开时若输入区处于最大化（聊天区 `GONE`）会先退出最大化，否则没有空间放面板
+
+### tab 删除线（会话是否正常）怎么来的
+
+`SessionManager.isSessionUp(sessionId)` = `isSessionConnected`（用户建过 / 点过重连）
+**且** 链路没报告过失败。`false` → tab 名字加删除线。
+
+「链路失败」不能只看用户点没点过重连，所以补了一条状态链：
+
+1. `SocketParticipant` / `WsParticipant` 新增 `onStateChange(up)`
+   - TCP / UDP：连上 → `true`；connect 抛异常 → `false`；读循环**非主动**结束（对端关、读异常）→ `false`
+   - WS：`onOpen` → `true`；`onFailure` / `onClosed` 且非我方 close → `false`
+   - 我方主动 `disconnect()` **不上报** `false`（TCP 用 `abnormal` 标志 + `running` 加 `@Volatile`，
+     WS 用 `intentionalClose`），否则旧实例的迟到回调会把重连后刚建好的新连接标成断开
+2. `TcpForegroundService`：`upConfigs` 记当前在线的 configId，聚合到会话级
+   （该会话还有任意一个网络 participant 在线 = 正常）→ `SessionManager.setSessionLinkUp()`
+   → 通过 `linkStateCallbacks` 通知 UI
+3. `ChatFragment` 在 `onServiceConnected` 注册 `linkStateCallback`（**注册时立刻推一次当前状态**，
+   因为后台断线时 fragment 已经 unregister，切回前台重新绑定要靠这次同步纠正），`onStop` 注销
+4. `MainActivity.applyTabName()` 用 `!isSessionUp(sessionId)` 决定删除线
+
+没有网络 participant 的会话（纯 ECHO / PTY / AI…）没有链路状态可报，`linkUp` 缺席 → 视为正常。
+
+### `MaxHeightScrollView`
+
+`android:maxHeight` 对 ScrollView / FrameLayout 都不生效，所以加了这个自定义 View：
+`onMeasure` 里把测量高度夹到 `maxHeightPx` 以内，超出部分内部滚动。
+
+### 关闭会话
+
+`MainActivity.closeSession` 先调 `ChatFragment.shutdownSession()`（此刻 `SessionManager` 里配置还在，
+能正确移除 service 里的网络 participant），再 `SessionManager.removeSession()`（同时从磁盘删掉）。
+`ChatFragment.onDestroy` 兜底再调一次；未连接的恢复会话直接跳过，避免误触 `TcpForegroundService.stopSelf()`。
+
+### service 启动的 5s 约束（崩溃修复）
+
+`startForegroundService()` 拉起的服务必须在 5s 内调 `startForeground()`，否则系统抛
+`ForegroundServiceDidNotStartInTimeException` 直接崩进程（真机踩过：恢复出来未连接的会话一打开就崩）。
+旧代码 `ChatFragment.onStart` 无条件 `startForegroundService`，而**恢复出来还没重连的会话**
+（以及纯 ECHO/PTY/AI 会话）永远不会加入网络 participant → 必崩。两边都修：
+
+- 客户端：`ChatFragment.shouldStartForegroundService()` —— 只有「已连接 + 至少一个 SOCKET 参与者」
+  才 `startForegroundService`，否则只 `bindService`
+- 服务端：`onStartCommand` 开头**无条件** `startInForeground()` 满足 5s 约束；若此时
+  `networkParticipantsCount == 0`，延迟 `EMPTY_CHECK_DELAY_MS`（2s，给 `onServiceConnected` 里
+  的 addXxx 留时间，也避免通知闪一下）后再判断，仍为 0 才 `stopInForeground() + stopSelf()`
+- `ensureStarted()`：第一个网络 participant 加入时 `startService` 把自己重新标记成 started；
+  否则上面那次 `stopSelf()` 之后，`unbind` 会把带着 socket 的 service 一起销毁
+
+## 后台保活（按 Home / 锁屏后连接不断）（2026-09）
+
+目标：按 Home / 锁屏很久后再切回来，TCP/WS/UDP 连接都还在。
+
+### 1. 任何 fragment 销毁路径都不能断网络连接
+
+之前 `ChatFragment.onDestroy()` 会调 `shutdownSession()` 清掉 service 里的网络 participant。
+但 fragment 的 onDestroy **不代表用户关了会话**：
+
+- 按 Home 后 MIUI 之类的 ROM 很快回收 Activity → fragment onDestroy，但进程和 service 还活着
+- `ViewPager2` 的 `offscreenPageLimit = 2`，离得远的会话 fragment 也会被销毁
+
+结果就是「一按 Home 连接就断」。现在**只有用户点 tab 上的 ×**（`MainActivity.closeSession`）
+才清连接；fragment 销毁不再碰网络 participant。
+
+### 2. wake lock 不再设超时
+
+原来 `acquire(10min)` 且只在 `onStartCommand` 里续期 —— 后台时没机会调 onStartCommand，
+10 分钟后锁自动释放 → CPU 能睡 → socket 静默断。
+现在只要还有网络 participant 就一直持有（`isHeld` 判断保证幂等、不叠引用计数），
+count 归零 / service 销毁时释放。**代价是耗电**，这是为「后台不断连」付的成本。
+
+### 3. Doze 白名单（`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）
+
+设备静止 + 未充电进入 Doze 后系统会挂起网络，前台服务也救不回来。
+`MainActivity.maybeRequestIgnoreBatteryOptimizations()` 首次启动弹一次，引导用户去系统设置里
+允许 chatroom 忽略电池优化（拒绝后不再弹）。厂商 ROM 的「自启动 / 后台运行」白名单仍需手动加，
+见 [`gotchas.md`](./gotchas.md) 第 6 条。
+
+### 4. WS 加协议级 ping（OkHttp `pingInterval(30s)`）
+
+`WsParticipant` 的共享 OkHttpClient 加了 `pingInterval(30s)`：发的是 **WebSocket 协议 ping 帧**
+（对端 WS 库自动 pong），不是应用数据，不污染业务流。作用是让 NAT / 运营商侧别回收空闲连接，
+同时 ping 失败能及时发现对端已死。
+
+### 5. 关 tab 的兜底清理
+
+fragment 被回收 / 没绑定时 `shutdownSession()` 返回 false，`MainActivity.closeSession` 退回
+`startService(ACTION_REMOVE_SESSION) + EXTRA_SESSION_ID`，让 service 自己按 sessionId 清
+（结合 `TcpForegroundService.isRunning` 判断，避免为了清理白拉一个服务起来）。
+
+### 已知限制
+
+- 原生 TCP 只能靠 `Socket.keepAlive = true`（OS 默认 ~2h 才开始发探针）。Android 公共 SDK
+  **不给 app 调 TCP keepalive 间隔**——`ConnectivityManager.createSocketKeepalive(Socket)` 是
+  @hide，公开的只有 IpSec UDP 那个重载（`javap android.jar` 验证过）。长时间完全空闲的裸 TCP
+  仍可能被中间 NAT 回收，这是协议层面限制；WS 有 `pingInterval` 兜着。
+- 国内厂商（MIUI/EMUI/ColorOS…）不守前台服务约定直接杀进程时连接一定断，代码层面无法规避，
+  只能让用户加系统白名单（gotchas.md 第 6 条）。
+
+---
+
 ## 自动滚动（贴底跟随，Android RecyclerView）
 
 `ChatFragment` 加了一个状态机：

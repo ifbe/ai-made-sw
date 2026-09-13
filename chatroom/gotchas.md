@@ -254,3 +254,129 @@ iOS 没有「永久后台」机制。`BackgroundTask` + `keep-alive` 只能撑 ~
 
 - 用 `adjustPan` → 窗口整体上移，但 inputArea 会被键盘遮挡一半
 - 不写 `configChanges` → 旋转 / 主题切换会重建 Activity，socket 断开 + PTY fd 丢失 + inputArea 高度被重置
+
+---
+
+## 9. Android `startForegroundService()` 后 5s 内没 `startForeground()` → 进程被系统直接干掉
+
+**日期**：2026-09-13
+**影响**：会话持久化上线后，点开一个「从磁盘恢复、还没重连」的会话必崩：
+`ForegroundServiceDidNotStartInTimeException`（`/tmp/logcat.txt` 抓到的真机崩溃）
+
+### 现象
+
+```
+E AndroidRuntime: FATAL EXCEPTION: main
+E AndroidRuntime: Process: com.example.chatroom
+E AndroidRuntime: android.app.RemoteServiceException$ForegroundServiceDidNotStartInTimeException:
+    Context.startForegroundService() did not then call Service.startForeground():
+    ServiceRecord{... com.example.chatroom/.service.TcpForegroundService ...}
+E AndroidRuntime: Caused by: android.app.StackTrace: Last startServiceCommon() call for this service was made here
+E AndroidRuntime: 	at ...ContextImpl.startForegroundService(...)
+E AndroidRuntime: 	at com.example.chatroom.ui.chat.ChatFragment.onStart(ChatFragment.kt:256)
+```
+
+service 自己的日志连续打 `onStartCommand: ... startedFlag=false count=0`，从来没有 `startForeground OK`。
+
+### 根因
+
+`Context.startForegroundService()` 是一个**契约**：服务必须在 5 秒内调用 `startForeground()`，
+否则系统主动抛 `ForegroundServiceDidNotStartInTimeException` 把进程干掉。
+
+`ChatFragment.onStart` 原来**无条件** `startForegroundService()`；而 `TcpForegroundService.onStartCommand`
+只在 `networkParticipantsCount > 0` 时才 `startInForeground()`。于是：
+
+- 从磁盘恢复出来的会话 `connected=false`，`ChatFragment` 不再自动 `connectParticipants()`
+  → 永远不会 add 网络 participant → count 一直是 0 → 必崩
+- 纯 ECHO/PTY/AI 会话（没有 SOCKET 参与者）同理，是更早就存在的隐藏 bug
+- 配置无效（SOCKET 但 ip/port 为空）也会走到这条路径
+
+### 修法
+
+两边都要堵：
+
+1. **客户端**（`ChatFragment.shouldStartForegroundService()`）：只有「本会话已连接 **且** 至少有一个
+   SOCKET 参与者」才 `startForegroundService()`，否则只 `bindService()`（bind-only 的服务不要求
+   startForeground，也不会因为 unbind 而漏掉 socket）
+2. **服务端**（`TcpForegroundService.onStartCommand`）：开头**无条件** `startInForeground()` 先满足
+   5s 契约；若 `count == 0`，延迟 2s（`EMPTY_CHECK_DELAY_MS`）再判断——期间 `onServiceConnected`
+   里的 addXxx 通常已经把 participant 加进来了（后台服务被 `startForegroundService` 拉起后
+   participant 是在绑定回调里才 add 的，天然有个时间差）；到点仍为 0 才 `stopInForeground() + stopSelf()`
+3. **补 started 状态**（`ensureStarted()`）：第一个网络 participant 加入时 `startService()` 把服务
+   重新标记成 started。因为第 2 步在 count==0 时会 `stopSelf()` 清掉 started，不补的话
+   `unbind` 会把带着活 socket 的 service 一起销毁，后台保活失效
+
+### 教训
+
+- `startForegroundService()` 不能「先拉起来再说」，**每一个 start 都必须对应一次 startForeground()**，
+  哪怕当时没有任何活要干
+- 服务端不要假设「启动后马上就会有 participant」——参与者是在客户端绑定回调里加的，
+  `onStartCommand` 跑的时候 count 经常就是 0
+- 「条件化的前台服务」要同时考虑启动路径和 `stopSelf()` 之后的重启路径
+
+---
+
+## 10. 别在 `Fragment.onDestroy()` 里清理 Service 持有的连接
+
+**日期**：2026-09-13
+**影响**：按 Home 后 TCP 立刻断（用户反馈「按下 home 会被断开 tcp」），前台服务白做了
+
+### 现象
+
+用户按 Home 回到桌面，再切回来时 TCP / WS 连接已经没了；日志里能看到
+`TcpFgService: onDestroy! disconnecting N participants`（是**移除 participant**，不是进程死）。
+
+### 根因
+
+`ChatFragment.onDestroy()` 里调了 `shutdownSession()`，把该会话在 `TcpForegroundService` 里
+的网络 participant 全删掉。但 **fragment 的 onDestroy ≠ 用户关掉了会话**：
+
+1. 按 Home 后，MIUI / EMUI 之类的 ROM 会很快回收后台 Activity → fragment onDestroy，
+   而**进程和 service 都还活着**（这正是前台服务存在的意义）
+2. `ViewPager2` + `FragmentStateAdapter` 在 `offscreenPageLimit = 2` 之外会销毁远处会话的 fragment
+   —— 切个 tab 就会触发
+
+于是「进后台 = 把连接拆了」，前台服务保住的 socket 被自己人删了。
+
+### 修法
+
+- `ChatFragment.onDestroy()` 里**不再**调 `shutdownSession()`
+- 会话彻底关闭只有一条路径：用户点 tab 上的 × → `MainActivity.closeSession()`
+- 关 tab 时 fragment 可能已被回收 / 未绑定（`tcpService == null`），此时
+  `shutdownSession()` 返回 false，MainActivity 用
+  `startService(ACTION_REMOVE_SESSION + EXTRA_SESSION_ID)` 让 service 自己按 sessionId 清，
+  避免「连接没断、会话没了」的泄漏
+
+### 教训
+
+- 判断「资源该不该释放」要看**业务意图**（用户关会话），不是 **view/fragment 的生命周期**
+- 凡是「比 Activity / Fragment 活得久」的资源（前台服务里的 socket、播放器、传感器），
+  清理入口都要显式化，不能挂在 onDestroy 上
+
+---
+
+## 11. Android 后台长时间保持 TCP 的几道坎
+
+**日期**：2026-09-13
+**影响**：按 Home / 锁屏久了连接静默断；仅靠前台服务不够
+
+按「代价从低到高」排列，chatroom 现在都做了（代码层面）：
+
+| 措施 | 作用 | 位置 |
+|---|---|---|
+| 前台服务 + `START_STICKY` + `onTaskRemoved` 重启 | 进程不被普通 LMK 回收；滑掉任务也重启 | `TcpForegroundService` |
+| **wake lock 不设超时** | CPU 不睡，socket 线程才能被调度收数据 | `acquireWakeLock()` |
+| **Doze 白名单** `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Doze 时系统会挂起网络，白名单才能真正保持网络 | `MainActivity.maybeRequestIgnoreBatteryOptimizations()` |
+| **WS 协议级 ping** `pingInterval(30s)` | NAT 不回收空闲 WS 连接；对端死了能及时发现 | `WsParticipant.sharedClient` |
+| 不打断连接（见第 10 条） | 进后台不拆 socket | `ChatFragment` |
+
+代码**做不到**的两件事：
+
+- **裸 TCP 的 keepalive 间隔调不了**：`ConnectivityManager.createSocketKeepalive(Socket)` 是 @hide
+  （`javap -classpath $ANDROID_HOME/platforms/android-35/android.jar android.net.ConnectivityManager`
+  只剩 IpSec UDP 重载），app 只能用 `Socket.keepAlive = true`，而 OS 默认 ~2h 才开始探针。
+  长时间完全空闲的 TCP 仍可能被 NAT 回收
+- **厂商 ROM 强杀**：MIUI「省电策略」不守前台服务约定时会直接杀进程，连接必断。
+  只能引导用户加白名单（第 6 条），代码无法规避（`android:process` 拆进程试过，见第 6 条）
+
+**踩坑频率**：2026-09-13 一次集中排查（用户诉求：切回 home 很久后连接都还在）。

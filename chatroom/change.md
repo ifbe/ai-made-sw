@@ -4,6 +4,89 @@
 
 ---
 
+## 2026-09-13 Android 后台保活加固：按 Home / 锁屏后连接不断
+
+**摘要**：用户反馈「按下 home 会被断开 tcp，或者被系统杀掉」。主因是 `ChatFragment.onDestroy()`
+把 service 里的网络 participant 删了（进后台后 ROM 回收 Activity、`ViewPager2` 回收 offscreen
+fragment 都会触发 onDestroy），另外 wake lock 10 分钟超时后后台没续期、Doze 会挂起网络。
+
+### 改动
+
+| 文件 | 内容 |
+|---|---|
+| `ui/chat/ChatFragment.kt` | `onDestroy()` **不再**调 `shutdownSession()`（fragment 销毁 ≠ 用户关会话）；`shutdownSession()` 返回 Boolean 表示是否处理完 |
+| `service/TcpForegroundService.kt` | wake lock 改为「有连接就一直持有、不设超时」（`isHeld` 幂等，不叠引用计数）；新增 `ACTION_REMOVE_SESSION` + `removeSessionParticipants()` + `isRunning` 作为关 tab 的兜底清理 |
+| `MainActivity.kt` | 首次启动弹一次「忽略电池优化」引导（Doze 白名单）；关 tab 时 fragment 处理不了就发 Intent 让 service 自己清 |
+| `participants/WsParticipant.kt` | 共享 OkHttpClient 加 `pingInterval(30s)`：WS 协议级 ping，不污染业务数据 |
+| `AndroidManifest.xml` | 加 `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` |
+
+### 效果 / 限制
+
+- 按 Home / 锁屏 → 进程 + 前台服务 + socket 都保持；切回来时 service 后台写入
+  `SessionManager` 的消息由 `loadMessages()` 补进聊天区
+- 裸 TCP 的 keepalive 间隔 app 改不了（`ConnectivityManager.createSocketKeepalive(Socket)`
+  是 @hide，公开的只有 IpSec UDP 重载），长时间全空闲仍可能被 NAT 回收
+- 厂商 ROM（MIUI 等）强杀进程无法用代码规避，仍需系统白名单；详见 [`gotchas.md`](./gotchas.md) 第 6 / 10 / 11 条
+
+---
+
+## 2026-09-13 Android 会话持久化 + 重连面板
+
+**摘要**：解决「进程被杀 → 会话全丢、tab 里也看不到参与者 / 没法重连」。新增 `core/SessionStore.kt`
+把会话 + 参与者配置落盘，下次启动恢复成**未连接**状态；点 tab 名字左边的 **ⓘ** 会在
+输入区下方展开一块重连面板（参与者卡片 + 重连按钮），再点一次收起。`./gradlew :app:assembleDebug` 通过。
+
+### 现象 / 原因
+
+1. `SessionManager` 是纯内存 object，进程重建后 `sessions` / `messages` 全空，之前建的会话再也回不来
+2. 会话已经建过之后，界面上看不到该会话的参与者，也没有任何重连入口
+3. `ChatFragment.onViewCreated` 无条件 `connectParticipants()`，没有「配置在但未连接」这个中间态
+
+### 改动
+
+| 文件 | 内容 |
+|---|---|
+| `core/SessionStore.kt`（新增） | SharedPreferences + JSON 持久化；`commit()` 保证落盘；坏数据 / 未知 ParticipantType 跳过不炸 |
+| `core/SessionManager.kt` | 新增有序 `order`（tab / 落盘顺序）、`connected` 标记、`restoreSession / restoreFromStore / isSessionConnected / setSessionConnected / getSessionOrder / persist`；会话 / 参与者变更即落盘 |
+| `MainActivity.kt` | 启动 `restoreFromStore()` + 恢复 tab；tab 本体点击 = 切会话，ⓘ = 展开 / 收起重连面板；tab 文案 = 创建时间 `YYMM-DDhh-mmss`（未连接 / 链路失败加删除线）；关会话先 `shutdownSession()` 再从磁盘删 |
+| `participants/SocketParticipant.kt` `WsParticipant.kt` | 新增 `onStateChange(up)` 上报链路状态；主动 disconnect 不上报（`abnormal` / `intentionalClose` + `@Volatile running`） |
+| `service/TcpForegroundService.kt` | `upConfigs` + `linkStateCallbacks`：把 participant 链路状态聚合到会话级并回调 UI |
+| `core/SessionManager.kt` | 新增 `linkUp` + `setSessionLinkUp()` / `isSessionUp()`（= 已激活 且 链路没失败） |
+| `ui/chat/ChatFragment.kt` | 新增 `toggle / expand / collapseReconnectPanel`、`refreshReconnectPanel`、`onClickReconnect`、`showRestoredHintIfNeeded`；未连接会话不再自动 `connectParticipants`；`closeSession` 改名公开为 `shutdownSession` |
+| `ui/common/MaxHeightScrollView.kt`（新增） | `onMeasure` 里夹最大高度（`android:maxHeight` 原生不生效） |
+| `res/layout/fragment_chat.xml` | `inputArea` 之后加 `reconnectPanel`（标题行 + 卡片列表 + 重连按钮） |
+| `ui/common/SessionTabBar.kt` | tab 改成 `[ⓘ] 名字 [×]`（新增 `onInfo` 回调 + `nameViews` 映射）；新增 `updateTabName()`；tab 加长（padding 14dp / minimumWidth 128dp，容纳 14 字符时间戳） |
+| `service/TcpForegroundService.kt` | 新增 `hasNetworkParticipant(configId)`，重连时只移除确实存在的 participant；修 `startForegroundService` 5s 崩溃（见下） |
+
+### 修复：打开「恢复出来未连接的会话」必崩
+
+真机崩溃 `ForegroundServiceDidNotStartInTimeException`（`/tmp/logcat.txt`）。原因是
+`ChatFragment.onStart` 原来无条件 `startForegroundService()`，而恢复出来未连接的会话不会 add 任何网络
+participant，`TcpForegroundService` 因此永远不调 `startForeground()`，5s 后被系统干掉。修法：
+
+- `ChatFragment.shouldStartForegroundService()`：只有「已连接 + 至少一个 SOCKET 参与者」才
+  `startForegroundService`，否则只 `bindService`
+- `TcpForegroundService.onStartCommand`：开头无条件 `startInForeground()` 满足 5s 契约；
+  `count == 0` 时延迟 2s 再确认，仍为 0 才 `stopInForeground() + stopSelf()`
+- `ensureStarted()`：第一个网络 participant 加入时 `startService` 补回 started 状态
+
+细节见 [`gotchas.md`](./gotchas.md) 第 9 条。
+
+### 交互
+
+- tabbar 单个 tab：`[ⓘ] 名字 [×]`，名字是会话创建时间 `YYMM-DDhh-mmss`（如 `2609-1301-2716`），不带 emoji；首页 tab 是 `首页`。tab 本体点击 = 切到该会话；点名字左边的 **ⓘ** = 展开 / 收起该会话的重连面板；点 **×** = 关闭会话
+- **未连接**（程序重启恢复后还没重连）或**链路失败**（连不上 / 连接掉了）→ tab 名字整串加删除线；正常状态名字不变
+- 展开时面板位于输入区下方、tabbar 上方（本会话参与者信息 + 重连按钮），把输入区往上挤；再点一次 ⓘ 收起，回到会话
+- 点非当前会话的 ⓘ 会先切过去再展开（view 没建好时由 fragment 记下，建好补展开）
+- 每次创建会话立即落盘；进程杀掉重开后历史会话以未连接状态恢复，参与者信息齐全，走上面的流程即可重连
+
+### 说明
+
+- 只持久化会话 + 参与者配置，**聊天消息不落盘**（`imageBytes` 体积不可控），恢复出来的会话聊天区只有重连后的新消息
+- iOS 端尚未实现对应能力，本次只改 Android
+
+---
+
 ## 2026-09-02 iOS 三个 UI 小问题 + Echo sendBinary 静态分派修复
 
 **摘要**：今天四件事——三个 UI 小问题（AI subType picker 选中色 / 文本框白底白字 / 录音选文件按钮居中），加一个被 DEBUG 定位出来的 Swift 经典坑（`sendBinary` 静态分派导致 Echo 接收图片/wav 不回）。iOS 端 `xcodebuild` 通过。

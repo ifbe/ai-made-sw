@@ -45,6 +45,7 @@ import com.example.chatroom.participants.SocketType
 import com.example.chatroom.participants.WsParticipant
 import com.example.chatroom.service.TcpForegroundService
 import com.example.chatroom.ui.common.AxisView
+import com.example.chatroom.ui.common.MaxHeightScrollView
 import com.google.android.material.button.MaterialButton
 import java.util.Locale
 
@@ -59,21 +60,43 @@ class ChatFragment : Fragment() {
     private lateinit var btnSend: MaterialButton
     private val activeParticipants = mutableMapOf<String, Any>()
 
-    // === TcpForegroundService 绑定（仅 TCP participant 走 service，其他不变）===
+    // === TcpForegroundService 绑定（TCP / WS / UDP 都走 service，保证后台不断）===
     private var tcpService: TcpForegroundService? = null
     private var tcpServiceBound = false
 
     /**
-     * Service 还没连上时，缓存"等下要加入的 TCP 配置"，等 onServiceConnected 再调
+     * Service 还没连上时，缓存"等下要加入的网络配置"，等 onServiceConnected 再调
+     * 同时覆盖 TCP / WS / UDP 三种类型，统一下发到 service。
      */
-    private val pendingTcpConfigs = mutableListOf<PendingTcpConfig>()
-    private data class PendingTcpConfig(
-        val configId: String,
-        val sessionId: String,
-        val ip: String,
-        val port: Int,
-        val sockType: SocketType  // 当前只支持 TCP（UDP 走原路径）
-    )
+    private val pendingNetworkConfigs = mutableListOf<PendingNetworkConfig>()
+    private sealed class PendingNetworkConfig {
+        abstract val configId: String
+        abstract val sessionId: String
+        abstract val ip: String
+        abstract val port: Int
+
+        data class Tcp(
+            override val configId: String,
+            override val sessionId: String,
+            override val ip: String,
+            override val port: Int
+        ) : PendingNetworkConfig()
+
+        data class Ws(
+            override val configId: String,
+            override val sessionId: String,
+            override val ip: String,
+            override val port: Int,
+            val path: String
+        ) : PendingNetworkConfig()
+
+        data class Udp(
+            override val configId: String,
+            override val sessionId: String,
+            override val ip: String,
+            override val port: Int
+        ) : PendingNetworkConfig()
+    }
 
     private lateinit var inputBarText: View
     private lateinit var inputBarRemote: View
@@ -83,6 +106,25 @@ class ChatFragment : Fragment() {
     private lateinit var inputBarEmpty: View
     private lateinit var emptyText: TextView
     private lateinit var btnPickImage: Button
+
+    // ===== 重连面板（输入区下方 / tabbar 上方）=====
+    /** 面板是否展开。由 MainActivity 在 tab 上点 ⓘ 时调 [toggleReconnectPanel] */
+    private var reconnectPanelOpen = false
+    /** view 还没建好时收到的「展开面板」请求，onViewCreated 里补上 */
+    private var pendingReconnectPanelOpen = false
+    private lateinit var reconnectPanel: LinearLayout
+    private lateinit var reconnectScroll: MaxHeightScrollView
+    private lateinit var reconnectList: LinearLayout
+    private lateinit var reconnectTitle: TextView
+    private lateinit var btnReconnect: MaterialButton
+    private lateinit var btnCollapseReconnect: TextView
+
+    /** 连接状态变化（重连成功）→ 通知 MainActivity 刷新 tab 文案 */
+    var onConnectionStateChanged: (() -> Unit)? = null
+
+    /** 从磁盘恢复出来的会话还没连过时，聊天区贴一次的提示 */
+    private val restoredHintText =
+        "🔌 该会话已从本地恢复，当前处于未连接状态\n再次点击底部该会话标签可展开重连面板"
 
     // ===== 语音（VOICE mode）相关 =====
     private lateinit var btnVoiceStart: Button
@@ -176,16 +218,32 @@ class ChatFragment : Fragment() {
             svc.registerCallback(sessionId) { msg ->
                 recyclerView.post { appendMessage(msg) }
             }
-            // 把等 service 期间的 pending TCP 配置拿出去加入
-            pendingTcpConfigs.forEach { p ->
-                if (p.sockType == SocketType.TCP) {
-                    svc.addTcpParticipant(p.configId, p.sessionId, p.ip, p.port) { msg ->
-                        recyclerView.post { appendMessage(msg) }
+            // 链路状态变化（连上 / 断线 / 连不上）→ 让 MainActivity 刷新 tab 名字的删除线
+            svc.registerLinkStateCallback(sessionId) {
+                onConnectionStateChanged?.invoke()
+                refreshReconnectPanel()
+            }
+            // 把等 service 期间的 pending 网络配置（TCP / WS / UDP）拿出去加入
+            pendingNetworkConfigs.forEach { p ->
+                when (p) {
+                    is PendingNetworkConfig.Tcp -> {
+                        svc.addTcpParticipant(p.configId, p.sessionId, p.ip, p.port) { msg ->
+                            recyclerView.post { appendMessage(msg) }
+                        }
+                    }
+                    is PendingNetworkConfig.Ws -> {
+                        svc.addWsParticipant(p.configId, p.sessionId, p.ip, p.port, p.path) { msg ->
+                            recyclerView.post { appendMessage(msg) }
+                        }
+                    }
+                    is PendingNetworkConfig.Udp -> {
+                        svc.addUdpParticipant(p.configId, p.sessionId, p.ip, p.port) { msg ->
+                            recyclerView.post { appendMessage(msg) }
+                        }
                     }
                 }
-                // 注：UDP 暂不进 service（用户明确说 TCP），如果需要可以再加 UDP 路径
             }
-            pendingTcpConfigs.clear()
+            pendingNetworkConfigs.clear()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -197,11 +255,26 @@ class ChatFragment : Fragment() {
     override fun onStart() {
         super.onStart()
         val intent = Intent(requireContext(), TcpForegroundService::class.java)
+        // 只有本会话确实要建网络连接时，才把 service 推成「前台服务 + started」：
+        // startForegroundService 要求 5s 内必须 startForeground()，否则进程直接被系统干掉
+        // （ForegroundServiceDidNotStartInTimeException）。刚从磁盘恢复、还没重连的会话，
+        // 以及纯 ECHO/PTY/AI 会话都没有网络 participant，不能走这条路径。
+        // 网络 participant 真正加入时 service 内部会 ensureStarted() 补齐 started 状态。
+        if (shouldStartForegroundService()) {
+            requireContext().startForegroundService(intent)
+        }
+        // 再 bindService 让 fragment 拿到 binder
         requireContext().bindService(intent, tcpServiceConnection, Context.BIND_AUTO_CREATE)
         // 切回前台时：从 SessionManager 拿新消息（service 在 onDestroy 写的诊断信息等）
         if (messageList.isNotEmpty()) {
             loadMessages()
         }
+    }
+
+    /** 本会话是否拥有需要 service 承载的网络连接（已连接 + 至少一个 SOCKET 参与者） */
+    private fun shouldStartForegroundService(): Boolean {
+        if (!SessionManager.isSessionConnected(sessionId)) return false
+        return SessionManager.getParticipants(sessionId).any { it.type == ParticipantType.SOCKET }
     }
 
     override fun onStop() {
@@ -211,6 +284,7 @@ class ChatFragment : Fragment() {
         }
         if (tcpServiceBound) {
             tcpService?.unregisterCallback(sessionId)
+            tcpService?.unregisterLinkStateCallback(sessionId)
             try {
                 requireContext().unbindService(tcpServiceConnection)
             } catch (e: Exception) {
@@ -245,6 +319,25 @@ class ChatFragment : Fragment() {
         emptyText = view.findViewById(R.id.emptyText)
         btnPickImage = view.findViewById(R.id.btnPickImage)
 
+        // 重连面板
+        reconnectPanel = view.findViewById(R.id.reconnectPanel)
+        reconnectScroll = view.findViewById(R.id.reconnectScroll)
+        reconnectScroll.maxHeightPx = dp(200)
+        reconnectList = view.findViewById(R.id.reconnectList)
+        reconnectTitle = view.findViewById(R.id.reconnectTitle)
+        btnReconnect = view.findViewById(R.id.btnReconnect)
+        btnCollapseReconnect = view.findViewById(R.id.btnCollapseReconnect)
+        btnReconnect.setOnClickListener { onClickReconnect() }
+        btnCollapseReconnect.setOnClickListener { collapseReconnectPanel() }
+        reconnectPanelOpen = false
+        reconnectPanel.visibility = View.GONE
+        refreshReconnectPanel()
+        // tab 上点 ⓘ 时 view 还没建好（刚切页过来）：这里补展开
+        if (pendingReconnectPanelOpen) {
+            pendingReconnectPanelOpen = false
+            expandReconnectPanel()
+        }
+
         // 语音模式按钮
         btnVoiceStart = view.findViewById(R.id.btnVoiceStart)
         btnVoiceCancel = view.findViewById(R.id.btnVoiceCancel)
@@ -270,7 +363,13 @@ class ChatFragment : Fragment() {
         // 先把 SessionManager 里残留的历史消息 load 进 RecyclerView，
         // 否则 connectParticipants 没东西给你看
         loadMessages()
-        connectParticipants()
+        if (SessionManager.isSessionConnected(sessionId)) {
+            connectParticipants()
+        } else {
+            // 从磁盘恢复出来的会话：参与者配置在，但不自动连。
+            // 用户点 tab 展开重连面板 → 点「重连」才真正建立连接。
+            showRestoredHintIfNeeded()
+        }
 
         setupInputModeSpinner()
         setupDragHandle()
@@ -583,27 +682,37 @@ class ChatFragment : Fragment() {
                                     }
                                 } else {
                                     // service 还没连上，先缓存等 onServiceConnected
-                                    pendingTcpConfigs.add(
-                                        PendingTcpConfig(config.id, sessionId, ip, port, sockType)
+                                    pendingNetworkConfigs.add(
+                                        PendingNetworkConfig.Tcp(config.id, sessionId, ip, port)
                                     )
                                 }
                             }
                             SocketType.UDP -> {
-                                // UDP 暂不进 service（无连接无 NAT 问题）
-                                val socket = SocketParticipant(sessionId, ip, port, sockType) { msg ->
-                                    recyclerView.post { appendMessage(msg) }
+                                // UDP 也走 service：和 TCP 同套生命周期，一起在后台保活
+                                val svc = tcpService
+                                if (svc != null) {
+                                    svc.addUdpParticipant(config.id, sessionId, ip, port) { msg ->
+                                        recyclerView.post { appendMessage(msg) }
+                                    }
+                                } else {
+                                    pendingNetworkConfigs.add(
+                                        PendingNetworkConfig.Udp(config.id, sessionId, ip, port)
+                                    )
                                 }
-                                socket.connect()
-                                activeParticipants[config.id] = socket
                             }
                             SocketType.WS -> {
-                                // WS 暂不进 service（自带 ping/pong 心跳）
+                                // WS 也走 service：和 TCP 同套生命周期，在后台避免 Doze 限制网络
                                 val path = config.params["path"] ?: "/"
-                                val ws = WsParticipant(sessionId, ip, port, path) { msg ->
-                                    recyclerView.post { appendMessage(msg) }
+                                val svc = tcpService
+                                if (svc != null) {
+                                    svc.addWsParticipant(config.id, sessionId, ip, port, path) { msg ->
+                                        recyclerView.post { appendMessage(msg) }
+                                    }
+                                } else {
+                                    pendingNetworkConfigs.add(
+                                        PendingNetworkConfig.Ws(config.id, sessionId, ip, port, path)
+                                    )
                                 }
-                                ws.connect()
-                                activeParticipants[config.id] = ws
                             }
                         }
                     } else {
@@ -718,6 +827,148 @@ class ChatFragment : Fragment() {
         }
     }
 
+    // ===== 重连面板（输入区下方 / tabbar 上方）=====
+
+    /**
+     * MainActivity 在 tab 上点 ⓘ 时调：
+     * 面板已展开 → 收起（回到会话）；未展开 → 展开重连面板。
+     * view 还没建好（点的是别的会话的 ⓘ，正在切页）时先记下，onViewCreated 里补展开。
+     */
+    fun toggleReconnectPanel() {
+        if (view == null) {
+            pendingReconnectPanelOpen = true
+            return
+        }
+        if (reconnectPanelOpen) collapseReconnectPanel() else expandReconnectPanel()
+    }
+
+    /** 展开重连面板：位于输入区下方，把输入区向上挤 */
+    fun expandReconnectPanel() {
+        if (!isAdded || view == null) return
+        if (!::reconnectPanel.isInitialized) return
+        // 最大化时聊天区 GONE、输入区撑满整个窗口，没有空间放面板，先退出最大化
+        if (isMaximized) {
+            isMaximized = false
+            applyMaximizeState()
+        }
+        refreshReconnectPanel()
+        reconnectPanelOpen = true
+        reconnectPanel.visibility = View.VISIBLE
+        // 面板占掉高度后聊天区变矮，重新贴底
+        recyclerView.post {
+            if (messageList.isNotEmpty()) recyclerView.scrollToPosition(messageList.size - 1)
+        }
+    }
+
+    /** 收起重连面板，回到会话 */
+    fun collapseReconnectPanel() {
+        if (!::reconnectPanel.isInitialized) return
+        reconnectPanelOpen = false
+        reconnectPanel.visibility = View.GONE
+    }
+
+    /** 用 SessionManager 当前参与者配置重建面板内容 */
+    private fun refreshReconnectPanel() {
+        if (!::reconnectList.isInitialized) return
+        // 链路状态回调可能晚于 onStop 到达，view 没了就跳过
+        if (!isAdded || view == null) return
+        val configs = SessionManager.getParticipants(sessionId)
+        val connected = SessionManager.isSessionConnected(sessionId)
+        val up = SessionManager.isSessionUp(sessionId)
+
+        // 标题按「链路是否正常」显示（connected 但连接失败时也应该显示未连接）
+        reconnectTitle.text = if (up) "🔌 参与者 · 已连接" else "🔌 参与者 · 未连接"
+        btnReconnect.text = if (connected) "🔁 重新连接" else "🔌 重连"
+
+        reconnectList.removeAllViews()
+        if (configs.isEmpty()) {
+            reconnectList.addView(TextView(requireContext()).apply {
+                text = "该会话没有参与者"
+                textSize = 14f
+                setTextColor(0xFF999999.toInt())
+                setPadding(0, dp(8), 0, dp(8))
+            })
+        } else {
+            val stateLabel = if (up) "已连接" else "未连接"
+            configs.forEach { config ->
+                // 复用主页的参与者卡片，保证两边样式一致；只把删除按钮藏掉
+                val card = layoutInflater.inflate(R.layout.item_participant_card, reconnectList, false)
+                card.findViewById<TextView>(R.id.textIcon).text = config.type.icon
+                card.findViewById<TextView>(R.id.textName).text = config.name
+                val params = config.params.entries.joinToString(" ") { "${it.key}=${it.value}" }
+                card.findViewById<TextView>(R.id.textParams).text =
+                    if (params.isBlank()) stateLabel else "$params · $stateLabel"
+                card.findViewById<View>(R.id.btnDelete).visibility = View.GONE
+                reconnectList.addView(card)
+            }
+        }
+    }
+
+    /**
+     * 「重连」按钮：先断开本会话现有参与者，再按配置重新连一遍。
+     * 恢复出来的会话本来就没连（首次连接）；已连接的会话则是一次强制重连。
+     */
+    private fun onClickReconnect() {
+        disconnectActiveParticipants()
+        SessionManager.setSessionConnected(sessionId, true)
+        appendMessage(
+            Message(
+                senderId = "system",
+                senderType = ParticipantType.SOCKET,
+                senderName = "系统",
+                content = "🔌 开始重连会话…",
+                isInfo = true
+            )
+        )
+        connectParticipants()
+        refreshReconnectPanel()
+        onConnectionStateChanged?.invoke()
+        // 断开老连接时可能把 service 清空过一次（触发过 stopSelf 清掉 started 状态）；
+        // 网络 participant 重新加入时 TcpForegroundService.ensureStarted() 会把 started 续上，
+        // 所以这里不需要额外 startForegroundService（那还会在无网络连接时白拉一次服务）
+    }
+
+    /** 断开本会话所有参与者（本地 fd / 线程 + service 里的网络 participant） */
+    private fun disconnectActiveParticipants() {
+        activeParticipants.values.forEach { participant ->
+            when (participant) {
+                is PtyParticipant -> participant.disconnect()
+                is SerialParticipant -> participant.disconnect()
+                is AiParticipant -> participant.disconnect()
+                is AgentParticipant -> participant.disconnect()
+                is EchoParticipant -> participant.disconnect()
+            }
+        }
+        activeParticipants.clear()
+        pendingNetworkConfigs.clear()
+
+        val svc = tcpService ?: return
+        SessionManager.getParticipants(sessionId)
+            // 只移除确实在 service 里的（恢复出来的会话本来就没加过，避免无谓地清空/停服务）
+            .filter { it.type == ParticipantType.SOCKET && svc.hasNetworkParticipant(it.id) }
+            .forEach { svc.removeNetworkParticipant(it.id, sessionId) }
+    }
+
+    /** 未连接的恢复会话：聊天区贴一次提示（view 重建时不重复贴） */
+    private fun showRestoredHintIfNeeded() {
+        val already = SessionManager.getMessages(sessionId).any { it.content == restoredHintText }
+        if (!already) {
+            appendMessage(
+                Message(
+                    senderId = "system",
+                    senderType = ParticipantType.SOCKET,
+                    senderName = "系统",
+                    content = restoredHintText,
+                    isInfo = true
+                )
+            )
+        }
+        refreshReconnectPanel()
+    }
+
+    /** dp → px */
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
     /**
      * 把 binary bytes 派发给所有相关参与者：
      * - SOCKET/WS → 发 binary frame
@@ -732,7 +983,7 @@ class ChatFragment : Fragment() {
                     val sockTypeStr = config.params["sockType"] ?: "TCP"
                     val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
                     when (sockType) {
-                        SocketType.WS -> (activeParticipants[config.id] as? WsParticipant)?.sendBinary(bytes)
+                        SocketType.WS -> tcpService?.sendBinaryWs(config.id, bytes)
                         SocketType.TCP, SocketType.UDP -> { /* TODO: TCP/UDP 二进制发送后面接 */ }
                     }
                 }
@@ -949,25 +1200,8 @@ class ChatFragment : Fragment() {
                     (activeParticipants[config.id] as? PtyParticipant)?.sendInput(text)
                 }
                 ParticipantType.SOCKET -> {
-                    val sockTypeStr = config.params["sockType"] ?: "TCP"
-                    val sockType = try { SocketType.valueOf(sockTypeStr) } catch (e: Exception) { SocketType.TCP }
-                    when (sockType) {
-                        SocketType.TCP -> {
-                            // TCP 走 service
-                            val tcpSvc = tcpService
-                            if (tcpSvc != null && tcpSvc.hasTcpParticipants()) {
-                                tcpSvc.sendInput(config.id, text)
-                            } else {
-                                (activeParticipants[config.id] as? SocketParticipant)?.sendInput(text)
-                            }
-                        }
-                        SocketType.UDP -> {
-                            (activeParticipants[config.id] as? SocketParticipant)?.sendInput(text)
-                        }
-                        SocketType.WS -> {
-                            (activeParticipants[config.id] as? WsParticipant)?.sendInput(text)
-                        }
-                    }
+                    // TCP / WS / UDP 统一走 service.sendInput，service 内部分发到正确的 map
+                    tcpService?.sendInput(config.id, text)
                 }
                 ParticipantType.SERIAL -> {
                     (activeParticipants[config.id] as? SerialParticipant)?.sendInput(text)
@@ -1040,33 +1274,39 @@ class ChatFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         // PTY 必须在 fragment 销毁时断（占用 fd）
-        // SOCKET (TCP) 不在这里断——由 TcpForegroundService 持有，切后台/重建 fragment 时都保留
-        // SOCKET (UDP) / SERIAL / AI 也不在这里断（没显式 disconnect 入口，与原先一致）
+        // SOCKET (TCP/WS/UDP) 不在这里断——由 TcpForegroundService 持有，切后台/重建 fragment 时都保留
+        // SERIAL / AI / AGENT / ECHO 也不在这里断（没显式 disconnect 入口，与原先一致）
         activeParticipants.values.forEach { participant ->
             (participant as? PtyParticipant)?.disconnect()
         }
         activeParticipants.clear()
-        pendingTcpConfigs.clear()
+        pendingNetworkConfigs.clear()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        // fragment 真正销毁（用户点 tab ×、应用退出）时，释放 TcpForegroundService 里的 TCP participant
-        closeSession()
-    }
+    // ⚠️ 注意：这里**不能**再调 shutdownSession()。
+    // 按 Home / 后台被 MIUI 之类的系统回收 Activity 时，fragment 会 onDestroy，但进程还活着、
+    // service 里的 TCP/WS/UDP 也还活着——那时清理 participant 就会把连接断掉，
+    // 而且 ViewPager2 回收 offscreen fragment 也会走到这里。
+    // 会话彻底关闭只有一条路径：用户点 tab 上的 ×（MainActivity.closeSession）。
 
     /**
-     * 会话彻底关闭（用户点 tab 上的 ×）时调用：让 TcpForegroundService 释放对应 TCP participant。
-     * 普通切到后台 / 切换 tab 不调用——TCP 在 service 内继续跑。
+     * 会话彻底关闭时调用：让 TcpForegroundService 释放对应的 TCP / WS / UDP participant。
+     * 只有用户点 tab 上的 ×（MainActivity.closeSession）会调；切后台 / 切换会话 / fragment 重建都不调。
+     *
+     * @return true = 处理完了（包括本来就没有网络 participant）；false = 当前没绑定 service，
+     *         调用方需要改用 Intent 让 service 自己清理
      */
-    private fun closeSession() {
-        val svc = tcpService ?: return
+    fun shutdownSession(): Boolean {
+        if (sessionId.isEmpty()) return true
+        if (!SessionManager.isSessionConnected(sessionId)) return true
+        val svc = tcpService ?: return false
         val configs = SessionManager.getParticipants(sessionId)
         configs.forEach { config ->
             if (config.type == ParticipantType.SOCKET) {
-                svc.removeTcpParticipant(config.id, sessionId)
+                svc.removeNetworkParticipant(config.id, sessionId)
             }
         }
+        return true
     }
 
     companion object {

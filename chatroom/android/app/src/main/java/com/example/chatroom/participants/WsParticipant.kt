@@ -10,6 +10,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import java.util.concurrent.TimeUnit
 
 /**
  * WebSocket sub-type of SOCKET participant.
@@ -29,15 +30,24 @@ class WsParticipant(
     private val ip: String,
     private val port: Int,
     private val path: String = "/",
-    private val onMessage: (Message) -> Unit
+    private val onMessage: (Message) -> Unit,
+    /** 链路状态变化：true=连上了 / false=连接失败或断开。service 用它维护会话的 tab 状态 */
+    private val onStateChange: ((Boolean) -> Unit)? = null
 ) {
     private var ws: WebSocket? = null
+
+    // disconnect() 与 OkHttp 回调在不同线程 → @Volatile 保证可见性
+    @Volatile
     private var running = false
+
+    /** 我方主动 disconnect：close 回调不算掉线，避免老实例的迟到回调用坏新连接的状态 */
+    private var intentionalClose = false
 
     val type: ParticipantType = ParticipantType.SOCKET
     val displayName: String = "WS"
 
     fun connect() {
+        intentionalClose = false
         val url = buildUrl()
         val scheme = if (port == 443) "wss" else "ws"
 
@@ -52,6 +62,7 @@ class WsParticipant(
                 val statusLine = "${response.protocol} ${response.code} ${response.message}"
                 post("🔌 WS 握手响应: $statusLine", isInfo = true)
                 post("🔌 WS 已连接", isInfo = true)
+                onStateChange?.invoke(true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -69,12 +80,14 @@ class WsParticipant(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 running = false
                 post("🔌 WS 已断开 code=$code reason=$reason", isInfo = true)
+                if (!intentionalClose) onStateChange?.invoke(false)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 running = false
                 val detail = "${t.javaClass.simpleName}: ${t.message ?: "no message"}"
                 post("❌ WS 失败: $detail", isInfo = true)
+                if (!intentionalClose) onStateChange?.invoke(false)
             }
         })
     }
@@ -107,6 +120,7 @@ class WsParticipant(
     }
 
     fun disconnect() {
+        intentionalClose = true
         running = false
         ws?.close(1000, "client close")
         ws = null
@@ -206,9 +220,19 @@ class WsParticipant(
 
     companion object {
         private val mainHandler = Handler(Looper.getMainLooper())
-        // 共享 OkHttpClient（连接池/线程池复用）。前台保活后续按需再加 pingInterval
+
+        /**
+         * 共享 OkHttpClient（连接池/线程池复用）。
+         *
+         * `pingInterval(30s)`：OkHttp 每 30s 发一个 **WebSocket 协议级 ping 帧**（不是应用数据，
+         * 对端由 WS 库自动 pong，不污染业务流）。作用：
+         *  - 让 NAT / 运营商侧的空闲连接不被回收（没有流量时中间设备常 1~5 分钟就静默断）
+         *  - 对端真的死了的话，ping 失败会触发 onFailure，能及时知道断线
+         * 之前注释写的"后续按需再加 pingInterval"，现在按需加上了。
+         */
         private val sharedClient: OkHttpClient by lazy {
             OkHttpClient.Builder()
+                .pingInterval(30, TimeUnit.SECONDS)
                 .build()
         }
     }
