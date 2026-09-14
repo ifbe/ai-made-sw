@@ -1,12 +1,38 @@
 /* style.css - CyberGear Web 控制台 */
 * { box-sizing: border-box; }
 
+html, body {
+  /* 固定画布 + 等比缩放: 画布本身可能比视口宽, 由 app 侧 zoom 缩到刚好占满,
+     这里再兜一层, 保证任何情况下都不出现左右滚动条 */
+  overflow-x: hidden;
+}
+
+html {
+  /* 始终预留竖向滚动条位置: 让 clientWidth 不随内容高度变化,
+     否则滚动条出现/消失会让算出的缩放比例反复跳变 (画布宽度跟着抖) */
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
+  position: relative;   /* 兜底路径下 #page 用绝对定位 + 手动补高度 */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
   background: #0f1419;
   color: #e6e6e6;
   font-size: 14px;
+  /* 关掉 iOS 的字号自动放大: 会把固定画布的比例搞乱 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* ===== 固定设计画布 =====
+   页面永远按 1440px 排版, 视口更窄时整体等比缩放 (--page-zoom 由 index.html 里的
+   脚本计算), 更宽时保持 1:1 居中. 这样竖屏窗口/手机/平板看到的排版与设计稿一致.
+   ⚠ 这个 1440 必须与 index.html 里脚本的 DESIGN_W 一致. */
+#page {
+  width: 1440px;
+  margin: 0 auto;
+  zoom: var(--page-zoom, 1);
 }
 
 .topbar {
@@ -34,12 +60,6 @@ body {
 .spacer { flex: 1; }
 .hint { color: #7a8595; font-size: 12px; }
 .param-line { color: #4a90e2; font-size: 11px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; margin: 6px 0 0; padding: 4px 6px; background: #f5f7fa; border-radius: 3px; word-break: break-all; line-height: 1.4; }
-.btn-read-addr { font-size: 10px; padding: 2px 7px; background: #4a90e2; color: white; border: none; border-radius: 3px; cursor: pointer; margin-left: 6px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: nowrap; transition: background 0.15s; }
-.btn-read-addr:hover { background: #357abd; }
-.btn-read-addr:active { background: #2a5d9f; }
-.btn-read-addr:disabled { background: #aaa; cursor: wait; }
-.btn-read-addr.ok { background: #27ae60; }
-.btn-read-addr.err { background: #e74c3c; }
 
 /* 高级区参数列表 (与 mode-card 同样的暗色主题) */
 .adv-list {
@@ -47,7 +67,9 @@ body {
   flex-direction: column;
   gap: 4px;
   flex: 1;
-  max-height: 400px;
+  /* 正好显示 4 行 (原来 140px 只能露出 3 行):
+     容器内边距 12*2 + 边框 1*2 + 行高 32*4 + 行间距 4*3 = 166px */
+  max-height: calc(12px * 2 + 1px * 2 + 32px * 4 + 4px * 3);
   overflow-y: auto;
   padding: 12px;
   background: #1a1f29;
@@ -69,7 +91,9 @@ body {
   grid-template-columns: 120px 100px 1fr 52px 52px;
   gap: 6px;
   align-items: center;
-  padding: 4px 6px;
+  /* 固定行高: 让"可见 4 行"能精确计算 (见 .adv-list 的 max-height) */
+  height: 32px;
+  padding: 0 6px;
   background: #14191f;
   border: 1px solid #2a2f3a;
   border-radius: 4px;
@@ -85,7 +109,9 @@ body {
   color: #4ade80;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-weight: 600;
-  padding: 3px 6px;
+  height: 24px;
+  padding: 0 6px;
+  line-height: 22px;   /* 24 - 上下边框 */
   background: #0d1117;
   border: 1px solid #2a2f3a;
   border-radius: 3px;
@@ -96,7 +122,9 @@ body {
 .adv-addr:focus { outline: none; border-color: #4ade80; }
 .adv-val {
   color: #e0e3e7;
-  padding: 3px 6px;
+  height: 24px;
+  padding: 0 6px;
+  line-height: 22px;
   background: #0d1117;
   border: 1px solid #2a2f3a;
   border-radius: 3px;
@@ -107,7 +135,8 @@ body {
 }
 .adv-val:focus { outline: none; border-color: #4ade80; }
 .adv-btn {
-  padding: 4px 0;
+  height: 24px;
+  padding: 0;
   font-size: 11px;
   background: transparent;
   color: #4ade80;
@@ -147,7 +176,8 @@ body {
   gap: 12px;
   padding: 12px 20px;
   border-bottom: 1px solid #2a2f3a;
-  flex-wrap: wrap;
+  /* 固定画布下不允许换行: 换行 = 跑版 (以前 769~860px 宽时 4 张模式卡会挤成 3+1) */
+  flex-wrap: nowrap;
 }
 
 .row-label {
@@ -182,7 +212,9 @@ body {
   border-radius: 8px;
   padding: 10px 12px;
   cursor: pointer;
-  transition: all 0.15s;
+  /* 只过渡会变的两个属性 (原来 all 0.15s 在 DOM 重建时会放大闪烁) */
+  transition: border-color 0.15s, box-shadow 0.15s;
+  position: relative;  /* 父容器, 让右上角 onoff 用 absolute 定位 */
 }
 .motor-card:hover { border-color: #4a5568; }
 .motor-card.selected {
@@ -195,6 +227,7 @@ body {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  padding-right: 56px;  /* 预留右上角 onoff 位置, 防 ID/mode 文本重叠 */
 }
 .motor-id {
   font-weight: 700;
@@ -208,15 +241,25 @@ body {
   border-radius: 3px;
   font-size: 11px;
 }
-.motor-state {
-  margin-left: auto;
+.motor-onoff {
+  /* 右上角 on/off 按钮: 绝对定位锁死在卡右上角, 点切换使能/停止 */
+  position: absolute;
+  top: 10px;
+  right: 12px;
   font-size: 10px;
-  padding: 2px 6px;
+  font-weight: 700;
+  font-family: inherit;
+  padding: 3px 10px;
   border-radius: 3px;
-  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: filter 0.12s, transform 0.08s;
+  user-select: none;
 }
-.motor-state.enabled  { background: #166534; color: #4ade80; }
-.motor-state.disabled { background: #4a2020; color: #f87171; }
+.motor-onoff.enabled  { background: #166534; color: #4ade80; border-color: #166534; }
+.motor-onoff.disabled { background: #4a2020; color: #f87171; border-color: #4a2020; }
+.motor-onoff:hover    { filter: brightness(1.25); }
+.motor-onoff:active   { transform: scale(0.94); }
 
 .motor-body {
   display: grid;
@@ -340,22 +383,6 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font-family: inherit;
-}
-
-/* 模式卡里的辅助动作按钮 (如 setzero), 警告色突出 */
-.btn-act {
-  background: transparent;
-  border: 1px solid #f59e0b;
-  color: #f59e0b;
-  padding: 5px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12px;
-  margin-top: 2px;
-  transition: all 0.15s;
-}
-.btn-act:hover { background: #f59e0b; color: #14191f; }
   font-size: 12px;
   font-weight: 600;
 }
@@ -375,6 +402,140 @@ body {
 }
 .btn-send:hover { background: #3b82f6; }
 .btn-send:active { transform: translateY(1px); }
+
+/* 模式卡里的参数行: [名字][输入文本框][get][set] */
+.param-row {
+  display: grid;
+  grid-template-columns: 1fr 84px 42px 42px;
+  gap: 6px;
+  align-items: center;
+}
+/* 置灰的输入框 (如设零位那行: 没有参数值可填) */
+.param-row .num:disabled {
+  color: #555;
+  background: #12161d;
+  border-color: #222833;
+  cursor: not-allowed;
+}
+.param-row .num:disabled::placeholder { color: #444; }
+.param-name {
+  font-size: 11px;
+  color: #7a8595;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.param-row .num {
+  width: 100%;
+  min-width: 0;
+  /* 固定高度, 和右边 get/set 按钮严格对齐 (不随字体度量变) */
+  height: 28px;
+  padding: 0 8px;
+  line-height: 26px;
+}
+.btn-param-get,
+.btn-param-set {
+  height: 28px;
+  padding: 0;
+  font-size: 11px;
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid #4ade80;
+  color: #4ade80;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-param-get { border-color: #4a90e2; color: #4a90e2; }
+.btn-param-get:hover { background: #4a90e2; color: #14191f; }
+.btn-param-set:hover { background: #4ade80; color: #14191f; }
+.btn-param-get:disabled,
+.btn-param-set:disabled { color: #555; border-color: #2a2f3a; cursor: not-allowed; background: transparent; }
+.btn-param-get.ok,
+.btn-param-set.ok { background: #27ae60; border-color: #27ae60; color: #fff; }
+.btn-param-get.err,
+.btn-param-set.err { background: #e74c3c; border-color: #e74c3c; color: #fff; }
+
+/* ===== 双向拖动条 (位置/速度模式): 中间=0, 左负右正 ===== */
+.slider-box {
+  position: relative;
+  margin-top: auto;   /* 贴在卡片底部 (原来是"发送"按钮的位置) */
+  padding: 0 2px;
+}
+/* 正中一根 0 刻度线, 画在轨道之上, 不吃鼠标事件 */
+.slider-box::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 16px;
+  margin: -8px 0 0 -1px;
+  background: #7a8595;
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.slider:focus { outline: none; }
+
+/* WebKit/Blink: 轨道是深色圆角条, 滑块是绿色圆点 */
+.slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #242b36;
+  border: 1px solid #2a2f3a;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;            /* (6 - 16) / 2, 让滑块在轨道上垂直居中 */
+  border-radius: 50%;
+  background: #4ade80;
+  border: 2px solid #0f1419;
+  cursor: grab;
+}
+.slider:active::-webkit-slider-thumb { cursor: grabbing; }
+.slider:focus::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.25); }
+
+/* Firefox */
+.slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #242b36;
+  border: 1px solid #2a2f3a;
+}
+.slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #4ade80;
+  border: 2px solid #0f1419;
+  cursor: grab;
+}
+.slider:focus::-moz-range-thumb { box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.25); }
+
+/* 刻度说明: 左 / 中(0) / 右 */
+.slider-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -2px;
+  font-size: 10px;
+  color: #7a8595;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.slider-ends span:nth-child(2) { color: #4ade80; font-weight: 600; }
 
 /* ===== 高级行 ===== */
 .advanced-row {
@@ -406,14 +567,25 @@ body {
   pointer-events: none;
   z-index: 1000;
   font-size: 13px;
+  /* toast 在画布外不参与缩放, 手机上限制宽度, 长报错信息不会撑出屏幕 */
+  max-width: calc(100vw - 24px);
+  text-align: center;
 }
 .toast.show { opacity: 1; }
 .toast.ok  { border-color: #4ade80; box-shadow: 0 0 12px rgba(74, 222, 128, 0.2); }
 .toast.err { border-color: #f87171; box-shadow: 0 0 12px rgba(248, 113, 113, 0.2); }
 
-/* ===== 底部 log 区 ===== */
+/* ===== 底部日志区: 左右两块, 同一个矩形风格 ===== */
 .log-section {
+  display: flex;
+  gap: 12px;
   margin: 16px 20px;
+}
+
+/* 每块日志自己一张卡 (原来 .log-section 的样式挪到这里) */
+.log-pane {
+  flex: 1 1 0;
+  min-width: 0;              /* 允许收缩, 两块严格等宽 */
   background: #14191f;
   border: 1px solid #2a2f3a;
   border-radius: 8px;
@@ -439,12 +611,6 @@ body {
   margin-left: auto;
   color: #4a5568;
   font-size: 11px;
-}
-.log-hint code {
-  background: #1a1f29;
-  padding: 1px 4px;
-  border-radius: 3px;
-  color: #4ade80;
 }
 
 .btn-small {
@@ -486,46 +652,9 @@ body {
 .log-area .log-line.err {
   color: #f87171;
 }
+.log-area .log-line.warn {
+  color: #fbbf24;
+}
 .log-area .log-line.info {
   color: #cbd5e0;
-}
-
-/* ===== 响应式: 电脑端默认布局, 手机端堆叠 ===== */
-@media (max-width: 768px) {
-  body { padding: 8px; font-size: 13px; }
-  .row { padding: 8px; gap: 8px; flex-wrap: wrap; }
-  .row-label { display: none; }
-
-  .motor-row { flex-direction: column; align-items: stretch; }
-  .motor-list {
-    flex-direction: column;
-    align-items: stretch;
-    overflow-x: visible;
-    gap: 8px;
-  }
-  .motor-card { min-width: 0; width: 100%; }
-  .btn-add { align-self: center; min-width: 80px; min-height: 44px; }
-
-  .mode-row {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 8px;
-    padding: 8px;
-  }
-  .mode-card { min-width: 0; min-height: auto; }
-
-  .cmd-row { flex-wrap: wrap; gap: 8px; }
-  .cmd-row .btn,
-  .cmd-row .big-btn,
-  .cmd-row .inline { width: 100%; justify-content: center; }
-
-  .advanced-row { flex-wrap: wrap; gap: 8px; }
-  .advanced-row label,
-  .advanced-row .btn { width: 100%; }
-
-  .log-section { margin: 8px; }
-  .log-area { height: 200px; font-size: 10px; }
-
-  .topbar h1 { font-size: 16px; }
-  .topbar { flex-wrap: wrap; gap: 8px; }
 }

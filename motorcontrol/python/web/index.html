@@ -2,113 +2,224 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 固定设计画布 1440px: 移动端浏览器直接按 1440 排版并整体缩放到屏幕宽度,
+       桌面端窄窗口/竖屏窗口由下面的脚本用 zoom 等比缩放.
+       目的: 任何设备、任何宽高比下排版与设计稿完全一致 (不再有"手机版"另一套布局).
+       ⚠ 1440 这个数字必须与 style.css 里 #page 的 width 一致. -->
+  <meta name="viewport" content="width=1440">
   <title>CyberGear 控制台</title>
   <link rel="stylesheet" href="/style.css">
+  <script>
+    /* ===== 固定设计画布: 视口比设计宽度窄时, 整体等比缩放 =====
+       - 只缩放 #page (设计画布); toast / 模态框留在画布外, 保持可读可点.
+       - 用 CSS 变量 --page-zoom, 在首帧渲染前算好, 避免先渲染大布局再跳变.
+       - 手机上 <meta viewport width=1440> 已让浏览器整体缩放, 此时 clientWidth
+         就是 1440 -> 比例为 1, 这里不会重复缩放.
+       - 支持 zoom 的浏览器 (Chrome/Edge/Safari/Firefox 126+) 走主路径;
+         不支持的就退化成"1440 画布 + 横向滚动", 排版依旧不跑版. */
+    (function () {
+      var DESIGN_W = 1440;
+      var root = document.documentElement;
+      var ZOOM_OK = false;
+      try { ZOOM_OK = !!(window.CSS && CSS.supports && CSS.supports('zoom', '0.5')); } catch (e) {}
+
+      function fit() {
+        // 用 clientWidth (已扣掉滚动条占位) 算比例, 保证画布正好占满内容区
+        var w = root.clientWidth || window.innerWidth || DESIGN_W;
+        var s = Math.min(1, w / DESIGN_W);   // 更宽时不再放大, 保持 1:1 居中
+        root.style.setProperty('--page-zoom', String(s));
+
+        if (ZOOM_OK) return;
+        // 兜底 (不支持 zoom 的老浏览器): transform 缩放 + 手动补回布局尺寸
+        var page = document.getElementById('page');
+        if (!page) return;
+        page.style.position = 'absolute';
+        page.style.top = '0';
+        page.style.transformOrigin = 'top left';
+        page.style.transform = 'scale(' + s + ')';
+        if (s < 1) {
+          page.style.left = '0';
+          page.style.marginLeft = '0';
+        } else {
+          page.style.left = '50%';          // 视口更宽时居中
+          page.style.marginLeft = (-DESIGN_W / 2) + 'px';
+        }
+        document.body.style.height = (page.offsetHeight * s) + 'px';
+      }
+
+      fit();
+      window.addEventListener('resize', fit);
+      window.addEventListener('orientationchange', fit);
+      // 兜底路径: 日志/电机卡片增删会改变画布高度, 需要重新补高度
+      window.addEventListener('DOMContentLoaded', function () {
+        if (ZOOM_OK || !window.ResizeObserver) return;
+        var page = document.getElementById('page');
+        if (page) new ResizeObserver(fit).observe(page);
+      });
+    })();
+  </script>
 </head>
 <body>
-  <header class="topbar">
-    <h1>🎮 CyberGear 电机控制台</h1>
-    <div class="status">
-      <span id="serialStatus" class="dot dot-off"></span>
-      <span id="serialText">未连接</span>
-      <button id="btnLs" class="btn btn-primary">🔍 扫描</button>
-      <span class="spacer"></span>
-      <span class="hint">轮询: <span id="pollHz">200ms</span></span>
-    </div>
-  </header>
+  <!-- #page = 固定宽度设计画布 (宽度由 style.css 定义为 1440px), 整体由上面的脚本缩放 -->
+  <div id="page">
+    <header class="topbar">
+      <h1>🎮 CyberGear 电机控制台</h1>
+      <div class="status">
+        <span id="serialStatus" class="dot dot-off"></span>
+        <span id="serialText">未连接</span>
+        <button id="btnLs" class="btn btn-primary">🔍 扫描</button>
+        <span class="spacer"></span>
+        <span class="hint">轮询: <span id="pollHz">200ms</span></span>
+      </div>
+    </header>
 
-  <!-- 第1行: 电机卡片 (一排从左到右, 选中高亮) -->
-  <section class="row motor-row">
-    <div class="row-label">电机</div>
-    <div id="motorList" class="motor-list">
-      <button id="btnAddMotor" class="btn-add" title="添加电机">+</button>
-    </div>
-  </section>
+    <!-- 第1行: 电机卡片 (一排从左到右, 选中高亮) -->
+    <section class="row motor-row">
+      <div class="row-label">电机</div>
+      <div id="motorList" class="motor-list">
+        <button id="btnAddMotor" class="btn-add" title="添加电机">+</button>
+      </div>
+    </section>
 
-  <!-- 第2行: 使能 / 停止 -->
-  <section class="row cmd-row">
-    <div class="row-label">控制</div>
-    <button id="btnEnable" class="btn btn-go">⚡ 使能</button>
-    <button id="btnStop" class="btn btn-stop">⏹️ 停止</button>
-    <span class="target-hint">作用于: <strong id="curTarget">未选</strong></span>
-  </section>
+    <!-- 第2行: 4 种模式矩形 -->
+    <section class="row mode-row">
+      <div class="mode-card" data-mode="ctrl">
+        <button class="btn-mode" data-act="setmode">🎮 切到运控</button>
+        <h3>运控 (Motion)</h3>
+        <!-- 参数行格式: [名字][输入文本框][get][set]
+             pos/vel 有对应寄存器 (0x7016 / 0x700A) 可读可写;
+             kp/kd/torque 是运控指令自带的伺服参数, 电机没有对应可读写寄存器,
+             所以 get/set 置灰 (收发在下面的"发送运控") -->
+        <div class="param-row" data-addr="0x7016">
+          <span class="param-name" title="运控指令里的目标位置 (rad)。get/set 对应寄存器 0x7016 LOC_REF。">pos (rad)</span>
+          <input class="num" data-f="pos" type="number" step="0.1" value="0">
+          <button class="btn-param-get" data-addr="0x7016" title="读 0x7016 LOC_REF 填入左边输入框">get</button>
+          <button class="btn-param-set" title="把输入框的值写到 0x7016 LOC_REF">set</button>
+        </div>
+        <div class="param-row" data-addr="0x700A">
+          <span class="param-name" title="运控指令里的速度 (rad/s)。get/set 对应寄存器 0x700A SPD_REF。">vel (rad/s)</span>
+          <input class="num" data-f="vel" type="number" step="0.1" value="0">
+          <button class="btn-param-get" data-addr="0x700A" title="读 0x700A SPD_REF 填入左边输入框">get</button>
+          <button class="btn-param-set" title="把输入框的值写到 0x700A SPD_REF">set</button>
+        </div>
+        <div class="param-row" data-no-addr="1">
+          <span class="param-name" title="运控指令自带的 kp 增益 (0~500), 只随运控指令下发, 电机没有对应寄存器, 所以 get/set 不可用。">kp (0~500)</span>
+          <input class="num" data-f="kp" type="number" step="1" value="30">
+          <button class="btn-param-get" disabled title="kp 无对应寄存器, 只随运控指令下发">get</button>
+          <button class="btn-param-set" disabled title="kp 无对应寄存器, 只随运控指令下发">set</button>
+        </div>
+        <div class="param-row" data-no-addr="1">
+          <span class="param-name" title="运控指令自带的 kd 阻尼增益 (0~5), 只随运控指令下发, 电机没有对应寄存器, 所以 get/set 不可用。">kd (0~5)</span>
+          <input class="num" data-f="kd" type="number" step="0.1" value="0.5">
+          <button class="btn-param-get" disabled title="kd 无对应寄存器, 只随运控指令下发">get</button>
+          <button class="btn-param-set" disabled title="kd 无对应寄存器, 只随运控指令下发">set</button>
+        </div>
+        <div class="param-row" data-no-addr="1">
+          <span class="param-name" title="运控指令自带的力矩前馈 (Nm), 只随运控指令下发。相关寄存器是 0x700B limit_torque (转矩限制), 语义不同, 请在高级区操作。">torque (Nm)</span>
+          <input class="num" data-f="torque" type="number" step="0.1" value="0">
+          <button class="btn-param-get" disabled title="torque 是力矩前馈, 只随运控指令下发; 转矩限制寄存器 0x700B 请用高级区">get</button>
+          <button class="btn-param-set" disabled title="torque 是力矩前馈, 只随运控指令下发; 转矩限制寄存器 0x700B 请用高级区">set</button>
+        </div>
+        <button class="btn-send" data-act="ctrl">发送运控</button>
+      </div>
 
-  <!-- 第3行: 4 种模式矩形 -->
-  <section class="row mode-row">
-    <div class="mode-card" data-mode="ctrl">
-      <button class="btn-mode" data-act="setmode">🎮 切到运控</button>
-      <h3>运控 (Motion)</h3>
-      <label>pos (rad) <input class="num" data-f="pos" type="number" step="0.1" value="0"></label>
-      <label>vel (rad/s) <input class="num" data-f="vel" type="number" step="0.1" value="0"></label>
-      <label>kp (0~500) <input class="num" data-f="kp" type="number" step="1" value="30"></label>
-      <label>kd (0~5) <input class="num" data-f="kd" type="number" step="0.1" value="0.5"></label>
-      <label>torque (Nm) <input class="num" data-f="torque" type="number" step="0.1" value="0"></label>
-      <button class="btn-send" data-act="ctrl">发送运控</button>
-    </div>
+      <div class="mode-card" data-mode="pos">
+        <button class="btn-mode" data-act="setmode">📍 切到位置</button>
+        <h3>位置 (Position)</h3>
+        <!-- 参数行格式: [名字][输入文本框][get][set]
+             n 的单位是 1/60 圈, get/set 会自动在 n 和 0x7016 LOC_REF (rad) 之间换算 -->
+        <div class="param-row" data-addr="0x7016" data-conv="n2rad">
+          <span class="param-name" title="目标位置, 单位 1/60 圈 (60 = 1 圈)。get/set 对应 0x7016 LOC_REF (rad), 自动换算。">n (1/60 圈)</span>
+          <input class="num" data-f="n" type="number" step="1" min="-120" max="120" value="0">
+          <button class="btn-param-get" data-addr="0x7016" title="读 0x7016 LOC_REF (rad) 并换算成 n">get</button>
+          <button class="btn-param-set" title="把 n 换算成 rad 写入 0x7016 LOC_REF">set</button>
+        </div>
+        <p class="hint">60 = 1 圈, 1 = 6° · 范围 ±120 (±2 圈)</p>
+        <!-- 参数行格式: [名字][输入文本框][get][set]
+             设零位没有数值也没有寄存器可读, 所以输入框和 get 置灰, 只有 set 可点 -->
+        <div class="param-row" data-cmd="setzero">
+          <span class="param-name" title="把当前电机位置设为机械零位 (会改变后续 LOC_REF 的基准)。这个动作没有参数值, 点 set 执行。">📍 设零位</span>
+          <input class="num" disabled placeholder="—" title="设零位没有参数值, 输入框不可用">
+          <button class="btn-param-get" disabled title="设零位没有可读的值">get</button>
+          <button class="btn-param-set" title="把当前电机位置设为机械零位">set</button>
+        </div>
+        <!-- 拖动条: 中间=0, 左负右正; 拖动/点击/松手都会把 n 发给电机 -->
+        <div class="slider-box">
+          <input type="range" class="slider" data-f="n" min="-120" max="120" step="1" value="0">
+        </div>
+        <div class="slider-ends"><span>-120</span><span>0</span><span>+120</span></div>
+      </div>
 
-    <div class="mode-card" data-mode="pos">
-      <button class="btn-mode" data-act="setmode">📍 切到位置</button>
-      <h3>位置 (Position)</h3>
-      <label>
-        n (单位 1/60 圈)
-        <button class="btn-read-addr" data-addr="0x7016" data-target-f="n" title="点击从电机读 0x7016 LOC_REF (rad) 并转为 n">📥 0x7016</button>
-        <input class="num" data-f="n" type="number" step="1" value="60">
-      </label>
-      <p class="hint">60 = 1 圈, 1 = 6°</p>
-      <button class="btn-act" data-act="setzero" title="把当前电机位置设为机械零位 (会改变后续 LOC_REF 的基准)">📍 设零位</button>
-      <button class="btn-send" data-act="pos">发送位置</button>
-    </div>
+      <div class="mode-card" data-mode="speed">
+        <button class="btn-mode" data-act="setmode">💨 切到速度</button>
+        <h3>速度 (Speed)</h3>
+        <!-- 参数行格式: [名字][输入文本框][get][set] -->
+        <div class="param-row" data-addr="0x7018">
+          <span class="param-name" title="LIMIT_CUR (0x7018) 电流限制。默认 1.0 A (参考 mimotor.ino: 速度模式必须有限流, 否则电机不转)。改完要点 set 才下发。">电流限制 (A)</span>
+          <input class="num" data-f="limit_cur" type="number" step="0.1" min="0" value="1.0">
+          <button class="btn-param-get" data-addr="0x7018" title="从电机读 0x7018 LIMIT_CUR 填入左边输入框">get</button>
+          <button class="btn-param-set" title="把输入框的值写入 0x7018 LIMIT_CUR (默认 1.0 A)">set</button>
+        </div>
+        <div class="param-row" data-addr="0x700A">
+          <span class="param-name" title="SPD_REF (0x700A) 目标速度, 范围 ±30 rad/s。下面拖动条发的就是这个值。">目标速度 (rad/s)</span>
+          <input class="num" data-f="rad" type="number" step="0.1" min="-30" max="30" value="0">
+          <button class="btn-param-get" data-addr="0x700A" title="从电机读 0x700A SPD_REF 填入左边输入框">get</button>
+          <button class="btn-param-set" title="把输入框的值写入 0x700A SPD_REF">set</button>
+        </div>
+        <p class="hint">限流默认 1.0A, 点 set 才下发 · 拖动条只发速度</p>
+        <!-- 拖动条: 中间=0, 左负右正; 只发速度, 完全不动 LIMIT_CUR -->
+        <div class="slider-box">
+          <input type="range" class="slider" data-f="rad" min="-30" max="30" step="0.1" value="0">
+        </div>
+        <div class="slider-ends"><span>-30</span><span>0</span><span>+30</span></div>
+      </div>
 
-    <div class="mode-card" data-mode="speed">
-      <button class="btn-mode" data-act="setmode">💨 切到速度</button>
-      <h3>速度 (Speed)</h3>
-      <label>
-        limitcur (A)
-        <button class="btn-read-addr" data-addr="0x7018" data-target-f="limit_cur" title="点击从电机读 0x7018 LIMIT_CUR 填入输入框">📥 0x7018</button>
-        <input class="num" data-f="limit_cur" type="number" step="0.1" value="1.0">
-      </label>
-      <label>
-        spdref (rad/s)
-        <button class="btn-read-addr" data-addr="0x700A" data-target-f="rad" title="点击从电机读 0x700A SPD_REF 填入输入框">📥 0x700A</button>
-        <input class="num" data-f="rad" type="number" step="0.1" value="3.14">
-      </label>
-      <p class="hint">≈ 30 RPM at π rad/s</p>
-      <button class="btn-send" data-act="speed">发送速度</button>
-    </div>
+      <div class="mode-card" data-mode="cur">
+        <button class="btn-mode" data-act="setmode">⚡ 切到电流</button>
+        <h3>电流 (Current)</h3>
+        <!-- 参数行格式: [名字][输入文本框][get][set] -->
+        <div class="param-row" data-addr="0x7006">
+          <span class="param-name" title="电流模式目标 Iq (A)。get/set 对应寄存器 0x7006 IQ_REF。">电流 (A)</span>
+          <input class="num" data-f="a" type="number" step="0.1" value="0.5">
+          <button class="btn-param-get" data-addr="0x7006" title="读 0x7006 IQ_REF 填入左边输入框">get</button>
+          <button class="btn-param-set" title="把输入框的值写到 0x7006 IQ_REF">set</button>
+        </div>
+        <button class="btn-send" data-act="cur">发送电流</button>
+      </div>
+    </section>
 
-    <div class="mode-card" data-mode="cur">
-      <button class="btn-mode" data-act="setmode">⚡ 切到电流</button>
-      <h3>电流 (Current)</h3>
-      <label>
-        A
-        <button class="btn-read-addr" data-addr="0x7006" data-target-f="a" title="点击从电机读 0x7006 IQ_REF 填入输入框">📥 0x7006</button>
-        <input class="num" data-f="a" type="number" step="0.1" value="0.5">
-      </label>
-      <button class="btn-send" data-act="cur">发送电流</button>
-    </div>
-  </section>
+    <!-- 高级: 统一表格 (自定义 + 全部参数), 无左侧 label, 列表占满整行 -->
+    <section class="row advanced-row">
+      <div id="paramsList" class="adv-list">
+        <div class="params-list-hint">加载中...</div>
+      </div>
+    </section>
 
-  <!-- 高级: 统一表格 (自定义 + 全部参数) -->
-  <section class="row advanced-row">
-    <div class="row-label">高级</div>
-    <div id="paramsList" class="adv-list">
-      <div class="params-list-hint">加载中...</div>
-    </div>
-  </section>
+    <!-- 底部日志区: 左右两块, 风格一致
+         左 = 服务器日志 (后端 WS 推送的串口/电机报文)
+         右 = 网页日志 (console.log / warn / error 镜像到这里) -->
+    <section class="log-section">
+      <div class="log-pane">
+        <div class="log-header">
+          <h3>📜 服务器日志</h3>
+          <button id="btnClearLog" class="btn-small">清空</button>
+          <span class="log-hint">串口/电机报文 · 最新在下</span>
+        </div>
+        <div id="logArea" class="log-area"></div>
+      </div>
+      <div class="log-pane">
+        <div class="log-header">
+          <h3>🌐 网页日志</h3>
+          <button id="btnClearWebLog" class="btn-small">清空</button>
+          <span class="log-hint">console.log / warn / error</span>
+        </div>
+        <div id="webLogArea" class="log-area"></div>
+      </div>
+    </section>
+  </div>
 
-  <!-- Toast -->
+  <!-- Toast (画布外: 不随画布缩放, 保证任何设备上都清晰可读) -->
   <div id="toast" class="toast"></div>
-
-  <!-- 底部历史 log 区 -->
-  <section class="log-section">
-    <div class="log-header">
-      <h3>📜 历史日志</h3>
-      <button id="btnClearLog" class="btn-small">清空</button>
-      <span class="log-hint">最新在上, 点击 <code>?</code> 查命令</span>
-    </div>
-    <div id="logArea" class="log-area"></div>
-  </section>
 
   <script src="/app.js"></script>
 </body>

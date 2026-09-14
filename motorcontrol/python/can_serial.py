@@ -13,8 +13,10 @@ import time
 from queue import Queue, Empty
 
 
-# 模块级 log 回调 (供 main-web.py 注册, 接收所有 [_serial]tx/rx/err 行)
-_LOG_CB = None  # func(msg: str) -> None
+# 模块级 log 回调 (供 main-web.py / main-cli.py 注册, 接收所有 [_serial]tx/rx/err 行)
+# ⚠ 变量名必须和 set_log_callback 里 global 的名字一致, 否则没注册回调时
+#   下面 _log_tx/_log_rx 引用它就会 NameError (CLI 一直没注册回调, 一发包就炸)
+LOG_CB = None  # func(msg: str) -> None
 
 
 def set_log_callback(cb):
@@ -39,8 +41,8 @@ class SerialCan:
         self.rx_callback = None  # 接收回调 function(can_id, data, dlc)
         self.read_thread = None
         self.packet_count = 0
-        # 调试: 由外部 --debug 参数同步设置, 不走环境变量
-        self.debug = False
+        # 静默: 由外部 --silent 参数同步设置, 不走环境变量. 默认 False = 打全部日志
+        self.silent = False
         
     def list_ports(self):
         """扫描并列出所有可用的串口"""
@@ -89,18 +91,18 @@ class SerialCan:
         return self.serial_port is not None and self.serial_port.is_open
 
     def _log_tx(self, frame):
-        if self.debug:
-            msg = f"[serial]tx {frame.hex()}"
-            print(msg, flush=True)
-            if LOG_CB is not None:
-                LOG_CB(msg)
+        """[serial]tx (4 类必打之一, 不受 silent 影响)"""
+        msg = f"[serial]tx {frame.hex()}"
+        print(msg, flush=True)
+        if LOG_CB is not None:
+            LOG_CB(msg)
 
     def _log_rx(self, data):
-        if self.debug:
-            msg = f"[serial]rx {data.hex()}"
-            print(msg, flush=True)
-            if LOG_CB is not None:
-                LOG_CB(msg)
+        """[serial]rx (4 类必打之一, 不受 silent 影响)"""
+        msg = f"[serial]rx {data.hex()}"
+        print(msg, flush=True)
+        if LOG_CB is not None:
+            LOG_CB(msg)
     
     def set_rx_callback(self, callback):
         """
@@ -144,13 +146,13 @@ class SerialCan:
                 else:
                     time.sleep(0.01)
             except serial.SerialException as e:
-                if self.debug:
+                if not self.silent:
                     print(f"[serial]err SerialException {e}", flush=True)
                 if self.rx_callback:
                     self.rx_callback(None, None, None)
                 break
             except Exception as e:
-                if self.debug:
+                if not self.silent:
                     print(f"[serial]err Exception {e}", flush=True)
                 if self.rx_callback:
                     self.rx_callback(None, None, None)
@@ -244,8 +246,8 @@ class SerialCan:
         # 打包成串口消息
         frame = self.pack_can_frame(can_id_29bit, data_bytes)
 
-        if self.debug:
-            self._log_tx(frame)
+        # 4 类必打之一 (无门控, 总是调 _log_tx)
+        self._log_tx(frame)
 
         try:
             self.serial_port.write(frame)

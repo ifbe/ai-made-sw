@@ -98,7 +98,7 @@ class MotorCli:
                 lines.append(f"   角度: {fb['position']:.4f} rad")
                 lines.append(f"   速度: {fb['speed']:.4f} rad/s")
                 lines.append(f"   力矩: {fb['torque']:.4f} Nm")
-                lines.append(f"   温度: {fb['temperature']} (raw)")
+                lines.append(f"   温度: {fb['temperature']:.1f} °C")
 
         elif comm_type == CanProtocol.CMD_FAULT:
             fault_info = CanProtocol.parse_fault(data)
@@ -133,7 +133,7 @@ class MotorCli:
         if not self.motor.is_open():
             self.console.put("❌ 串口未打开")
             return False
-        ok, result = self.motor._serial.send_can(can_id, data)
+        ok, result = self.motor.send_raw(can_id, data)
         if ok:
             self.console.put(f"   📤 发送: {result.hex()}")
         else:
@@ -180,8 +180,8 @@ class MotorCli:
             targets = [self.current_target]
             self.console.put(f"\n   📌 模式: 指定设备 0x{self.current_target:02X}({self.current_target}) (来自@前缀)")
         elif not args:
-            targets = [0xFE]
-            self.console.put("\n   📌 模式: 广播 (目标ID: 0xFE)")
+            targets = None          # 全扫: 逐个 id 1~127 (向 0xFE 广播实测无应答)
+            self.console.put("\n   📌 模式: 全扫 (逐个 id 1~127, 约 0.6s)")
         else:
             targets = []
             for arg in args:
@@ -201,26 +201,22 @@ class MotorCli:
                 self.console.put("   ❌ 没有有效的设备ID")
                 return True
 
-        # 调用库的 scan
-        before = {m['target_id'] for m in self.motor.get_motors()}
-        results = self.motor.scan(targets=targets, broadcast=False)
-        new = [r for r in results if r['target_id'] in set(targets) and r['target_id'] not in before]
+        # 调用库的 scan (targets=None -> 逐个 id 发报文)
+        results = self.motor.scan(targets=targets)
+        # ⚠ get_motors() 是累积缓存 (拔掉的电机也在), 所以"本次是否在总线上"
+        #   要看库里记录的本次应答列表, 不能拿缓存当存在.
+        answered_ids = self.motor.last_scan_answered()
+        answered = [r for r in results if r['target_id'] in answered_ids]
 
-        if new:
-            self.console.put(f"\n   ✅ 收到 {len(new)} 个新响应:")
-            for resp in new:
-                self.console.put(f"      - 设备CAN ID: 0x{resp['target_id']:02X} ({resp['target_id']})")
-                if resp.get('mcu_id'):
-                    self.console.put(f"        MCU唯一标识: {resp['mcu_id']}")
+        if answered:
+            self.console.put(f"\n   ✅ 本次应答 {len(answered)} 台:")
+            for resp in answered:
+                self.console.put(f"      - 设备CAN ID: 0x{resp['target_id']:02X} ({resp['target_id']})"
+                                 + (f"   MCU: {resp['mcu_id']}" if resp.get('mcu_id') else ""))
         else:
-            # 看是不是已有但有 mcu_id
-            existing = [r for r in results if r['target_id'] in set(targets)]
-            if existing:
-                for resp in existing:
-                    self.console.put(f"\n   ℹ️  设备 0x{resp['target_id']:02X} 已有缓存"
-                                     + (f" (MCU: {resp['mcu_id']})" if resp.get('mcu_id') else ""))
-            else:
-                self.console.put("\n   ⚠️ 未收到响应")
+            self.console.put("\n   ⚠️ 本次没有任何设备应答 (检查接线/供电/波特率)")
+        if len(results) > len(answered):
+            self.console.put(f"   ℹ️  缓存里另有 {len(results) - len(answered)} 台历史设备 (本次未应答)")
         self.console.put("=" * 70)
         return True
 
@@ -556,7 +552,7 @@ class MotorCli:
         self.console.put("    @1 ls              - 向设备1发送获取设备ID")
         self.console.put("    @1 getprop 0x7005  - 获取设备1的参数")
         self.console.put("")
-        self.console.put("  ls                  - 发送获取设备ID到广播地址(0xFE)")
+        self.console.put("  ls                  - 扫描设备 (逐个 id 1~127 发获取设备ID)")
         self.console.put("  ls 1                - 发送获取设备ID到设备1")
         self.console.put("")
         self.console.put("  getprop             - 列出所有可查询的参数")
@@ -673,7 +669,7 @@ class MotorCli:
         print("   协议: 41 54 帧头 | 0D 0A 帧尾 | USB转CAN模块")
         print("=" * 70)
 
-        ports = self.motor._serial.list_ports()
+        ports = self.motor.list_ports()
         if not ports:
             print("未找到任何串口设备！")
             return
