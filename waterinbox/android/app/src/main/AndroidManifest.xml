@@ -14,10 +14,23 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Waterinbox">
+        <!--
+            Box space is pinned to the device's NATURAL orientation and never follows
+            the system display rotation:
+              * screenOrientation="nosensor" -> window keeps the device natural
+                orientation, ignoring the sensors and the user's rotation setting.
+                Declared here (not set at runtime) so WindowManager knows the request
+                before launch and can pre-rotate the display (no visible flip).
+              * configChanges -> do not recreate the activity on configuration changes;
+                recreation would reset the sensor fusion quaternion (SensorProbe),
+                re-roll the random render group (BoxSpace), and flash the GL surface.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:screenOrientation="nosensor"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:theme="@style/Theme.Waterinbox">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

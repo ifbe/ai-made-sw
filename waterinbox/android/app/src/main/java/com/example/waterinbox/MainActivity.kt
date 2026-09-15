@@ -51,10 +51,7 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
+        hideSystemBars()
 
         setContent {
             WaterinboxTheme {
@@ -92,6 +89,22 @@ class MainActivity : ComponentActivity() {
 
                 }
             }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // The activity is declared with configChanges, so it is no longer recreated on
+        // configuration changes; re-apply immersive mode since the system bars can
+        // reappear on their own.
+        hideSystemBars()
+    }
+
+    /** Immersive fullscreen: hide status/navigation bars, swipe to reveal transiently. */
+    private fun hideSystemBars() {
+        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
 
