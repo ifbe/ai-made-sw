@@ -1,5 +1,7 @@
 package com.example.chatroom.core
 
+import android.os.Handler
+import android.os.Looper
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
@@ -113,6 +115,32 @@ object SessionManager {
         persist()
     }
 
+    /**
+     * 就地替换某个 participant 的配置（菜单页的编辑表单「即改即存」用，靠 [ParticipantConfig.id] 定位）。
+     *
+     * 只改内存 + **防抖落盘**：表单是逐字符改的，每个字符都 `commit()` 一次会把主线程写卡。
+     * 需要立刻落盘的时机（收起卡片 / 离开页面 / 创建会话）调 [persistNow]。
+     */
+    fun updateParticipant(sessionId: String, config: ParticipantConfig) {
+        val list = sessions[sessionId] ?: return
+        val index = list.indexOfFirst { it.id == config.id }
+        if (index < 0) return
+        list[index] = config
+        persistDebounced()
+    }
+
+    /** 连续编辑合并成一次写盘 */
+    fun persistDebounced() {
+        persistHandler.removeCallbacks(persistRunnable)
+        persistHandler.postDelayed(persistRunnable, PERSIST_DEBOUNCE_MS)
+    }
+
+    /** 立刻落盘（并取消还挂着的那次防抖） */
+    fun persistNow() {
+        persistHandler.removeCallbacks(persistRunnable)
+        persist()
+    }
+
     fun addMessage(sessionId: String, message: Message) {
         messages.getOrPut(sessionId) { mutableListOf() }.add(message)
     }
@@ -144,4 +172,8 @@ object SessionManager {
         }
         SessionStore.save(snapshot)
     }
+
+    private val persistHandler = Handler(Looper.getMainLooper())
+    private val persistRunnable = Runnable { persist() }
+    private const val PERSIST_DEBOUNCE_MS = 500L
 }

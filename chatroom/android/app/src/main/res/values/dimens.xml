@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      菜单页的「行高」。
+
+      会话卡片折叠起来的高度 = 大加号「+ 新建会话」卡片的高度，
+      两处都引用这一个值，改一处两边一起变（否则很容易又不一样高）。
+    -->
+    <dimen name="session_card_height">72dp</dimen>
+
+</resources>

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  菜单页本体（SessionMenuView 的内容）。用 <merge>，根就是 SessionMenuView 自己（vertical LinearLayout）。
+
+  顶栏做在这里（而不是各自的宿主布局里），好处是**主页和聊天页抽屉里的菜单页自动是同一个顶栏**，
+  不会出现「主页有顶栏、抽屉里没有」那种不一致。
+
+  大加号**放在滚动区里、紧贴着最后一张会话卡片**（不是钉在页面最底下）：
+  点它以后原地变成一张展开的草稿会话卡片，同时自己隐藏（有草稿就不需要再加一张）。
+-->
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/menuToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        app:title="会话"
+        app:titleTextColor="#FFFFFF"
+        android:background="#2196F3" />
+
+    <ScrollView
+        android:id="@+id/menuScroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <LinearLayout
+                android:id="@+id/cardContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/textMenuEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="48dp"
+                android:layout_marginBottom="12dp"
+                android:gravity="center"
+                android:text="还没有会话"
+                android:textColor="#999999"
+                android:textSize="15sp" />
+
+            <!-- 大加号：紧贴最后一张会话卡片；有草稿卡片时隐藏 -->
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/btnAddSession"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="14dp"
+                app:cardElevation="2dp"
+                app:cardBackgroundColor="#E3F2FD"
+                app:strokeColor="#2196F3"
+                app:strokeWidth="2dp"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?attr/selectableItemBackground">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/session_card_height"
+                    android:orientation="horizontal"
+                    android:gravity="center">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="+"
+                        android:textSize="34sp"
+                        android:textColor="#2196F3"
+                        android:gravity="center" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="12dp"
+                        android:text="新建会话"
+                        android:textSize="17sp"
+                        android:textColor="#2196F3" />
+
+                </LinearLayout>
+
+            </com.google.android.material.card.MaterialCardView>
+
+        </LinearLayout>
+
+    </ScrollView>
+
+</merge>

@@ -11,7 +11,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.widget.LinearLayout
+import android.view.View
+import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.FragmentActivity
 import androidx.viewpager2.widget.ViewPager2
 import com.example.chatroom.core.SessionManager
@@ -19,17 +20,22 @@ import com.example.chatroom.core.SessionStore
 import com.example.chatroom.service.TcpForegroundService
 import com.example.chatroom.ui.chat.ChatFragment
 import com.example.chatroom.ui.common.SessionPagerAdapter
-import com.example.chatroom.ui.common.SessionTabBar
-import com.example.chatroom.ui.home.HomeFragment
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.example.chatroom.ui.home.SessionMenuView
 
 class MainActivity : FragmentActivity() {
 
     private lateinit var pagerAdapter: SessionPagerAdapter
     private lateinit var viewPager: ViewPager2
-    private lateinit var tabBar: SessionTabBar
+
+    /** 菜单页：整个 App 只有这一份（Activity 层），启动时整页显示，会话里点 ☰ 再整页叠上来 */
+    private lateinit var menuOverlay: View
+    private lateinit var menuSessionList: SessionMenuView
+
+    /** 菜单页当前是否盖在上面（逻辑状态；退场动画期间就已经是 false 了） */
+    private var menuShown = false
+
+    /** 菜单页宽度（= 屏幕宽）：滑入起点 / 滑出终点。布局未完成时 View.width 是 0，所以自己算 */
+    private var menuWidthPx = 0
 
     // sessionId -> ViewPager index
     private val sessionToPosition = mutableMapOf<String, Int>()
@@ -56,62 +62,48 @@ class MainActivity : FragmentActivity() {
         SessionStore.init(applicationContext)
         SessionManager.restoreFromStore()
 
-        pagerAdapter = SessionPagerAdapter(this)
+        setContentView(R.layout.activity_main)
 
-        viewPager = ViewPager2(this).apply {
-            isUserInputEnabled = false    // 禁用左右滑切换会话，只通过 tabbar 切
+        viewPager = findViewById(R.id.viewPager)
+        menuOverlay = findViewById(R.id.menuOverlay)
+        menuSessionList = findViewById(R.id.sessionMenu)
+        menuWidthPx = resources.displayMetrics.widthPixels
+
+        pagerAdapter = SessionPagerAdapter(this)
+        viewPager.apply {
+            // 禁用左右滑：切页只能由代码触发（菜单页的「回到会话」/「恢复连接」）
+            isUserInputEnabled = false
             adapter = pagerAdapter
             offscreenPageLimit = 2
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0
-            ).also { it.weight = 1f }
         }
 
-        tabBar = SessionTabBar(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
+        // 菜单页监听：新建会话 / 回到会话 / 删除会话 / 恢复连接
+        menuSessionList.onSessionCreated = { sessionId -> addSessionTab(sessionId, select = true) }
+        menuSessionList.onEnterSession = { sessionId -> openSession(sessionId) }
+        menuSessionList.onDeleteSession = { sessionId -> closeSession(sessionId) }
+        menuSessionList.onReconnectSession = { sessionId -> reconnectSession(sessionId) }
 
-        // 首页 tab
-        tabBar.addTab(
-            id = "home",
-            name = "首页",
-            onClick = { onHomeTabClick() },
-            onClose = {}
-        )
-
-        // ViewPager 切换时同步 TabBar
-        viewPager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
-            override fun onPageSelected(position: Int) {
-                val id = if (position == 0) "home" else sessionToPosition.entries.find { it.value == position }?.key
-                id?.let { tabBar.selectTab(it) }
-            }
-        })
-
-        // 主界面监听创建 session
-        homeFragment()?.onSessionCreated = { sessionId ->
-            addSessionTab(sessionId, select = true)
-        }
-
-        // 恢复上次进程保存的会话 tab（参与者信息在，但未连接 → 点 tab 展开重连面板就能重连）
+        // 恢复上次进程保存的会话（参与者信息在，但未连接 → 菜单页卡片上点「恢复连接」即可重连）
         SessionManager.getSessionOrder().forEach { sessionId ->
             addSessionTab(sessionId, select = false)
         }
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            // 避开状态栏和导航栏（targetSdk=35 默认全面屏内容会延伸到屏幕边缘）
-            // 系统会给 root 加 padding = status bar top + nav bar bottom
-            fitsSystemWindows = true
-            addView(viewPager)
-            addView(tabBar)
-        }
+        // 返回键：菜单页盖着就先收菜单，否则交回系统
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (menuShown && pagerAdapter.itemCount > 0) {
+                    hideMenu()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
 
-        setContentView(root)
-        tabBar.selectTab("home")
+        // 启动就整页显示菜单页（会话列表）；有会话时点卡片上的「回到会话」进会话。
+        // 启动这一次不播滑入动画（它就是初始界面，从屏幕外滑进来反而怪）
+        showMenu(animate = false)
 
         // 后台保活：Doze 会直接掐掉网络，需要用户把 chatroom 加进电池优化白名单
         maybeRequestIgnoreBatteryOptimizations()
@@ -171,109 +163,143 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    private fun onHomeTabClick() {
-        if (viewPager.currentItem != 0) {
-            viewPager.setCurrentItem(0, true)
-        } else {
-            tabBar.selectTab("home")
-        }
-    }
-
-    /**
-     * 新建一个会话 tab + 对应的 ChatFragment。
+    /** 新建一个会话页 + 对应的 ChatFragment。
      * @param select 是否立即切到该会话（新建会话 = true，启动恢复 = false）
      */
     private fun addSessionTab(sessionId: String, select: Boolean): Int {
         val position = pagerAdapter.addSession(sessionId)
         sessionToPosition[sessionId] = position
-        // 连接状态变化（重连 / 连上 / 断线）→ 刷新 tab 名字的删除线
-        chatFragmentAt(position)?.onConnectionStateChanged = {
-            runOnUiThread { applyTabName(sessionId) }
+        chatFragmentFor(sessionId)?.let { fragment ->
+            // 连接状态变化（重连 / 连上 / 断线）→ 刷新菜单页卡片上的按钮文案
+            fragment.onConnectionStateChanged = {
+                runOnUiThread { refreshMenuConnectionStates() }
+            }
+            // 聊天页左上角 ☰ → 把 Activity 那份菜单页整页叠上来
+            fragment.onMenuRequested = { showMenu() }
         }
-        tabBar.addTab(
-            id = sessionId,
-            name = sessionTimeLabel(sessionId),
-            onClick = { onSessionTabClick(sessionId) },
-            onClose = { closeSession(sessionId) },
-            onInfo = { onSessionInfoClick(sessionId) },
-            strikeThrough = !SessionManager.isSessionUp(sessionId)
-        )
-        if (select) viewPager.setCurrentItem(position, true)
+        if (select) {
+            viewPager.setCurrentItem(position, true)
+            // 新建会话后直接进会话，把菜单收起来
+            hideMenu()
+        }
         return position
     }
 
-    /** 点 tab 本体：切到该会话（简化：不再兼职展开重连面板） */
-    private fun onSessionTabClick(sessionId: String) {
-        val position = sessionToPosition[sessionId] ?: return
+    /** 切到某个已存在的会话（菜单页卡片上的「回到会话」） */
+    fun openSession(sessionId: String) {
+        val position = sessionToPosition[sessionId] ?: addSessionTab(sessionId, select = false)
         viewPager.setCurrentItem(position, true)
+        hideMenu()
     }
 
     /**
-     * 点会话名左边的 ⓘ：展开 / 收起该会话的重连面板。
-     * 如果点的不是当前会话，先切过去（fragment view 还没建好时由 ChatFragment 记下，建好再展开）。
+     * 菜单页卡片上的「恢复连接」：把会话标记成已连接 + 切过去，让 ChatFragment 真正重连。
+     *
+     * 连接逻辑（建 participant、绑定前台服务）只在 ChatFragment 里，菜单页自己连不了，
+     * 所以这里是「切页 + 让 fragment 重连」：
+     * - fragment view 已经建好 → `reconnectNow()` 立刻断开重连
+     * - view 还没建好（ViewPager2 刚创建/回收过）→ 先记在 fragment 里，onViewCreated 补一次
      */
-    private fun onSessionInfoClick(sessionId: String) {
-        val position = sessionToPosition[sessionId] ?: return
-        if (viewPager.currentItem != position) {
-            viewPager.setCurrentItem(position, true)
-        }
-        chatFragmentAt(position)?.toggleReconnectPanel()
+    fun reconnectSession(sessionId: String) {
+        val position = sessionToPosition[sessionId] ?: addSessionTab(sessionId, select = false)
+        SessionManager.setSessionConnected(sessionId, true)
+        viewPager.setCurrentItem(position, true)
+        chatFragmentFor(sessionId)?.reconnectNow()
+        hideMenu()
+        refreshMenuConnectionStates()
     }
 
     /**
-     * 取 position 对应的 ChatFragment。
-     * FragmentStateAdapter 内部 tag 是 "f<position>"；Activity 重建后 FragmentManager 恢复出来的
-     * 实例优先（pagerAdapter.fragments 里是新建实例，可能还没 attach，拿不到 UI）。
+     * 取某会话对应的 ChatFragment。
+     *
+     * `FragmentStateAdapter` 内部 tag 是 `"f" + itemId`，而 itemId 现在是**由会话 id 派生的稳定值**
+     * （不是 position——见 [SessionPagerAdapter] 的注释），所以这里不能再用 `"f$position"` 找。
+     * Activity 重建后 FragmentManager 恢复出来的实例优先（`pagerAdapter.fragments` 里是新建实例，
+     * 可能还没 attach，拿不到 UI）。
      */
-    private fun chatFragmentAt(position: Int): ChatFragment? {
-        val restored = supportFragmentManager.findFragmentByTag("f$position")
+    private fun chatFragmentFor(sessionId: String): ChatFragment? {
+        val restored = supportFragmentManager.findFragmentByTag(pagerAdapter.fragmentTagForSession(sessionId))
         if (restored is ChatFragment) return restored
+        val position = sessionToPosition[sessionId] ?: return null
         return pagerAdapter.fragments.getOrNull(position) as? ChatFragment
     }
 
-    /** 同 [chatFragmentAt]：进程重启后优先拿 FragmentManager 恢复出来的首页 fragment */
-    private fun homeFragment(): HomeFragment? {
-        val restored = supportFragmentManager.findFragmentByTag("f0")
-        if (restored is HomeFragment) return restored
-        return pagerAdapter.fragments.getOrNull(0) as? HomeFragment
-    }
-
     /**
-     * tab 名字 = 会话创建时间 `YYMM-DDhh-mmss`（年月-日时-分秒，例 `2609-1301-2716`），纯文字、无 emoji。
+     * 整页显示菜单页（启动时 / 会话里点 ☰）。
      *
-     * 从 sessionId 里的 epoch 毫秒解析（`SessionManager.createSession()` 生成的就是
-     * `session_<epochMillis>`）；解析不出来（理论上不会）就用 0，显示 7001-0100-0000，至少不会崩。
+     * 菜单页只有这一份实例，所以不需要像以前那样「多份实例之间同步」：
+     * 草稿卡片、展开状态都天然一致。
+     *
+     * @param animate true = **从屏幕外（左侧）向右滑进屏幕到目标位置**；启动那一次传 false
      */
-    private fun sessionTimeLabel(sessionId: String): String {
-        val millis = sessionId.removePrefix("session_").toLongOrNull() ?: 0L
-        return SimpleDateFormat("yyMM-ddHH-mmss", Locale.US).format(Date(millis))
+    fun showMenu(animate: Boolean = true) {
+        if (menuShown) return
+        menuShown = true
+        // 每次显示都重建：会话可能刚在别处被增删 / 改过
+        menuSessionList.reload()
+        menuOverlay.visibility = View.VISIBLE
+        // 上一次的退场动画可能还没跑完，先停掉再从头滑
+        menuOverlay.animate().cancel()
+        if (!animate || menuWidthPx <= 0) {
+            menuOverlay.translationX = 0f
+            return
+        }
+        menuOverlay.translationX = -menuWidthPx.toFloat()
+        menuOverlay.animate().translationX(0f).setDuration(MENU_ANIM_MS).start()
     }
 
     /**
-     * 刷新某会话的 tab：名字不变（就是创建时间），
-     * **未连接 / 链路失败**（程序重启恢复后还没重连、连接失败、连接掉了）→ 整个字串加删除线。
+     * 收起菜单页，回到会话（底下的会话内容一直没动过）。
+     *
+     * **一个会话都没有时不允许收起**：那样只会露出一片空白，而且没有 ☰ 可以再打开菜单，
+     * 用户就卡死了。菜单页上的「+ 新建会话」是这种情况下唯一的出口。
+     *
+     * @param animate true = **向左滑出屏幕**（点「创建会话 / 回到会话 / 恢复连接」时都是这个效果）
      */
-    private fun applyTabName(sessionId: String) {
-        tabBar.updateTabName(
-            sessionId,
-            sessionTimeLabel(sessionId),
-            strikeThrough = !SessionManager.isSessionUp(sessionId)
-        )
+    fun hideMenu(animate: Boolean = true) {
+        if (!menuShown) return
+        if (pagerAdapter.itemCount == 0) return
+        menuShown = false
+        // 把表单里挂着的防抖落盘刷掉
+        menuSessionList.flushPendingEdits()
+        menuOverlay.animate().cancel()
+        if (!animate) {
+            menuOverlay.translationX = 0f
+            menuOverlay.visibility = View.GONE
+            return
+        }
+        menuOverlay.animate().translationX(-menuWidthPx.toFloat()).setDuration(MENU_ANIM_MS)
+            .withEndAction {
+                // 动画期间又 showMenu 了（menuShown 回到 true）→ 别把菜单页藏掉
+                if (!menuShown) {
+                    menuOverlay.visibility = View.GONE
+                    menuOverlay.translationX = 0f
+                }
+            }.start()
     }
 
-    private fun refreshAllTabNames() {
-        sessionToPosition.keys.toList().forEach { applyTabName(it) }
+    /**
+     * 连接状态变化 → 刷新菜单页卡片上的按钮文案（草稿「创建会话」/ 不正常「恢复连接」/ 正常「回到会话」）。
+     * 只刷折叠行，不重建二级表单，避免输入焦点丢失。
+     *
+     * 聊天页那份菜单由 ChatFragment 自己刷（它同时也刷这份），这里主要负责首页那份。
+     */
+    private fun refreshMenuConnectionStates() {
+        if (::menuSessionList.isInitialized) menuSessionList.refreshConnectionStates()
     }
 
-    private fun closeSession(sessionId: String) {
+    /** 供菜单页调用：删除一个已有会话（跟 tab 上点 × 完全同一条路径） */
+    fun closeSession(sessionId: String) {
         val position = sessionToPosition[sessionId] ?: return
+        // 先在 sessionToPosition 还完整时把 fragment 拿到（chatFragmentFor 的兜底要用它）
+        val fragment = chatFragmentFor(sessionId)
         sessionToPosition.remove(sessionId)
 
         // 先让会话自己做收尾（断开 service 里的网络 participant，此时配置还在），
         // 再清 SessionManager（同时会从持久化里删掉，重启后不会再恢复）。
         // fragment 被 ViewPager2 回收 / 当前没绑定时 shutdownSession() 返回 false，
         // 退回 Intent 让 service 按 sessionId 自己清（否则那条连接会一直挂在 service 里）。
-        val handled = chatFragmentAt(position)?.shutdownSession() ?: false
+        val handled = fragment?.shutdownSession() ?: false
         if (!handled && TcpForegroundService.isRunning) {
             startService(
                 Intent(this, TcpForegroundService::class.java)
@@ -283,19 +309,22 @@ class MainActivity : FragmentActivity() {
         }
         SessionManager.removeSession(sessionId)
 
+        // 注意：pagerAdapter.removeSession() 之后 position 会整体前移
         pagerAdapter.removeSession(position)
-        tabBar.removeTab(sessionId)
 
         sessionToPosition.entries.forEach { (id, pos) ->
             if (pos > position) {
                 sessionToPosition[id] = pos - 1
             }
         }
-        // 序号取自 SessionManager 的创建顺序，删完要刷新其余 tab
-        refreshAllTabNames()
+        // 菜单页此时正显示着（用户就是在菜单里点的 ×），会话没了要立刻重建
+        if (::menuSessionList.isInitialized) menuSessionList.reload()
     }
 
     companion object {
         private const val KEY_ASKED_BATTERY_OPT = "asked_battery_optimization"
+
+        /** 菜单页滑入 / 滑出的时长 */
+        private const val MENU_ANIM_MS = 200L
     }
 }

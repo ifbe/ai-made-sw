@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  菜单页的一张「一级卡片」= 一个会话。
+
+  折叠态（cardHeader，整行可点展开/折叠）：
+       ▸ 会话名                                   [回到会话 / 创建会话]
+         未连接 · 🌐🤖 (2)
+  展开态：header 这些元素**原样不动**，只在下方多一块**比卡片窄一点**的矩形（cardContent），
+          里面装参与者二级卡片（item_editing_card 动态塞）。
+-->
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/sessionCard"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="12dp"
+    app:cardCornerRadius="14dp"
+    app:cardElevation="3dp"
+    app:strokeWidth="0dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- ===== 折叠行：[×] [几排字] [创建会话 / 回到会话]（展开时也不变）===== -->
+        <!-- 固定高度 = 大加号卡片的高度（@dimen/session_card_height），两处必须一致 -->
+        <LinearLayout
+            android:id="@+id/cardHeader"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/session_card_height"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="6dp"
+            android:paddingEnd="12dp">
+
+            <!-- 左上角 ×：草稿 = 丢弃这张卡片；已有会话 = 关掉这个会话 -->
+            <TextView
+                android:id="@+id/btnCardDelete"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:gravity="center"
+                android:text="×"
+                android:textSize="20sp"
+                android:textColor="#E53935"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="删除会话" />
+
+            <!--
+              中间这几排字本身就是展开/折叠的热区（没有单独的展开按钮）：
+              × 和右边的主按钮都是独立可点 View，不会误触发这一块。
+            -->
+            <LinearLayout
+                android:id="@+id/sessionTitleBlock"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="6dp"
+                android:layout_marginEnd="8dp"
+                android:orientation="vertical"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <TextView
+                    android:id="@+id/textSessionName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:maxLines="1"
+                    android:ellipsize="end"
+                    android:text="新会话"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:textColor="#333333" />
+
+                <TextView
+                    android:id="@+id/textSessionMeta"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:maxLines="1"
+                    android:ellipsize="end"
+                    android:text="草稿"
+                    android:textSize="13sp"
+                    android:textColor="#888888" />
+
+            </LinearLayout>
+
+            <!--
+              右边这一颗按钮钉在这一排最右边（中间那几排字 weight=1 吃掉全部余量，
+              所以标题再长也挤不动它）。文案同时承担状态提示：
+                草稿                →「创建会话」
+                已有会话但不正常     →「恢复连接」
+                已有会话且正常       →「回到会话」
+            -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCardPrimary"
+                android:layout_width="wrap_content"
+                android:layout_height="28dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="创建会话"
+                android:textSize="11sp"
+                android:textColor="#FFFFFF"
+                app:backgroundTint="#2196F3"
+                app:cornerRadius="6dp" />
+
+        </LinearLayout>
+
+        <!-- ===== 展开：比卡片窄一点的详情矩形 ===== -->
+        <LinearLayout
+            android:id="@+id/cardContent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
+            android:layout_marginBottom="12dp"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:background="@drawable/bg_card_detail"
+            android:visibility="gone">
+
+            <!-- 参与者编辑表单（item_editing_card）动态加在这里 -->
+            <LinearLayout
+                android:id="@+id/cardParticipants"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</com.google.android.material.card.MaterialCardView>

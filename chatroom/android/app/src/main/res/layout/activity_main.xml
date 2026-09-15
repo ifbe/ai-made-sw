@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Activity 根布局。
+
+  **菜单页只有一份**，就放在这里（`menuOverlay` → `SessionMenuView`），不再是每个 ChatFragment
+  各揣一份副本：
+  - 启动时 / 没有会话时 → 整页显示它
+  - 在会话里点左上角 ☰ → 把它整页叠到会话上面（底下会话内容不动，只是被盖住）
+
+  `menuOverlay` 的 elevation 必须**高于** ChatFragment 里 ☰ 的 6dp，否则那个按钮会浮在菜单页上面。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
+
+    <androidx.viewpager2.widget.ViewPager2
+        android:id="@+id/viewPager"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <FrameLayout
+        android:id="@+id/menuOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FFFFFF"
+        android:elevation="8dp"
+        android:visibility="gone">
+
+        <com.example.chatroom.ui.home.SessionMenuView
+            android:id="@+id/sessionMenu"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+    </FrameLayout>
+
+</FrameLayout>

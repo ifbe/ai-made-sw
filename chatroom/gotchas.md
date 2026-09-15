@@ -383,7 +383,109 @@ service 自己的日志连续打 `onStartCommand: ... startedFlag=false count=0`
 
 ---
 
-## 12. 主动断开必须静默：迟到回调会把刚重连好的会话标成「断开」
+## 12. FragmentStateAdapter 不重写 `getItemId` → 删中间页时把当前页的 fragment 删掉
+
+**日期**：2026-09-15
+**影响**：菜单页删掉一个「不是最后一个」的会话会直接崩（`IllegalStateException: Design assumption violated.`）
+
+### 现象
+
+创建两个会话 → 进其中一个 → 打开菜单 → 删掉**不是最后那个**会话 → 崩。
+删最后一个会话没事，所以这个 bug 潜伏了很久没被发现。
+
+### 根因
+
+`FragmentStateAdapter` 的默认实现是「item id == position」：
+
+```java
+public long getItemId(int position) { return position; }
+public boolean containsItem(long itemId) { return itemId >= 0 && itemId < getItemCount(); }
+private void ensureFragment(int position) {
+    long itemId = getItemId(position);
+    if (!mFragments.containsKey(itemId)) { ... createFragment(position) ... }
+}
+// gcFragments():
+for (...) if (!containsItem(itemId)) removeFragment(itemId);   // ← 不认识就删
+```
+
+`SessionPagerAdapter` 当时没重写这两个方法。删掉 position 1 后 `getItemCount()` 从 3 变 2，
+但 session2 的 fragment item id 还是 2 → `containsItem(2)` 变 false → `gcFragments()` 把 session2 的
+fragment（**正是当前显示的页**）当成过期 fragment 删掉；而 position 1 仍被已删除会话的 fragment
+占着（`mFragments.containsKey(1) == true`），`ensureFragment(1)` 于是不新建，
+`placeFragmentInViewHolder` 拿到一个正在销毁的 fragment → 抛异常。
+
+### 修法
+
+- item id 改成**由会话 id 派生**（`sessionId.hashCode()`，稳定且与 position 无关）：
+  `override fun getItemId(position) = itemIds[position]`
+- 同时必须 `override fun containsItem(itemId) = itemIds.contains(itemId)`
+  （默认实现只会拿它跟 `itemCount` 比大小）
+- **不能**调 `setHasStableIds()`：`FragmentStateAdapter` 已经自己开了稳定 id，
+  并且把它 override 成 `final` 直接抛 `UnsupportedOperationException`
+- **连带影响**：`FragmentStateAdapter` 加 fragment 的 tag 是 `"f" + itemId`，
+  所以 Activity 里 `findFragmentByTag("f$position")` 会失效，
+  必须改成 `"f" + itemIdForSession(sessionId)`（`SessionPagerAdapter.fragmentTagForSession()`）
+
+### 附带加固：在「自己的抽屉里删自己」
+
+这个操作等于**在一个 View 的点击回调里把该 View 所在的整个 Fragment 干掉**。已经有两道保护：
+
+1. 删除动作通过 `root.post {}` 延后一拍，等这次点击派发彻底走完再执行
+2. `closeMenu(animate = false)` —— 删的就是本会话时不做退出动画，直接 `menuOverlay.visibility = GONE`，
+   避免在即将 detach 的 View 上还跑着 `ViewPropertyAnimator`（`withEndAction` 会在视图已经脱离后触发）
+
+判据就是 `sid != sessionId`：删别人照常播动画，删自己直接隐藏。
+
+### 教训
+
+- ViewPager2 + FragmentStateAdapter **只要会增删中间项**，就必须自己维护稳定 item id；
+  用 position 当 id 的实现只在「只往末尾追加」时是对的
+- 判断"这个删除会不会崩"要看**被删项在列表里的位置**，不是"删的是不是当前页"：
+  删末尾项永远不会错位，所以「删自己」也可能完全正常（只有一个会话时），
+  而「删别人」也可能崩（删的是中间项时）
+- 遇到「某些操作才崩」时先想「哪些前提条件只在那种操作下不成立」——
+  这里的前提是「position 永远等于 item id」，只有删末尾项时才恰好成立
+- 改 id 语义时要把**所有依赖 id 的地方**一起找出来（这里是 fragment tag），
+  否则从一个崩溃换成另一个「找不到 fragment 所以页面空白」
+
+---
+
+## 13. 表单「先挂监听再灌值」会自己触发一轮改动；逐字符 commit 会写卡主线程
+
+**日期**：2026-09-15
+**影响**：菜单页二级卡片恢复数据时把用户配置写坏 / 输入时明显卡顿
+
+### 现象
+
+把参与者表单一挂上 `TextWatcher` 就 `setText(已保存值)`，结果只是打开卡片，
+配置就被「改」了一遍；如果这时把它当成用户编辑回写，会把没填的字段写空。
+另一种表现：每敲一个字符都卡一下——因为每个字符都触发一次 `commit()` 同步落盘。
+
+### 根因
+
+1. `EditText.setText()` 和 `Spinner.setSelection()` **都会**触发已经注册的监听器，
+   所以「挂监听」和「灌数据」的顺序决定了恢复数据算不算一次用户编辑
+2. `SessionStore.save()` 用的是 `commit()`（同步写盘，为了进程随时被杀也不丢），
+   把它接到逐字符的 `afterTextChanged` 上就是每字符一次同步磁盘写
+
+### 修法
+
+- 绑定顺序固定为**先灌值、后挂监听**，让恢复过程不产生任何回调
+- 已有会话的编辑走 `SessionManager.updateParticipant()`：只改内存 + `persistDebounced()`
+  （500ms 合并），在「收起卡片 / 离开页面 / 创建会话」这些时机调 `persistNow()` 立刻落盘
+- 表单改动只刷新卡片头部那一行（图标串 / 状态），**不重建表单本身**，否则输入焦点会丢
+
+### 教训
+
+- 「数据 → UI」和「UI → 数据」两个方向必须在时间上分开，否则双向绑定会自激
+- 一旦某个回调是「每次按键」级别的，就不能接同步落盘；要区分「改内存」和「刷磁盘」两件事
+
+---
+
+
+---
+
+## 14. 主动断开必须静默：迟到回调会把刚重连好的会话标成「断开」
 
 **日期**：2026-09-13
 **影响**：iOS tab 删除线（以及 Android tab 状态）在重连后可能一直不消失，或者反复闪
@@ -419,7 +521,7 @@ service 自己的日志连续打 `onStartCommand: ... startedFlag=false count=0`
 
 ---
 
-## 13. SwiftUI Button 套 Button：内层 `ⓘ` / `×` 的点击会被外层吞掉
+## 15. SwiftUI Button 套 Button：内层 `ⓘ` / `×` 的点击会被外层吞掉
 
 **日期**：2026-09-13
 **影响**：iOS tab 上的 `ⓘ` / `×` 点了没反应，或者误触发「切到该会话」

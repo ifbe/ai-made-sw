@@ -1,10 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#F0F0F0">
+    android:layout_height="match_parent">
+
+    <!-- 原本的聊天内容。菜单叠加层打开时它**原样不动**，只是被盖住 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="#F0F0F0">
 
     <!-- 聊天消息 -->
     <androidx.recyclerview.widget.RecyclerView
@@ -360,81 +365,24 @@
 
     </LinearLayout>
 
-    <!-- 重连面板：默认收起。展开时位于输入区下方 / tabbar 上方，把输入区向上挤。
-         里面是本会话的参与者信息（复用主页 item_participant_card 卡片样式）+ 重连按钮 -->
-    <LinearLayout
-        android:id="@+id/reconnectPanel"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:background="#F5F5F5"
-        android:elevation="8dp"
-        android:visibility="gone">
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#DDDDDD" />
-
-        <!-- 标题行：状态 + 收起按钮 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:paddingStart="16dp"
-            android:paddingEnd="8dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="4dp">
-
-            <TextView
-                android:id="@+id/reconnectTitle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="🔌 参与者 · 未连接"
-                android:textSize="15sp"
-                android:textStyle="bold"
-                android:textColor="#333333" />
-
-            <TextView
-                android:id="@+id/btnCollapseReconnect"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:padding="8dp"
-                android:text="收起 ✕"
-                android:textSize="13sp"
-                android:textColor="#2196F3" />
-
-        </LinearLayout>
-
-        <!-- 参与者卡片列表（高度 wrap，超过上限内部滚动，避免把聊天区挤没） -->
-        <com.example.chatroom.ui.common.MaxHeightScrollView
-            android:id="@+id/reconnectScroll"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:scrollbars="vertical">
-
-            <LinearLayout
-                android:id="@+id/reconnectList"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingStart="16dp"
-                android:paddingEnd="16dp"
-                android:paddingBottom="4dp" />
-
-        </com.example.chatroom.ui.common.MaxHeightScrollView>
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnReconnect"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_margin="12dp"
-            android:text="🔌 重连"
-            android:textColor="#FFFFFF"
-            app:backgroundTint="#2196F3" />
 
     </LinearLayout>
 
-</LinearLayout>
+    <!-- 左上角菜单按钮：把 Activity 那份菜单页整页叠上来（见 MainActivity.showMenu()） -->
+    <TextView
+        android:id="@+id/btnChatMenu"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_gravity="top|start"
+        android:layout_margin="8dp"
+        android:gravity="center"
+        android:text="☰"
+        android:textSize="20sp"
+        android:textColor="#333333"
+        android:background="@drawable/bg_menu_button"
+        android:elevation="6dp"
+        android:contentDescription="菜单"
+        android:clickable="true"
+        android:focusable="true" />
+
+</FrameLayout>

@@ -18,13 +18,11 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.core.view.children
 import androidx.core.view.updateLayoutParams
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -45,7 +43,6 @@ import com.example.chatroom.participants.SocketType
 import com.example.chatroom.participants.WsParticipant
 import com.example.chatroom.service.TcpForegroundService
 import com.example.chatroom.ui.common.AxisView
-import com.example.chatroom.ui.common.MaxHeightScrollView
 import com.google.android.material.button.MaterialButton
 import java.util.Locale
 
@@ -107,24 +104,22 @@ class ChatFragment : Fragment() {
     private lateinit var emptyText: TextView
     private lateinit var btnPickImage: Button
 
-    // ===== 重连面板（输入区下方 / tabbar 上方）=====
-    /** 面板是否展开。由 MainActivity 在 tab 上点 ⓘ 时调 [toggleReconnectPanel] */
-    private var reconnectPanelOpen = false
-    /** view 还没建好时收到的「展开面板」请求，onViewCreated 里补上 */
-    private var pendingReconnectPanelOpen = false
-    private lateinit var reconnectPanel: LinearLayout
-    private lateinit var reconnectScroll: MaxHeightScrollView
-    private lateinit var reconnectList: LinearLayout
-    private lateinit var reconnectTitle: TextView
-    private lateinit var btnReconnect: MaterialButton
-    private lateinit var btnCollapseReconnect: TextView
-
-    /** 连接状态变化（重连成功）→ 通知 MainActivity 刷新 tab 文案 */
+    /** 连接状态变化（连上 / 断线）→ 通知 MainActivity 刷新菜单页卡片上的按钮文案 */
     var onConnectionStateChanged: (() -> Unit)? = null
+
+    // ===== 左上角 ☰ =====
+    /**
+     * 菜单页不在这个 fragment 里——整个 App 只有 Activity 层那一份
+     * （`activity_main.xml` 的 `SessionMenuView`）。☰ 只是请 Activity 把它整页叠上来。
+     */
+    var onMenuRequested: (() -> Unit)? = null
+
+    /** 菜单页点「恢复连接」时 view 还没建好（刚切页过来）→ 先记下，onViewCreated 里补 */
+    private var pendingReconnect = false
 
     /** 从磁盘恢复出来的会话还没连过时，聊天区贴一次的提示 */
     private val restoredHintText =
-        "🔌 该会话已从本地恢复，当前处于未连接状态\n点该会话标签左边的 ⓘ 可展开重连面板"
+        "🔌 该会话已从本地恢复，当前处于未连接状态\n点会话卡片上的「恢复连接」即可重连"
 
     // ===== 语音（VOICE mode）相关 =====
     private lateinit var btnVoiceStart: Button
@@ -220,8 +215,7 @@ class ChatFragment : Fragment() {
             }
             // 链路状态变化（连上 / 断线 / 连不上）→ 让 MainActivity 刷新 tab 名字的删除线
             svc.registerLinkStateCallback(sessionId) {
-                onConnectionStateChanged?.invoke()
-                refreshReconnectPanel()
+                notifyConnectionStateChanged()
             }
             // 把等 service 期间的 pending 网络配置（TCP / WS / UDP）拿出去加入
             pendingNetworkConfigs.forEach { p ->
@@ -319,25 +313,6 @@ class ChatFragment : Fragment() {
         emptyText = view.findViewById(R.id.emptyText)
         btnPickImage = view.findViewById(R.id.btnPickImage)
 
-        // 重连面板
-        reconnectPanel = view.findViewById(R.id.reconnectPanel)
-        reconnectScroll = view.findViewById(R.id.reconnectScroll)
-        reconnectScroll.maxHeightPx = dp(200)
-        reconnectList = view.findViewById(R.id.reconnectList)
-        reconnectTitle = view.findViewById(R.id.reconnectTitle)
-        btnReconnect = view.findViewById(R.id.btnReconnect)
-        btnCollapseReconnect = view.findViewById(R.id.btnCollapseReconnect)
-        btnReconnect.setOnClickListener { onClickReconnect() }
-        btnCollapseReconnect.setOnClickListener { collapseReconnectPanel() }
-        reconnectPanelOpen = false
-        reconnectPanel.visibility = View.GONE
-        refreshReconnectPanel()
-        // tab 上点 ⓘ 时 view 还没建好（刚切页过来）：这里补展开
-        if (pendingReconnectPanelOpen) {
-            pendingReconnectPanelOpen = false
-            expandReconnectPanel()
-        }
-
         // 语音模式按钮
         btnVoiceStart = view.findViewById(R.id.btnVoiceStart)
         btnVoiceCancel = view.findViewById(R.id.btnVoiceCancel)
@@ -363,7 +338,11 @@ class ChatFragment : Fragment() {
         // 先把 SessionManager 里残留的历史消息 load 进 RecyclerView，
         // 否则 connectParticipants 没东西给你看
         loadMessages()
-        if (SessionManager.isSessionConnected(sessionId)) {
+        if (pendingReconnect) {
+            // 菜单页点过「恢复连接」但当时 view 还没建好：这里补一次强制重连
+            pendingReconnect = false
+            onClickReconnect()
+        } else if (SessionManager.isSessionConnected(sessionId)) {
             connectParticipants()
         } else {
             // 从磁盘恢复出来的会话：参与者配置在，但不自动连。
@@ -376,6 +355,7 @@ class ChatFragment : Fragment() {
         setupMaximizeButton()
         setupRemoteControls()
         setupNumPad()
+        setupMenuButton(view)
 
         // 首次绘制时把 inputArea 高度锁到当前模式最小值，避免残留旧状态导致空白
         view.post { setInputAreaHeightPx(minHeightForCurrentModePx()) }
@@ -389,11 +369,19 @@ class ChatFragment : Fragment() {
         }
     }
 
+    // ===== 左上角 ☰ 的菜单叠加层 =====
+
     /**
-     * 单一 spinner（顶部 handle 行）。任何时刻只有一个 inputBar 可见，所以不需要 5 个互相 sync。
+     * 左上角 ☰：请 Activity 把**它那一份**菜单页整页叠上来。
+     *
+     * 菜单页只有 Activity 层一份实例，不再是每个 ChatFragment 各揣一份副本——
+     * 所以草稿卡片、展开状态天然一致，也不需要「多份实例之间同步」那套东西。
      */
-    private fun setupInputModeSpinner() {
-        // 2 字显示：emoji + 1 字
+    private fun setupMenuButton(root: View) {
+        root.findViewById<View>(R.id.btnChatMenu).setOnClickListener { onMenuRequested?.invoke() }
+    }
+
+    private fun setupInputModeSpinner() {        // 2 字显示：emoji + 1 字
         val modes = listOf("⬜空白", "📝文字", "🎮遥控", "📐三维", "🎤语音", "📁文件")
         spinnerInputMode.adapter = ArrayAdapter(requireContext(), R.layout.spinner_selected, modes)
         spinnerInputMode.setSelection(currentInputMode.ordinal, false)
@@ -827,81 +815,27 @@ class ChatFragment : Fragment() {
         }
     }
 
-    // ===== 重连面板（输入区下方 / tabbar 上方）=====
-
     /**
-     * MainActivity 在 tab 上点 ⓘ 时调：
-     * 面板已展开 → 收起（回到会话）；未展开 → 展开重连面板。
-     * view 还没建好（点的是别的会话的 ⓘ，正在切页）时先记下，onViewCreated 里补展开。
+     * 菜单页卡片上点「恢复连接」时调，语义跟重连面板里的「重连」完全一样：
+     * 先断开本会话现有参与者，再按配置重连一遍。
+     *
+     * view 还没建好（刚切页过来，MainActivity 已经把我们切到前台）时先记下，
+     * [onViewCreated] 里补一次——否则会对着空 view 建连接。
      */
-    fun toggleReconnectPanel() {
+    fun reconnectNow() {
         if (view == null) {
-            pendingReconnectPanelOpen = true
+            pendingReconnect = true
             return
         }
-        if (reconnectPanelOpen) collapseReconnectPanel() else expandReconnectPanel()
+        onClickReconnect()
     }
 
-    /** 展开重连面板：位于输入区下方，把输入区向上挤 */
-    fun expandReconnectPanel() {
-        if (!isAdded || view == null) return
-        if (!::reconnectPanel.isInitialized) return
-        // 最大化时聊天区 GONE、输入区撑满整个窗口，没有空间放面板，先退出最大化
-        if (isMaximized) {
-            isMaximized = false
-            applyMaximizeState()
-        }
-        refreshReconnectPanel()
-        reconnectPanelOpen = true
-        reconnectPanel.visibility = View.VISIBLE
-        // 面板占掉高度后聊天区变矮，重新贴底
-        recyclerView.post {
-            if (messageList.isNotEmpty()) recyclerView.scrollToPosition(messageList.size - 1)
-        }
-    }
-
-    /** 收起重连面板，回到会话 */
-    fun collapseReconnectPanel() {
-        if (!::reconnectPanel.isInitialized) return
-        reconnectPanelOpen = false
-        reconnectPanel.visibility = View.GONE
-    }
-
-    /** 用 SessionManager 当前参与者配置重建面板内容 */
-    private fun refreshReconnectPanel() {
-        if (!::reconnectList.isInitialized) return
-        // 链路状态回调可能晚于 onStop 到达，view 没了就跳过
-        if (!isAdded || view == null) return
-        val configs = SessionManager.getParticipants(sessionId)
-        val connected = SessionManager.isSessionConnected(sessionId)
-        val up = SessionManager.isSessionUp(sessionId)
-
-        // 标题按「链路是否正常」显示（connected 但连接失败时也应该显示未连接）
-        reconnectTitle.text = if (up) "🔌 参与者 · 已连接" else "🔌 参与者 · 未连接"
-        btnReconnect.text = if (connected) "🔁 重新连接" else "🔌 重连"
-
-        reconnectList.removeAllViews()
-        if (configs.isEmpty()) {
-            reconnectList.addView(TextView(requireContext()).apply {
-                text = "该会话没有参与者"
-                textSize = 14f
-                setTextColor(0xFF999999.toInt())
-                setPadding(0, dp(8), 0, dp(8))
-            })
-        } else {
-            val stateLabel = if (up) "已连接" else "未连接"
-            configs.forEach { config ->
-                // 复用主页的参与者卡片，保证两边样式一致；只把删除按钮藏掉
-                val card = layoutInflater.inflate(R.layout.item_participant_card, reconnectList, false)
-                card.findViewById<TextView>(R.id.textIcon).text = config.type.icon
-                card.findViewById<TextView>(R.id.textName).text = config.name
-                val params = config.params.entries.joinToString(" ") { "${it.key}=${it.value}" }
-                card.findViewById<TextView>(R.id.textParams).text =
-                    if (params.isBlank()) stateLabel else "$params · $stateLabel"
-                card.findViewById<View>(R.id.btnDelete).visibility = View.GONE
-                reconnectList.addView(card)
-            }
-        }
+    /**
+     * 连接状态变化（连上 / 断线 / 连不上）→ 通知 MainActivity 刷新菜单页卡片上的按钮文案。
+     * 菜单页折叠行不写连接状态，状态完全靠那颗按钮的文案体现（不正常才显示「恢复连接」）。
+     */
+    private fun notifyConnectionStateChanged() {
+        onConnectionStateChanged?.invoke()
     }
 
     /**
@@ -921,8 +855,7 @@ class ChatFragment : Fragment() {
             )
         )
         connectParticipants()
-        refreshReconnectPanel()
-        onConnectionStateChanged?.invoke()
+        notifyConnectionStateChanged()
         // 断开老连接时可能把 service 清空过一次（触发过 stopSelf 清掉 started 状态）；
         // 网络 participant 重新加入时 TcpForegroundService.ensureStarted() 会把 started 续上，
         // 所以这里不需要额外 startForegroundService（那还会在无网络连接时白拉一次服务）
@@ -963,11 +896,7 @@ class ChatFragment : Fragment() {
                 )
             )
         }
-        refreshReconnectPanel()
     }
-
-    /** dp → px */
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     /**
      * 把 binary bytes 派发给所有相关参与者：

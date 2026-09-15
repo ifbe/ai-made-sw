@@ -1,36 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  「+ 添加参与者」二级卡片（只在会话卡片展开后的详情矩形里用）。
+
+  刻意做**窄**（wrap_content，只占内容宽度）+ 小一号字，避免跟菜单页最底下那个
+  通栏大加号「+ 新建会话」混淆。
+-->
 <com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
+    android:layout_width="wrap_content"
     android:layout_height="wrap_content"
+    android:layout_gravity="center_horizontal"
     android:layout_marginBottom="8dp"
-    app:cardCornerRadius="12dp"
-    app:cardElevation="2dp"
+    app:cardCornerRadius="10dp"
+    app:cardElevation="0dp"
     app:strokeColor="#2196F3"
-    app:strokeWidth="2dp"
-    app:cardBackgroundColor="#E3F2FD">
+    app:strokeWidth="1dp"
+    app:cardBackgroundColor="#E3F2FD"
+    android:clickable="true"
+    android:focusable="true">
 
     <LinearLayout
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="16dp"
+        android:paddingStart="12dp"
+        android:paddingEnd="14dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
         android:gravity="center">
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="+"
-            android:textSize="32sp"
+            android:textSize="20sp"
             android:textColor="#2196F3"
             android:gravity="center" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
+            android:layout_marginStart="8dp"
             android:text="添加参与者"
-            android:textSize="16sp"
+            android:textSize="14sp"
             android:textColor="#2196F3" />
 
     </LinearLayout>

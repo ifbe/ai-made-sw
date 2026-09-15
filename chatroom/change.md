@@ -4,6 +4,84 @@
 
 ---
 
+## 2026-09-15 Android 主页改造成「菜单页」+ 聊天页 80% 叠加菜单
+
+**摘要**：主页从「参与者编辑卡片 + 顶部创建按钮」变成**菜单页**——所有会话竖列成一级大卡片
+（默认折叠，只显示时间名 / 连接状态 / 参与者图标串，点一下展开、再点折叠），展开后原本的主页内容
+作为二级卡片放在卡片内部，最底下钉一个大加号新建会话。聊天页左上角加 ☰，点开把同一份菜单页
+以 **80% 屏宽**盖在原画面上方，底下的会话内容不重新布局、状态不变。`./gradlew :app:assembleDebug` 通过。
+
+### 改动
+
+| 文件 | 内容 |
+|---|---|
+| `ui/home/SessionMenuView.kt`（新增） | 菜单页本体：一级卡片折叠/展开、二级表单、底部大加号；`onSessionCreated` / `onEnterSession` / `onDeleteSession` 三个回调 |
+| `ui/home/SessionCardData.kt`（新增） | 一级卡片数据（`sessionId == null` = 草稿）+ `SessionDraftStore` 草稿共享容器 + `sessionTimeLabel()`（tab 名字和卡片名字共用） |
+| `ui/home/EditingCardData.kt`（新增） | 从 `HomeFragment` 抽出的表单数据 + `toConfig()` / `toParams()` / `editingCardFromConfig()`（已有参与者 → 可编辑表单） |
+| `ui/common/EditingCardBinder.kt`（新增） | 从 `ParticipantAdapter.EditingViewHolder` 抽出的表单绑定，改完即回调；20+ 段匿名 `TextWatcher` 收成一个 `EditText.onChanged` |
+| `ui/common/ParticipantAdapter.kt`（删除） | 旧主页列表专用，已被 `SessionMenuView` + `EditingCardBinder` 取代 |
+| `core/SessionManager.kt` | 新增 `updateParticipant()`（就地替换，靠 config id 定位）+ `persistDebounced()` / `persistNow()`（逐字符编辑不能每次都 `commit()`） |
+| `res/layout/item_session_card.xml`（新增） | 一级卡片：折叠行（箭头 + 名字/关键信息 + 主按钮）+ 展开时那块比卡片窄一圈的详情矩形 |
+| `res/layout/view_session_menu.xml`（新增） | 菜单页内容：**顶栏**（蓝底「会话」）+ 滚动卡片区 + 紧跟最后一张卡片的大加号 |
+| `res/values/dimens.xml`（新增） | `session_card_height`：折叠态会话卡片与大加号卡片共用同一行高（72dp），保证两者等高 |
+| `res/layout/fragment_home.xml` | 整个主页就是 SessionMenuView（顶栏也搬进 SessionMenuView，见下），去掉顶部「创建」按钮和空状态文案 |
+| `res/layout/fragment_chat.xml` | 外层包 `FrameLayout`：原内容 + 左上角 ☰ + 全屏遮罩 + 左对齐抽屉（宽度代码里设 80%） |
+| `res/drawable/bg_menu_button.xml`（新增） | ☰ 按钮底（半透明白 + 圆角 + 描边），压住消息时仍看得清 |
+| `ui/home/HomeFragment.kt` | 重写成菜单页壳：只做 `reload()` + 三个回调接线 + `onResume` 重建 / `onPause` 落盘 |
+| `ui/chat/ChatFragment.kt` | 新增 `setupMenuDrawer()` / `toggleMenu()` / `openMenu()` / `closeMenu()`：抽屉宽度、滑入动画、遮罩点击关闭、返回键关闭、`onStop` 收起 |
+| `ui/common/SessionPagerAdapter.kt` | **重写 `getItemId` / `containsItem` 改用会话派生的稳定 id**：默认实现是「item id = position」，删掉中间某个会话会让后面所有 fragment 的 id 错位，`gcFragments()` 会把还活着的 fragment（甚至当前页）当过期删掉 → 崩溃。连带把 fragment tag 从 `"f<position>"` 变成 `"f<稳定 id>"`，`MainActivity` 找 fragment 的方式跟着改 |
+| `MainActivity.kt` | 新增 `openSession()` / `reconnectSession()`；`chatFragmentAt(position)` → `chatFragmentFor(sessionId)`；`closeSession()` 改公开并在删完后 `homeFragment().refresh()`；`addSessionTab()` 里接线 ChatFragment 的四个菜单回调；删掉私有 `sessionTimeLabel`（改用共享的） |
+
+### 交互约定（跟用户确认过的四条）
+
+1. 折叠行 = `[×] [几排字] [恢复连接] [创建会话/回到会话]`。**没有单独的展开/折叠按钮**——
+   点中间那几排字就展开/折叠；展开时折叠行**原样不动**，只在下方多一块**比卡片窄一圈**的矩形装参与者详情
+2. 折叠行第二排只显示参与者图标串（`🌐🤖 (2)`，没有参与者时「还没有参与者」），**不再写连接状态**：
+   状态完全靠右边那颗按钮的**文案**体现（不正常才显示「恢复连接」），
+   为此 `applyTabName()` 会顺带 `refreshConnectionStates()` 只重刷折叠行，不重建表单
+3. 折叠行右边**只有一颗按钮**（做小：28dp 高 / 11sp），文案同时承担状态提示和动作：
+   草稿=「创建会话」、已有会话不正常=「恢复连接」、正常=「回到会话」。
+   中间几排字 `weight=1` 吃掉余量，标题再长也挤不动它
+4. 一级卡片**左上角红色 `×`** 删除（草稿=丢弃卡片，已有会话=关掉整个会话）；
+   每个参与者二级卡片的**左上角灰色 `×`** 删除该参与者
+5. 「+ 添加参与者」收成**居中窄条**（`wrap_content` + 小一号字），跟「+ 新建会话」通栏大卡区分开
+6. 已有会话的二级卡片是**可编辑表单，改完即存**（内存即时 + 500ms 防抖落盘）
+7. 「新建会话」大加号在**滚动区内紧贴最后一张卡片**（不是钉在页面底部），点它**原地变成一张展开的草稿卡片**
+   并把自己隐藏（有草稿就不再显示），草稿被创建 / 丢弃后重新出现；同一时刻最多一张草稿。
+   实现上 `reload()` 必须**先渲染已有会话、后渲染草稿**，否则草稿会跑到列表最顶上
+8. 大加号建出来的是**草稿卡片**，卡片内点「创建会话」才真正建会话 / 落盘 / 出 tab（空草稿不污染 tabbar）
+9. 菜单里点卡片只**展开/折叠**，要进会话得点「回到会话」；抽屉点遮罩关闭
+
+### 追加：删掉底部 tabbar + 菜单页改成整页
+
+- **底部 `SessionTabBar` 整体删除**（`[ⓘ] 时间戳 [×]`），切会话 / 重连 / 删会话全部由菜单页卡片承担；
+  `SessionTabBar.kt`、`drawable/bg_tab*.xml`、`colors.xml` 的 `tab_*` 颜色一并删掉
+- `MainActivity` 相应删掉 `tabBar` / `onHomeTabClick` / `onSessionTabClick` / `onSessionInfoClick` /
+  `applyTabName` / `refreshAllTabNames`，只留下 `refreshMenuConnectionStates()`
+- 聊天页 ☰ 打开的菜单**从 80% 宽抽屉改成整页 100%**（`menuDrawer` = `match_parent`），
+  遮罩层随之删除（整页盖满后没有可点的空白区），关闭靠「回到会话」按钮或返回键
+- **重连面板整块删除**（`reconnectPanel` 布局、`toggleReconnectPanel/expand/collapse/refreshReconnectPanel`、
+  `pendingReconnectPanelOpen`、`MaxHeightScrollView.kt`、`item_participant_card.xml`）——
+  它失去入口后成了死 UI，参与者列表和重连完全由菜单页卡片承担
+- **菜单页从「每个 ChatFragment 一份」收敛成「全 App 一份」**：搬到 `activity_main.xml`
+  的 `menuOverlay` 里，启动时整页显示；会话里 ☰ 只是 `MainActivity.showMenu()` 把它整页叠上来。
+  于是 `ChatFragment` 里的叠加层 / 抽屉 / 返回键回调 / 动画状态全部删除，只剩 `onMenuRequested`
+- 菜单页滑入 / 滑出动画：点 ☰ **从屏幕外（左侧）向右滑进到目标位置**，点
+  「创建会话 / 回到会话 / 恢复连接」**向左滑出屏幕**（`translationX ± 屏宽`，200ms，启动那一次不动画）
+- `SessionPagerAdapter` 不再装首页，只装会话（position 0 = 第一个会话）；`HomeFragment` /
+  `fragment_home.xml` 删除，`MainActivity` 多出 `showMenu()` / `hideMenu()`（后者在没有任何会话时
+  拒绝收起，否则会露出空白且没有 ☰ 能回来）
+
+### 效果 / 限制
+
+- 菜单页在主页和每个 ChatFragment 抽屉里各有一份实例，因此用「草稿共享容器 + 已有会话每次重建」
+  保证多份实例一致；代价是会话/参与者很多时每次打开抽屉都要重建表单
+- 二级表单是完整编辑表单（含 Spinner / 查询模型），卡片内没有嵌套 RecyclerView，直接 inflate 进
+  `LinearLayout`，靠 ScrollView 滚动
+- 进程重启恢复出来的会话仍然是「未连接」状态，卡片上同样显示未连接
+
+---
+
 ## 2026-09-13 iOS 底栏对齐 Android：会话恢复 + ⓘ 重连面板 + 删除线
 
 **摘要**：把 Android 那套会话 tabbar 行为搬到 iOS——App 重启后恢复已打开的会话（未连接、参与者还在）；

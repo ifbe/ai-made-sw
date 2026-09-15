@@ -21,11 +21,181 @@ android/app/src/main/java/com/example/chatroom/
 │   ├── EchoParticipant.kt              # 自测复读机（postDelayed）
 │   └── BluetoothParticipant.kt
 ├── ui/
-│   ├── home/HomeFragment.kt + EditingCardData.kt
+│   ├── home/SessionMenuView.kt + SessionCardData.kt + EditingCardData.kt
 │   ├── chat/ChatFragment.kt + MessageAdapter.kt + FullscreenImageActivity.kt
-│   └── common/SessionPagerAdapter.kt + SessionTabBar.kt + ParticipantAdapter.kt
+│   └── common/SessionPagerAdapter.kt + EditingCardBinder.kt
 └── vt100/Vt100Parser.kt
 ```
+
+---
+
+## 菜单页（主页）+ 聊天页叠加层（2026-09）
+
+主页不再是「参与者编辑卡片列表 + 顶部创建按钮」，而是一个**菜单页**：所有会话竖列成一级卡片，
+展开是二级卡片，最底下钉一个大加号。同一份菜单页也出现在聊天页左上角 ☰ 打开的叠加层里。
+
+### 结构
+
+```
+SessionMenuView（自定义 LinearLayout，菜单页本体）
+├── MaterialToolbar「会话」（蓝底白字，?attr/actionBarSize）
+└── ScrollView → LinearLayout#cardContainer
+│     └── item_session_card.xml × N        ← 一级卡片（一个会话）
+│           ├── cardHeader = [×] [几排字] [一颗按钮]
+│           │     ×   2609-1301-4310        [回到会话]
+│           │       🌐🤖 (2)                            ← 中间几排字 = 展开/折叠热区
+│           └── cardContent（展开时才出现）
+│                 ╭──────────────────────────────╮
+│                 │ 比卡片窄一圈的「详情矩形」      │   ← 左右各留 12dp 外边距
+│                 │  × [参与者二级卡片]            │   ← 每个参与者的 × 在它自己左上角
+│                 │        [+ 添加参与者]（居中窄条）
+│                 ╰──────────────────────────────╯
+└── btnAddSession（大加号，**在滚动区里紧贴最后一张卡片**）
+```
+
+展开时 `cardHeader` 里的元素**原样不动**，只是在下方多出那块矩形。
+
+菜单页里有四个「加号 / 删除」，刻意做成不同形态避免误认：
+
+| 元素 | 位置 | 长什么样 | 作用 |
+|---|---|---|---|
+| `btnCardDelete` | 一级卡片**左上角** | 红色 `×` | 草稿 = 丢弃卡片；已有会话 = 关掉整个会话 |
+| `btnCancel` | 每个参与者二级卡片**左上角** | 灰色 `×` | 删掉这个参与者 |
+| `item_add_participant` | 详情矩形内，**水平居中** | **窄条**（`wrap_content` + 小一号字） | 给本会话加一个参与者 |
+| `btnAddSession` | 紧贴最后一张会话卡片（滚动区内） | **通栏**大卡，34sp `+` | 新建一个会话卡片 |
+
+折叠态的会话卡片和「+ 新建会话」卡片**等高**：两处都引用 `@dimen/session_card_height`（72dp，
+见 `res/values/dimens.xml`），改一处两边一起变。会话卡片是把 `cardHeader` 钉成这个高度、内容靠
+`gravity="center_vertical"` 居中；加号卡片是内层 LinearLayout 钉成这个高度。
+
+`btnAddSession` 点下去是「原地变身」而不是「在末尾追加」：
+
+- 它插在 `cardContainer` 之后、同一个滚动区内，所以视觉上紧跟着最后一张会话卡片
+- 点击 → 新建一张 `SessionCardData` 草稿 + `expandedKeys.add()` **直接展开** → `reload()`
+- `reload()` 里**已有会话先渲染、草稿后渲染**，所以草稿落在列表末尾 = 大加号原来的位置。
+  顺序反了的话草稿会跑到最顶上，看起来像「凭空在最上面插了一张卡」
+- `reload()` 里按「有没有草稿」决定它的显隐：**有草稿就藏起来**，所以看起来就是「加号变成了会话卡片」
+- 草稿被「创建会话」消化掉、或被 `×` 丢弃后，它重新出现
+- 正因如此，同一时刻最多只有一张草稿卡片（`addDraftCard()` 里有 `isNotEmpty()` 兜底）
+
+出现位置：**全 App 只有一份**——`activity_main.xml` 里 `menuOverlay` 包着的那份 `SessionMenuView`。
+启动时整页显示它；在会话里点左上角 ☰ 也是把它整页叠到 ViewPager 上面（底下的会话内容不动）。
+早期是「首页一份 + 每个 ChatFragment 各一份」，现在合成一份，草稿卡片 / 展开状态天然一致，
+`SessionDraftStore` 只用来扛 Activity 重建。
+
+**顶栏做在 SessionMenuView 内部**（`view_session_menu.xml` 的第一个子 View），
+所以不管以哪种方式显示，顶栏都是同一个。
+
+`menuOverlay` 的 `elevation` 必须**高于** ChatFragment 里 ☰ 的 6dp（现在是 8dp）：
+按 FrameLayout 的 Z 序绘制，低于 6dp 的话 ☰ 会浮在菜单页上面。
+
+### 卡片数据
+
+| 类型 | 判定 | 数据来源 | 折叠行最右边的主按钮 |
+|---|---|---|---|
+| **草稿卡片** | `sessionId == null` | `SessionDraftStore.drafts`（多实例共享） | 「创建会话」→ 才真正建会话 |
+| **已有会话** | `sessionId != null` | 每次 `reload()` 从 `SessionManager` 重建 | 「回到会话」→ 切到该会话 |
+
+- 那颗按钮**钉在折叠行最右边**（不是展开内容里），折叠和展开时都能直接点；左上角的 `×` 同理。
+  中间几排字是 `weight=1`，吃掉全部余量，所以标题再长也挤不动它
+- **没有单独的展开/折叠按钮**：中间那几排字（`sessionTitleBlock`）自己就是热区，点它切换展开
+- 点按钮 / `×` 不会触发「展开/折叠」：Android 的触摸分发本来就是子 View 优先拿到点击
+
+| 按钮 | 位置 | 作用 |
+|---|---|---|
+| `×` | 一级卡片最左 | 草稿=丢弃卡片；已有会话=关掉整个会话 |
+| `×` | 参与者二级卡片左上角 | 删掉这个参与者 |
+| `+ 添加参与者` | 详情矩形内居中窄条 | 给本会话加一个参与者 |
+| `+ 新建会话` | 紧贴最后一张卡片 | 新建一张草稿会话卡片 |
+| 主按钮 | 折叠行最右 | 见下 |
+
+**折叠行右边只有一颗按钮，文案同时承担状态提示和动作**（「合并成一个按钮」的结果）：
+
+| 卡片状态 | 按钮文案 | 点击动作 |
+|---|---|---|
+| 草稿（`sessionId == null`） | 创建会话 | 真正建会话 + 落盘 + 出 tab |
+| 已有会话、**不正常**（`!isSessionUp`） | **恢复连接** | 断开现有参与者 → 按配置重连 → 切过去（`ChatFragment.onClickReconnect()`） |
+| 已有会话、正常 | 回到会话 | 只切过去 |
+
+所以**连接状态不写字也不靠显隐**，就是按钮文案本身：折叠行第二排只显示参与者图标串
+（`🌐🤖 (2)`，没有参与者时「还没有参与者」）。看到「恢复连接」= 这个会话需要恢复。状态一变必须刷卡片：
+`ChatFragment.notifyConnectionStateChanged()` → `MainActivity.refreshMenuConnectionStates()` →
+`SessionMenuView.refreshConnectionStates()`（只重刷折叠行，不重建二级表单，避免输入焦点丢失）。
+
+- 展开只是一个**比卡片窄一圈的矩形**（`bg_card_detail`，左右各 12dp 外边距）里装参与者详情
+- ⚠️ 一级卡片的 `×` **没有二次确认**，误触会直接删掉整个会话（含参与者配置）
+
+- `SessionCardData`（一级卡片）持有 `MutableList<EditingCardData>`（二级卡片）
+- 草稿放 `SessionDraftStore`（object）：菜单页现在只有一份实例，但 Activity 重建时 View 会没，
+  草稿还没进 `SessionManager`，只放在 View 里会丢
+- 已有会话**不缓存**：每次 `reload()` 用 `editingCardFromConfig()` 从 `SessionManager` 反建表单，
+  保证多份实例看到的一致（重进页面 = 自动同步）
+
+### 「编辑即改即存」（已有会话）
+
+`EditingCardBinder` 把 `item_editing_card.xml` 的绑定逻辑抽成可复用组件（原来埋在
+`ParticipantAdapter.EditingViewHolder` 里，那个 adapter 已删）。绑定约定：
+
+1. **先灌值、后挂监听**：`setText` / `setSelection` 全在挂 listener 之前做完，
+   否则恢复数据本身就会触发一轮改动回调
+2. 任何改动 → `onEdited()` → 已有会话调 `SessionManager.updateParticipant(sid, card.toConfig())`
+   （靠 `ParticipantConfig.id == EditingCardData.id` 定位），草稿只留在内存
+3. `updateParticipant` 只改内存 + **防抖落盘**（500ms）：表单是逐字符改的，每个字符都
+   `commit()` 一次会把主线程写卡。收起卡片 / 离开页面 / 创建会话时调 `persistNow()` 立即刷
+4. 往**已有会话**里点「+ 添加参与者」会立刻 `addParticipant()` 落一条空配置，
+   否则之后这个表单的编辑找不到对象可更新（会被静默丢弃）
+
+### 菜单页怎么显示（☰）
+
+- 菜单页是 `activity_main.xml` 里 `menuOverlay`（`match_parent` + 白色底 + `elevation=8dp`）中的
+  `SessionMenuView`，**整个 App 只有这一份实例**
+- `MainActivity.showMenu(animate = true)`：`reload()` + `visibility = VISIBLE` + **从屏幕外（左侧）
+  向右滑进屏幕到目标位置**（`translationX: -屏宽 → 0`，200ms）；启动那一次传 `animate = false`
+  （它就是初始界面，从外面滑进来反而怪）
+- `MainActivity.hideMenu(animate = true)`：刷一次防抖落盘 + **向左滑出屏幕**
+  （`translationX: 0 → -屏宽`，200ms）再 `visibility = GONE` 并把 `translationX` 复位；
+  点「创建会话 / 回到会话 / 恢复连接」都是这个效果。`withEndAction` 里会再判一次 `menuShown`——
+  退场动画期间又 `showMenu()` 的话不能把菜单页藏掉；两个方法开头都 `animate().cancel()`
+  防止上次动画没跑完叠加。
+  **`pagerAdapter.itemCount == 0` 时直接 return**——一个会话都没有还收起菜单，只会露出一片空白，
+  而且没有 ☰ 能再打开，用户就卡死了（菜单页上的「+ 新建会话」是唯一出口）
+- `fragment_chat.xml` 里只剩聊天内容 + 左上角 ☰（`btnChatMenu`）；☰ 只做一件事：
+  `onMenuRequested?.invoke()` → `MainActivity.showMenu()`。fragment 里**不再有叠加层、抽屉、
+  返回键回调、动画**这些状态
+- 底下的会话内容不重新布局、状态不变，只是被盖住；☰ 也不需要手动隐藏——它在 `elevation` 上是输给
+  `menuOverlay` 的
+- 返回键在 **Activity** 层处理：菜单盖着且至少有一个会话 → 收菜单；否则交回系统
+- 收起菜单的入口：卡片上的「回到会话 / 恢复连接」（`openSession` / `reconnectSession` 里都会
+  `hideMenu()`）、系统返回键。没有遮罩也没有关闭按钮
+
+### 没有底部 tabbar（2026-09-15 删除）
+
+原先底部的 `SessionTabBar`（`[ⓘ] 时间戳 [×]`）已整体删掉——菜单页卡片上的
+「回到会话 / 恢复连接 / ×」覆盖了它的全部功能（切会话 / 重连 / 删会话），
+`SessionTabBar.kt`、`drawable/bg_tab*.xml`、`colors.xml` 里的 `tab_*` 颜色一并删除。
+
+连带影响：
+
+- `MainActivity` 不再有 `tabBar` / `onHomeTabClick` / `onSessionTabClick` / `onSessionInfoClick` /
+  `applyTabName` / `refreshAllTabNames`，只剩 `refreshMenuConnectionStates()`（刷菜单卡片按钮文案）
+- 切会话的唯一入口 = 菜单页卡片的按钮 → `openSession()` / `reconnectSession()`
+- **ViewPager 里不再有首页那一页**（`SessionPagerAdapter` 只装会话，position 0 = 第一个会话），
+  菜单页搬到 Activity 层；所以 position ↔ sessionId 的映射整体前移了一位，`removeSession()` 的
+  `position < 1` 守卫也跟着去掉了
+- `HomeFragment` / `fragment_home.xml` 删除；`ChatFragment` 里的**重连面板整块删除**
+  （`reconnectPanel` 布局、`toggleReconnectPanel/expand/collapse/refreshReconnectPanel`、
+  `pendingReconnectPanelOpen`、`MaxHeightScrollView.kt`、`item_participant_card.xml`）——
+  参与者列表和重连现在完全由菜单页卡片承担
+
+### 关闭 / 新建的接线（MainActivity）
+
+| 入口 | 路径 |
+|---|---|
+| 菜单「创建会话」 | `SessionMenuView.createFromDraft()` → `createSession()` + `addParticipant()` → `onSessionCreated` → `MainActivity.addSessionTab(select = true)` → 切过去 + `hideMenu()` |
+| 菜单「回到会话」 | `MainActivity.openSession(sessionId)`（没页就补一个）→ 切页 + `hideMenu()` |
+| 菜单「恢复连接」 | `MainActivity.reconnectSession()`：`setSessionConnected(true)` + 切页 + `ChatFragment.reconnectNow()` + `hideMenu()`（view 没建好就先记下，`onViewCreated` 补）；连接逻辑只在 ChatFragment 里，菜单页自己连不了 |
+| 菜单「删除」 | `MainActivity.closeSession()`：断连接 → 清 `SessionManager` → 移除会话页 → `menuSessionList.reload()`（菜单一直开着） |
+| 会话显示名 | `sessionTimeLabel()`（`ui/home/SessionCardData.kt`） |
 
 ---
 
@@ -157,7 +327,7 @@ data class Message(
 
 ---
 
-## 会话持久化 + 重连面板（2026-09）
+## 会话持久化 + 菜单页卡片重连（2026-09）
 
 ### 背景
 
@@ -180,69 +350,20 @@ data class Message(
 1. `MainActivity.onCreate` → `SessionStore.init(applicationContext)` + `SessionManager.restoreFromStore()`
 2. 恢复出来的会话 `connected = false`（`SessionManager.isSessionConnected`），消息列表为空
 3. 按 `SessionManager.getSessionOrder()`（单独的创建顺序列表；`ConcurrentHashMap` 本身无序）
-   逐个 `addSessionTab(select = false)`，tab 顺序 = 会话创建顺序
+   逐个 `addSessionTab(select = false)`，页顺序 = 会话创建顺序
 4. `ChatFragment.onViewCreated`：`isSessionConnected` 为 true → `connectParticipants()`；
    为 false → 只贴一条「已从本地恢复，当前未连接」的提示，**不自动连**
-5. tab 文案 = 会话创建时间 `YYMM-DDhh-mmss`（年月-日时-分秒，例 `2609-1301-2716`），
-   直接从 `sessionId` 里的 epoch 毫秒解析（`SimpleDateFormat("yyMM-ddHH-mmss")`）；
-   **未连接 / 链路失败时整个字串加删除线**（不额外加符号）。重连 / 连上 / 断线都会
-   经 `SessionManager.setSessionLinkUp()` + `linkStateCallbacks` 回调 MainActivity 调
-   `SessionTabBar.updateTabName(id, name, strikeThrough)` 刷新
-6. tab → fragment 统一走 `MainActivity.chatFragmentAt() / homeFragment()`：优先
-   `supportFragmentManager.findFragmentByTag("f<position>")`（进程被杀后系统恢复出来的实例），
+5. 会话显示名 = 创建时间 `YYMM-DDhh-mmss`（年月-日时-分秒，例 `2609-1301-2716`），
+   直接从 `sessionId` 里的 epoch 毫秒解析（`sessionTimeLabel()`，菜单页卡片和原来的 tab 共用）。
+   **连接是否正常不写字，靠卡片右边那颗按钮的文案**（不正常显示「恢复连接」）。
+   重连 / 连上 / 断线经 `SessionManager.setSessionLinkUp()` + `linkStateCallbacks`
+   回调 `ChatFragment.notifyConnectionStateChanged()` → `MainActivity.refreshMenuConnectionStates()`
+   → `SessionMenuView.refreshConnectionStates()`（只重刷折叠行，不重建表单）
+6. 找 fragment 走 `MainActivity.chatFragmentFor(sessionId)`：优先
+   `supportFragmentManager.findFragmentByTag("f" + itemId)`（进程被杀后系统恢复出来的实例），
    找不到才退回 `pagerAdapter.fragments[position]`（本次进程新建、可能还没 attach）。
-   否则回调会设在没挂载的实例上——首页点「创建」没反应、重连后 tab 文案不刷新
-
-### 重连面板（输入区下方 / tabbar 上方）
-
-- tab 结构（`SessionTabBar.makeTabView`）：`[ⓘ] 时间戳 [×]`，首页 tab 是 `首页`（没有 ⓘ / ×）。
-  tab 本体点击 = 切到该会话；**ⓘ = 展开 / 收起重连面板**；× = 关闭会话。
-  ⓘ / × 各有自己的 click listener，不会冒泡到 tab 本体
-- tab 比原来长：名字是 14 字符时间戳，横向 padding `8dp → 14dp`，`minimumWidth = 128dp`
-- 点 ⓘ（`MainActivity.onSessionInfoClick` → `ChatFragment.toggleReconnectPanel()`）：
-  已展开 → `collapseReconnectPanel()` 收起回到会话；未展开 → `expandReconnectPanel()`
-- 点 ⓘ 的如果不是当前会话，先 `setCurrentItem` 切过去；这时 fragment view 可能还没建好，
-  `toggleReconnectPanel()` 会把请求记在 `pendingReconnectPanelOpen`，`onViewCreated` 里补展开
-- 面板是 `fragment_chat.xml` 根 LinearLayout 中 `inputArea` **之后**的 `reconnectPanel`：
-  标题行（`🔌 参与者 · 未连接/已连接` + `收起 ✕`）+ `MaxHeightScrollView`（200dp 上限的卡片列表）
-  + 通栏 `🔌 重连` 按钮。因为排在 `inputArea` 后面、`recyclerMessages` 是 `weight=1`，
-  展开时聊天区收缩、**输入区整体上移**，面板正好落在输入区和 tabbar 之间
-- 参与者卡片直接 inflate 主页的 `item_participant_card.xml` 并把 `btnDelete` 设 `GONE`，
-  样式与主页一致
-- 「重连」= `disconnectActiveParticipants()`（本地 PTY/SERIAL/AI/AGENT/ECHO `disconnect()` +
-  service 里确实存在的 SOCKET `removeNetworkParticipant`，用新增的
-  `TcpForegroundService.hasNetworkParticipant(configId)` 过滤）→ `SessionManager.setSessionConnected(true)`
-  → `connectParticipants()` → 刷新面板 + tab 文案
-- service 的 started 状态由 `TcpForegroundService.ensureStarted()`（第一个网络 participant 加入时
-  `startService` 自己）补齐：断开老连接可能把 participant 清空过一次（触发 `stopSelf()`），
-  没有这一步之后 `unbind` 时后台保活会失效
-- 展开时若输入区处于最大化（聊天区 `GONE`）会先退出最大化，否则没有空间放面板
-
-### tab 删除线（会话是否正常）怎么来的
-
-`SessionManager.isSessionUp(sessionId)` = `isSessionConnected`（用户建过 / 点过重连）
-**且** 链路没报告过失败。`false` → tab 名字加删除线。
-
-「链路失败」不能只看用户点没点过重连，所以补了一条状态链：
-
-1. `SocketParticipant` / `WsParticipant` 新增 `onStateChange(up)`
-   - TCP / UDP：连上 → `true`；connect 抛异常 → `false`；读循环**非主动**结束（对端关、读异常）→ `false`
-   - WS：`onOpen` → `true`；`onFailure` / `onClosed` 且非我方 close → `false`
-   - 我方主动 `disconnect()` **不上报** `false`（TCP 用 `abnormal` 标志 + `running` 加 `@Volatile`，
-     WS 用 `intentionalClose`），否则旧实例的迟到回调会把重连后刚建好的新连接标成断开
-2. `TcpForegroundService`：`upConfigs` 记当前在线的 configId，聚合到会话级
-   （该会话还有任意一个网络 participant 在线 = 正常）→ `SessionManager.setSessionLinkUp()`
-   → 通过 `linkStateCallbacks` 通知 UI
-3. `ChatFragment` 在 `onServiceConnected` 注册 `linkStateCallback`（**注册时立刻推一次当前状态**，
-   因为后台断线时 fragment 已经 unregister，切回前台重新绑定要靠这次同步纠正），`onStop` 注销
-4. `MainActivity.applyTabName()` 用 `!isSessionUp(sessionId)` 决定删除线
-
-没有网络 participant 的会话（纯 ECHO / PTY / AI…）没有链路状态可报，`linkUp` 缺席 → 视为正常。
-
-### `MaxHeightScrollView`
-
-`android:maxHeight` 对 ScrollView / FrameLayout 都不生效，所以加了这个自定义 View：
-`onMeasure` 里把测量高度夹到 `maxHeightPx` 以内，超出部分内部滚动。
+   注意 tag 里的 **itemId 是由会话 id 派生的稳定值，不是 position**（见 gotchas #12），
+   否则回调会设在没挂载的实例上——菜单点「回到会话」没反应、重连后菜单按钮文案不刷新
 
 ### 关闭会话
 
@@ -277,7 +398,7 @@ data class Message(
 - 按 Home 后 MIUI 之类的 ROM 很快回收 Activity → fragment onDestroy，但进程和 service 还活着
 - `ViewPager2` 的 `offscreenPageLimit = 2`，离得远的会话 fragment 也会被销毁
 
-结果就是「一按 Home 连接就断」。现在**只有用户点 tab 上的 ×**（`MainActivity.closeSession`）
+结果就是「一按 Home 连接就断」。现在**只有用户点菜单卡片上的 ×**（`MainActivity.closeSession`）
 才清连接；fragment 销毁不再碰网络 participant。
 
 ### 2. wake lock 不再设超时
