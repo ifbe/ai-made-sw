@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- 象棋页：9 路 x 10 路，中间楚河汉界，开局棋子可以拖。 -->
+    <com.example.chess.xiangqi.ChessBoardView
+        android:id="@+id/chessPage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        tools:visibility="visible" />
+
+    <!-- 国际象棋页：min(w,h) 的 8x8 标准棋盘，白方在下。 -->
+    <com.example.chess.guojixiangqi.IntlChessBoardView
+        android:id="@+id/intlChessPage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- 围棋页：19 路。 -->
+    <com.example.chess.weiqi.GoBoardView
+        android:id="@+id/goPage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- 五子棋页：标准 15 路（连珠棋盘），星位也按 15 路取。 -->
+    <com.example.chess.wuziqi.GomokuBoardView
+        android:id="@+id/gomokuPage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- 左上角置顶的四个页面标签（顺序：象棋 / 国际象棋 / 围棋 / 五子棋） -->
+    <LinearLayout
+        android:id="@+id/tabBar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/tabChess"
+            style="@style/TabButton"
+            android:text="@string/tab_chess" />
+
+        <TextView
+            android:id="@+id/tabIntlChess"
+            style="@style/TabButton"
+            android:text="@string/tab_intl_chess" />
+
+        <TextView
+            android:id="@+id/tabGo"
+            style="@style/TabButton"
+            android:text="@string/tab_go" />
+
+        <TextView
+            android:id="@+id/tabGomoku"
+            style="@style/TabButton"
+            android:text="@string/tab_gomoku" />
+    </LinearLayout>
+
+    <!-- 右上角置顶的重置按钮：重置当前正在看的这一页 -->
+    <TextView
+        android:id="@+id/resetButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_switch_button"
+        android:clickable="true"
+        android:elevation="8dp"
+        android:focusable="true"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:text="@string/reset_board"
+        android:textColor="#FFEF9A9A"
+        android:textSize="14sp"
+        tools:ignore="UnusedAttribute" />
+
+</FrameLayout>

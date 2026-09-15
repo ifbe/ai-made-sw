@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 左上角切换按钮 / 右上角重置按钮离屏幕边缘的距离（会再加上状态栏 / 刘海的安全边距） -->
+    <dimen name="corner_button_margin">12dp</dimen>
+</resources>

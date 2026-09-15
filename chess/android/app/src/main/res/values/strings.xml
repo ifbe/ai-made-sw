@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">Chess</string>
+
+    <!-- 左上角四个页面标签（顺序就是显示顺序） -->
+    <string name="tab_chess">象棋</string>
+    <string name="tab_intl_chess">国际象棋</string>
+    <string name="tab_go">围棋</string>
+    <string name="tab_gomoku">五子棋</string>
+
+    <!-- 右上角按钮：把当前这一页重置回开局 -->
+    <string name="reset_board">↺ 重置</string>
+</resources>

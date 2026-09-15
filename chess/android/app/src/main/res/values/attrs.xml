@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 石头棋盘（围棋 / 五子棋）每边多少个落点 -->
+    <declare-styleable name="StoneBoardView">
+        <attr name="boardLines" format="integer" />
+    </declare-styleable>
+</resources>
