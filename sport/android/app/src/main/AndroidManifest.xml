@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 联机：服务端要监听端口，客户端要连过去 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        Android 16（API 36）起，「访问局域网」受 Local Network Protection 管控：
+        targetSdk >= 36 的应用必须声明并在运行时申请这个权限，否则连局域网设备
+        （不管是主动连出去，还是被对端连进来）都会被系统拦掉。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Sport">
+
+        <!--
+            screenOrientation="nosensor"：锁死在设备的自然方向（手机竖屏 / 平板横屏），不接受旋转。
+            球场几何本来就两种方向都支持（见 CourtGeometry），锁住只是为了转屏时不会把球员重置。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode|keyboardHidden"
+            android:exported="true"
+            android:screenOrientation="nosensor"
+            android:theme="@style/Theme.Sport"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

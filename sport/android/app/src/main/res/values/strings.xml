@@ -1,0 +1,33 @@
+<resources>
+    <string name="app_name">Sport</string>
+
+    <!-- 左上角四个运动标签（顺序就是显示顺序） -->
+    <string name="tab_football">足球</string>
+    <string name="tab_basketball">篮球</string>
+    <string name="tab_volleyball">排球</string>
+    <string name="tab_pingpong">乒乓球</string>
+
+    <!-- 右上角按钮：把当前这一页的球员和球摆回开球站位 -->
+    <string name="reset_formation">↺ 重新摆位</string>
+
+    <!-- 还没做的运动页提示 -->
+    <string name="placeholder_volleyball">排球场：待实现</string>
+    <string name="placeholder_pingpong">乒乓球台：待实现</string>
+
+    <!-- 右下角 app 内日志框 -->
+    <string name="log_button">日志</string>
+    <string name="log_hide">收起</string>
+    <string name="log_clear">清空</string>
+
+    <!-- 左下角联机控制条 -->
+    <string name="net_mode_server">服</string>
+    <string name="net_mode_client">客</string>
+    <string name="net_start_server">开始服务</string>
+    <string name="net_start_client">开始连接</string>
+    <string name="net_starting">启动中…</string>
+    <string name="net_connecting">连接中…</string>
+    <string name="net_online">已连接</string>
+    <string name="net_failed">连接失败</string>
+    <string name="net_hint">192.168.1.7:8765</string>
+    <string name="net_bad_address">地址不对</string>
+</resources>

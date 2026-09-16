@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <!-- 足球页：105 x 68 米真实比例的球场，22 个球员令牌 + 一颗球，都能拖。 -->
+    <com.example.sport.sport.football.FootballView
+        android:id="@+id/footballPage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        tools:visibility="visible" />
+
+    <!-- 篮球页：28 x 15 米真实比例的球场，10 个球员令牌 + 一颗球，都能拖。 -->
+    <com.example.sport.sport.basketball.BasketballView
+        android:id="@+id/basketballPage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- 排球 / 乒乓球先占位，点标签能看到这页，但没有球场。 -->
+
+    <TextView
+        android:id="@+id/volleyballPage"
+        style="@style/Placeholder"
+        android:text="@string/placeholder_volleyball"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/pingpongPage"
+        style="@style/Placeholder"
+        android:text="@string/placeholder_pingpong"
+        android:visibility="gone" />
+
+    <!-- 左上角四个运动标签 -->
+    <LinearLayout
+        android:id="@+id/tabBar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/tabFootball"
+            style="@style/TabButton"
+            android:text="@string/tab_football" />
+
+        <TextView
+            android:id="@+id/tabBasketball"
+            style="@style/TabButton"
+            android:text="@string/tab_basketball" />
+
+        <TextView
+            android:id="@+id/tabVolleyball"
+            style="@style/TabButton"
+            android:text="@string/tab_volleyball" />
+
+        <TextView
+            android:id="@+id/tabPingpong"
+            style="@style/TabButton"
+            android:text="@string/tab_pingpong" />
+    </LinearLayout>
+
+    <!-- 右上角：把球员和球摆回开球站位 -->
+    <TextView
+        android:id="@+id/resetButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_switch_button"
+        android:clickable="true"
+        android:elevation="8dp"
+        android:focusable="true"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:text="@string/reset_formation"
+        android:textColor="#FFEF9A9A"
+        android:textSize="14sp"
+        tools:ignore="UnusedAttribute" />
+
+    <!-- 左下角：联机控制条 [服/客][地址][开始/状态] -->
+    <LinearLayout
+        android:id="@+id/netBar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="12dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/netMode"
+            style="@style/TabButton"
+            android:layout_marginEnd="6dp"
+            android:text="@string/net_mode_server" />
+
+        <EditText
+            android:id="@+id/netAddress"
+            android:layout_width="130dp"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_tab"
+            android:importantForAutofill="no"
+            android:inputType="textUri"
+            android:maxLines="1"
+            android:paddingStart="10dp"
+            android:paddingTop="7dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="7dp"
+            android:textColor="#FFF0F0F0"
+            android:textColorHint="#80FFFFFF"
+            android:textSize="13sp"
+            tools:ignore="Autofill,LabelFor,TextFields" />
+
+        <TextView
+            android:id="@+id/netAction"
+            style="@style/TabButton"
+            android:layout_marginStart="6dp"
+            android:text="@string/net_start_server" />
+    </LinearLayout>
+
+    <!-- 右下角：app 内特殊日志，默认折叠成一个「日志」按钮 -->
+    <LinearLayout
+        android:id="@+id/logBox"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="12dp"
+        android:gravity="end"
+        android:orientation="vertical">
+
+        <ScrollView
+            android:id="@+id/logScroll"
+            android:layout_width="300dp"
+            android:layout_height="180dp"
+            android:layout_marginBottom="6dp"
+            android:background="@drawable/bg_log_panel"
+            android:padding="8dp"
+            android:scrollbars="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/logText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:lineSpacingExtra="2dp"
+                android:textColor="#FFD8E8FF"
+                android:textIsSelectable="true"
+                android:textSize="10sp" />
+        </ScrollView>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <!-- 只有展开的时候才有意义，代码里跟着日志框一起显示 / 隐藏 -->
+            <TextView
+                android:id="@+id/logClear"
+                style="@style/TabButton"
+                android:text="@string/log_clear"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/logToggle"
+                style="@style/TabButton"
+                android:text="@string/log_button" />
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>
