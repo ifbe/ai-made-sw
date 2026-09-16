@@ -9,4 +9,20 @@
 
     <!-- 右上角按钮：把当前这一页重置回开局 -->
     <string name="reset_board">↺ 重置</string>
+
+    <!-- 左下角联机控制条 -->
+    <string name="net_mode_server">服</string>
+    <string name="net_mode_client">客</string>
+    <string name="net_start_server">开始服务</string>
+    <string name="net_start_client">开始连接</string>
+    <string name="net_starting">启动中…</string>
+    <string name="net_connecting">连接中…</string>
+    <string name="net_online">已连接</string>
+    <string name="net_failed">连接失败</string>
+    <string name="net_hint">192.168.1.7:8765</string>
+    <string name="net_bad_address">地址不对</string>
+
+    <!-- 右下角特殊日志框 -->
+    <string name="log_button">日志</string>
+    <string name="log_hide">收起</string>
 </resources>

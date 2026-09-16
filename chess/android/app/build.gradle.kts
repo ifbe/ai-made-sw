@@ -35,6 +35,8 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
+    // WebSocket 客户端 + 服务端都用这个库（纯 Java，不用引 coroutines）
+    implementation(libs.java.websocket)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)

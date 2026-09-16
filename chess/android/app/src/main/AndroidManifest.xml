@@ -2,8 +2,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 联机对下：服务端要监听端口，客户端要连过去 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        Android 16（API 36）起，「访问局域网」受 Local Network Protection 管控：
+        targetSdk >= 36 的应用必须声明并在运行时申请这个权限，否则连局域网设备
+        （不管是主动连出去，还是被对端连进来）都会被系统拦掉。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
     <application
         android:allowBackup="true"
+        tools:ignore="UnusedAttribute"
+        android:usesCleartextTraffic="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
