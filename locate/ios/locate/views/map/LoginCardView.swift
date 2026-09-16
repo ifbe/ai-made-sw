@@ -7,9 +7,9 @@ import SwiftUI
 struct LoginCard: View {
     @ObservedObject var viewModel: MapViewModel
 
-    /// 自动登录也要转圈，和手动登录共用一套状态
+    /// 登录中按钮里转圈
     private var busy: Bool {
-        viewModel.uiState.loading || viewModel.uiState.autoLoggingIn
+        viewModel.uiState.loading
     }
 
     var body: some View {

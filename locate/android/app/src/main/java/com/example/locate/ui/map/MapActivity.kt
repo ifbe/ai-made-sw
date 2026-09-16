@@ -200,8 +200,8 @@ class MapActivity : ComponentActivity() {
     }
 }
 
-/** 登录态：未登录 / 自动登录中 / 已登录 */
-enum class AuthState { LOGGED_OUT, AUTO_LOGGING_IN, LOGGED_IN }
+/** 登录态：未登录 / 已登录 */
+enum class AuthState { LOGGED_OUT, LOGGED_IN }
 
 class MapViewModel(
     private var authRepository: AuthRepository,
@@ -221,14 +221,18 @@ class MapViewModel(
     private val _uiState = MutableStateFlow(
         MapUiState(
             serverUrl = securePrefs.serverUrl,
-            username = securePrefs.username ?: ""
+            username = securePrefs.username ?: "",
+            // 上次的账号密码照样填进登录矩形，只是不自动点登录
+            password = securePrefs.password ?: ""
         )
     )
     val uiState: StateFlow<MapUiState> = _uiState
 
     init {
         attachApiListener()
-        autoLoginIfPossible()
+        // 不再自动登录：打开 App 停在未登录状态，登录矩形里已经填好上次的账号密码，
+        // 由用户自己点「登录」
+        AppLog.i("未登录：登录矩形里是上次的账号密码，点登录即可")
     }
 
     // ─── 网络回调 ─────────────────────────────────────────────────────
@@ -330,34 +334,6 @@ class MapViewModel(
 
     // ─── 登录 / 退出 ──────────────────────────────────────────────────
 
-    private fun autoLoginIfPossible() {
-        val username = securePrefs.username
-        val password = securePrefs.password
-        if (username.isNullOrEmpty() || password.isNullOrEmpty()) {
-            AppLog.i("未登录：请填写服务器地址、用户名和密码")
-            _uiState.value = _uiState.value.copy(
-                authState = AuthState.LOGGED_OUT,
-                username = username ?: ""
-            )
-            return
-        }
-
-        _uiState.value = _uiState.value.copy(
-            authState = AuthState.AUTO_LOGGING_IN,
-            username = username,
-            loading = false,
-            error = null
-        )
-        AppLog.i("使用已保存凭证自动登录：$username")
-
-        viewModelScope.launch {
-            when (val result = authRepository.login(username, password)) {
-                is AuthRepository.LoginState.Success -> onLoggedIn(result.nickname)
-                is AuthRepository.LoginState.Error -> onLoginError(result.message)
-            }
-        }
-    }
-
     fun onServerUrlChange(serverUrl: String) {
         if (serverUrl == _uiState.value.serverUrl) return
 
@@ -419,7 +395,6 @@ class MapViewModel(
             authState = AuthState.LOGGED_IN,
             loading = false,
             error = null,
-            password = "",   // 密码不留在内存状态里
             nickname = nickname
         )
         applyCornerPanels()
@@ -442,11 +417,11 @@ class MapViewModel(
         if (_uiState.value.authState != AuthState.LOGGED_IN) return
         AppLog.i("退出登录")
         apiClient.listener = null
-        authRepository.logout()   // 清凭证 + 断开 WebSocket
+        authRepository.logout()   // 清 token + 断开 WebSocket（账号密码保留）
         resetSession()
     }
 
-    /** 退出登录后把界面恢复到"未登录"：清空队友、目标，收起两个角面板 */
+    /** 退出登录后把界面恢复到"未登录"：清空队友、目标，收起两个角面板，登录矩形里仍是上次的账号密码 */
     private fun resetSession() {
         _otherUsers.value.forEach { mapViewInterface?.removeOtherUser(it.username) }
         _otherUsers.value = emptyList()
@@ -460,7 +435,7 @@ class MapViewModel(
             authState = AuthState.LOGGED_OUT,
             loading = false,
             error = null,
-            password = "",
+            password = securePrefs.password ?: "",
             nickname = "",
             username = securePrefs.username ?: "",
             targetLat = null,
@@ -639,7 +614,7 @@ private fun LoginCard(
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
-    val busy = uiState.loading || uiState.authState == AuthState.AUTO_LOGGING_IN
+    val busy = uiState.loading
     val shape = RoundedCornerShape(10.dp)
 
     Column(

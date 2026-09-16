@@ -4,7 +4,6 @@ import Foundation
 /// `LoginUiState` 已经合并进来：登录表单现在长在地图页上，不再是单独一页。
 struct MapUiState {
     var loggedIn: Bool = false
-    var autoLoggingIn: Bool = false
     var loading: Bool = false
     var serverUrl: String = Constants.defaultServerUrl
     var username: String = ""

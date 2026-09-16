@@ -38,13 +38,17 @@ final class MapViewModel: ObservableObject {
 
         uiState.serverUrl = serverUrl
         uiState.username = keychain.username ?? ""
+        // 上次的账号密码照样填进登录矩形，只是不自动点登录
+        uiState.password = keychain.password ?? ""
 
         rebuildWebSocket()
 
         locationManager = LocationManager()
         locationManager?.delegate = self
 
-        attemptAutoLogin()
+        // 不再自动登录：打开 App 停在未登录状态，登录矩形里已经填好上次的账号密码，
+        // 由用户自己点「登录」
+        AppLog.i("未登录：登录矩形里是上次的账号密码，点登录即可")
     }
 
     // MARK: - 连接
@@ -68,23 +72,6 @@ final class MapViewModel: ObservableObject {
     }
 
     // MARK: - 登录 / 退出
-
-    /// 有保存的凭证就自动登录；登录矩形里会转圈，和 Android 的行为一致
-    private func attemptAutoLogin() {
-        guard let username = keychain.username,
-              let password = keychain.password,
-              !username.isEmpty,
-              !password.isEmpty else {
-            uiState.autoLoggingIn = false
-            AppLog.i("未登录：请填写服务器地址、用户名和密码")
-            return
-        }
-
-        uiState.autoLoggingIn = true
-        uiState.username = username
-        AppLog.i("使用已保存凭证自动登录：\(username)")
-        startLogin(username: username, password: password)
-    }
 
     func onLogin() {
         let serverUrl = uiState.serverUrl
@@ -146,7 +133,6 @@ final class MapViewModel: ObservableObject {
 
     private func finishLoginWithError(_ message: String) {
         uiState.loading = false
-        uiState.autoLoggingIn = false
         uiState.error = message
         AppLog.e("登录失败：\(message)")
     }
@@ -172,7 +158,8 @@ final class MapViewModel: ObservableObject {
         webSocket?.disconnect()
         webSocket = nil
         locationManager?.stop()
-        keychain.clearCredentials()
+        // 只清 token，账号密码留着：退出登录后（以及下次打开 App）不用重填
+        keychain.token = nil
 
         loginUsername = nil
         lastConnectionLog = nil
@@ -182,10 +169,8 @@ final class MapViewModel: ObservableObject {
         onlineCount = 0
 
         uiState.loggedIn = false
-        uiState.autoLoggingIn = false
         uiState.loading = false
         uiState.error = nil
-        uiState.password = ""
         uiState.nickname = ""
         uiState.targetLat = nil
         uiState.targetLng = nil
@@ -284,10 +269,8 @@ extension MapViewModel: WebSocketServiceDelegate {
         if loginUsername == nil { loginUsername = uiState.username }
         uiState.loggedIn = true
         uiState.loading = false
-        uiState.autoLoggingIn = false
         uiState.error = nil
         uiState.nickname = nickname
-        uiState.password = ""   // 密码不留在内存状态里
         loggedSelfEcho = false
         AppLog.i("登录成功：\(nickname.isEmpty ? uiState.username : nickname)")
     }

@@ -110,9 +110,11 @@ class AuthRepository(
 
     /**
      * 退出登录
+     *
+     * 只清 token 和连接，账号密码留着：退出登录后（以及下次打开 App）不用重填
      */
     fun logout() {
-        securePrefs.clearCredentials()
+        securePrefs.token = null
         apiClient.disconnect()
     }
 
