@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>Chess · 主页</title>
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<!--
+  主页：外壳和象棋 / 围棋页完全一样（左上角标签栏、左下角联机条、右下角日志框），
+  只是没有棋盘，所以也没有右上角的重置按钮。
+-->
+<script src="js/log.js"></script>
+<script src="js/protocol.js"></script>
+<script src="js/net.js"></script>
+<script src="js/chrome.js"></script>
+<script>
+    Chrome.mount({
+        page: 'index',
+        hint: '左上角选择棋种 · 左下角填服务端地址后开始连接'
+    });
+</script>
+</body>
+</html>

@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.widget.doAfterTextChanged
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updateLayoutParams
 import com.example.chess.game.share.core.MoveEventSink
@@ -50,6 +51,7 @@ class MainActivity : AppCompatActivity() {
          * 老系统上不存在这个权限，所以只在 API 36+ 才申请。
          */
         private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+
     }
 
     /** 本地网络权限的申请结果：拿到了就接着开服务 / 连对端。 */
@@ -116,11 +118,22 @@ class MainActivity : AppCompatActivity() {
     private var linkState = LinkState.IDLE
     private var statusDetail = ""
 
-    /** 客户端上次输入的地址，切来切去不用重打。 */
+    /**
+     * 本次 App 启动里，**各自模式**下用户输入过的地址（含端口）。空串 = 这个模式还没输入过。
+     * 两个模式各记各的：服模式改过端口不会影响客模式，反之亦然。
+     */
+    private var serverAddress = ""
     private var clientAddress = ""
 
-    /** 服务端上次用的端口（文本框里可以改，IP 每次自动填当前本机 IP）。 */
-    private var serverPort = NetAddress.DEFAULT_PORT
+    /** 是不是我们自己 setText（用来区分「用户输入」和「程序回填」）。 */
+    private var settingAddress = false
+
+    /** 当前模式记住的地址。 */
+    private var currentAddress: String
+        get() = if (netModeValue == NetMode.SERVER) serverAddress else clientAddress
+        set(value) {
+            if (netModeValue == NetMode.SERVER) serverAddress = value else clientAddress = value
+        }
 
     /** 四个页面本地事件的统一出口：转发给当前连接（没连就等于丢掉）。 */
     private val sink = MoveEventSink { events -> session?.send(events) }
@@ -201,6 +214,11 @@ class MainActivity : AppCompatActivity() {
         }
         netAction.setOnClickListener { toggleSession() }
 
+        // 用户自己改过就记下来（本次启动内一直保留），程序回填不算
+        netAddress.doAfterTextChanged { text ->
+            if (!settingAddress) currentAddress = text?.toString().orEmpty()
+        }
+
         AppLog.log("应用启动，本机地址 ${NetAddress.localIpv4() ?: "（没有局域网 IP）"}")
 
         show(page)
@@ -242,24 +260,42 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ 联机条
 
     /**
-     * 两种模式都**可以手动编辑**：
-     *  - 服务端：自动填「本机当前局域网 IP : 上次用的端口」，IP 和端口都能改，
-     *    服务端按端口监听（监听地址始终是 0.0.0.0，文本框里的 IP 是给对端填的）；
-     *  - 客户端：填对方的地址。
+     * 两种模式共用同一个地址框，规则也一样：
+     *  - **本次启动里用户输入过** → 就保持他输入的那个（切来切去都不丢）；
+     *  - **没输入过** → 填默认值「本机局域网 IP : 端口」。
+     *
+     * 服务模式实际监听的是 `0.0.0.0:端口`，框里的 IP 是给对端填的；
+     * 客户端模式则按框里的地址连过去。
      */
     private fun applyNetMode() {
         netAddress.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         netAddress.isCursorVisible = true
-        netAddress.hint = getString(R.string.net_hint)
-
-        if (netModeValue == NetMode.SERVER) {
-            netMode.text = getString(R.string.net_mode_server)
-            netAddress.setText("${NetAddress.localIpv4() ?: "0.0.0.0"}:$serverPort")
+        netMode.text = getString(
+            if (netModeValue == NetMode.SERVER) R.string.net_mode_server else R.string.net_mode_client,
+        )
+        netAddress.hint = if (netModeValue == NetMode.SERVER) {
+            getString(R.string.net_hint)
         } else {
-            netMode.text = getString(R.string.net_mode_client)
-            netAddress.setText(clientAddress)
+            getString(R.string.net_hint_client)
         }
+
+        setAddressText(currentAddress.ifEmpty { defaultAddress() })
         refreshNetAction()
+    }
+
+    /** 默认地址：本机 192 网段 IP + 默认端口。 */
+    private fun defaultAddress(): String {
+        val ip = NetAddress.localIpv4()
+        AppLog.log("本机局域网地址：${ip ?: "（没有，可能在用流量 / 没连 Wi-Fi）"}")
+        return "${ip ?: "0.0.0.0"}:${NetAddress.DEFAULT_PORT}"
+    }
+
+    /** 程序回填地址（不当作「用户输入」）。 */
+    private fun setAddressText(text: String) {
+        settingAddress = true
+        netAddress.setText(text)
+        netAddress.setSelection(text.length)
+        settingAddress = false
     }
 
     private fun toggleSession() {
@@ -298,12 +334,12 @@ class MainActivity : AppCompatActivity() {
 
         if (netModeValue == NetMode.SERVER) {
             // 端口以文本框里的为准（IP 部分只是给对端看的，服务端绑的是 0.0.0.0）
-            serverPort = NetAddress.portOf(netAddress.text.toString())
-            AppLog.log("开始服务：端口 $serverPort，对端请连 ${netAddress.text}")
+            val port = NetAddress.portOf(netAddress.text.toString())
+            AppLog.log("开始服务：端口 $port，对端请连 ${netAddress.text}")
             linkState = LinkState.STARTING
             statusDetail = getString(R.string.net_starting)
             refreshNetAction()
-            created.startServer(serverPort)
+            created.startServer(port)
         } else {
             val uri = NetAddress.toWsUri(netAddress.text.toString())
             if (uri == null) {
@@ -314,7 +350,6 @@ class MainActivity : AppCompatActivity() {
                 refreshNetAction()
                 return
             }
-            clientAddress = netAddress.text.toString().trim()
             linkState = LinkState.STARTING
             statusDetail = getString(R.string.net_connecting)
             refreshNetAction()

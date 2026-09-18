@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>Chess · 五子棋</title>
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<!-- 五子棋页：15 路连珠棋盘，其余和围棋页一样（共用 stone.js）。 -->
+<canvas id="board"></canvas>
+
+<script src="js/log.js"></script>
+<script src="js/protocol.js"></script>
+<script src="js/net.js"></script>
+<script src="js/chrome.js"></script>
+<script src="js/draw.js"></script>
+<script src="js/stone.js"></script>
+<script src="js/wuziqi.js"></script>
+<script>
+    var board = Wuziqi.create(document.getElementById('board'));
+    Chrome.setRemoteHandler(function (event) {
+        board.applyRemote(event);
+    });
+    Chrome.mount({
+        page: 'wuziqi',
+        onReset: function () {
+            board.reset();
+        }
+    });
+</script>
+</body>
+</html>

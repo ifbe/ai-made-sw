@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>Chess · 国际象棋</title>
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<!-- 国际象棋页：8 × 8 标准棋盘，白方在下。 -->
+<canvas id="board"></canvas>
+
+<script src="js/log.js"></script>
+<script src="js/protocol.js"></script>
+<script src="js/net.js"></script>
+<script src="js/chrome.js"></script>
+<script src="js/draw.js"></script>
+<script src="js/intl_chess.js"></script>
+<script>
+    var board = IntlChess.create(document.getElementById('board'));
+    // 先挂上「收到对端事件交给谁」，再 mount（mount 里可能会自动重连，别漏掉头几包）
+    Chrome.setRemoteHandler(function (event) {
+        board.applyRemote(event);
+    });
+    Chrome.mount({
+        page: 'intl_chess',
+        onReset: function () {
+            board.reset();
+        }
+    });
+</script>
+</body>
+</html>

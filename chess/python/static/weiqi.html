@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>Chess · 围棋</title>
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<!-- 围棋页：19 路棋盘 + 黑白托盘（每色 180 颗），全屏 + 和 Android 一样的外壳。 -->
+<canvas id="board"></canvas>
+
+<script src="js/log.js"></script>
+<script src="js/protocol.js"></script>
+<script src="js/net.js"></script>
+<script src="js/chrome.js"></script>
+<script src="js/draw.js"></script>
+<script src="js/stone.js"></script>
+<script src="js/weiqi.js"></script>
+<script>
+    var board = Weiqi.create(document.getElementById('board'));
+    // 先挂上「收到对端事件交给谁」，再 mount（mount 里可能会自动重连，别漏掉头几包）
+    Chrome.setRemoteHandler(function (event) {
+        board.applyRemote(event);
+    });
+    Chrome.mount({
+        page: 'weiqi',
+        onReset: function () {
+            board.reset();
+        }
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,247 @@
+/*
+ * 页面外壳的样式，尽量照着 Android 端 res/ 里的数值来：
+ *   bg_tab.xml        #E61A1A1A 底 + 1dp #4DFFFFFF 描边 + 18dp 圆角
+ *   bg_tab_active.xml #FFE6B24C 实心 + 18dp 圆角
+ *   bg_switch_button  #E61A1A1A 底 + 1dp #4DFFFFFF 描边 + 22dp 圆角（重置按钮）
+ *   bg_log_panel      #E6101418 底 + 1dp #66E6B24C 描边 + 10dp 圆角
+ *   dimens.xml        corner_button_margin = 12dp
+ * 网页上 1dp ≈ 1px。
+ */
+
+:root {
+    color-scheme: dark;
+
+    /* 刘海 / 系统栏的安全边距。手动转 90° 之后物理安全区不再对齐逻辑视口的边，会清零。 */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+}
+
+* {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+}
+
+body {
+    font-family: system-ui, -apple-system, "Noto Sans CJK SC", "Source Han Sans SC",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #F0F0F0;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* 棋盘画布：铺满整个窗口，Android 那边四个页面也是全屏叠在一起的。 */
+#board {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    z-index: 0;
+}
+
+/* ------------------------------------------------------------------ 通用按钮 */
+
+.chrome-btn {
+    display: inline-block;
+    padding: 7px 10px;
+    background: rgba(26, 26, 26, 0.902);
+    border: 1px solid rgba(255, 255, 255, 0.302);
+    border-radius: 18px;
+    color: #F0F0F0;
+    font-size: 13px;
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.chrome-btn:active {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.chrome-btn.active {
+    background: #E6B24C;
+    border-color: #E6B24C;
+    color: #2A2110;
+}
+
+/* ------------------------------------------------------------------ 左上角标签栏 */
+
+/* 顶部 / 底部的 12px 之外再让开刘海和系统栏（相当于 Android 那边吃 window insets） */
+.chrome-tabs {
+    position: fixed;
+    top: calc(12px + var(--safe-top));
+    left: calc(12px + var(--safe-left));
+    display: flex;
+    flex-wrap: wrap;
+    /* 兜底值：真实的让位宽度由 chrome.js 按右上角那组按钮的实际宽度量出来再设 */
+    max-width: calc(100% - 96px - var(--safe-left) - var(--safe-right));
+    z-index: 10;
+}
+
+.chrome-tabs .chrome-btn {
+    margin-right: 4px;
+}
+
+/* 窄屏手机：按钮缩一点，尽量少折行 */
+@media (max-width: 480px) {
+    .chrome-tabs .chrome-btn,
+    .chrome-tools-row .chrome-btn {
+        padding: 6px 8px;
+        font-size: 12px;
+    }
+
+    .chrome-tools-row .chrome-reset {
+        padding: 7px 10px;
+        font-size: 13px;
+    }
+}
+
+.chrome-tabs .chrome-btn:last-child {
+    margin-right: 0;
+}
+
+/* ---------------------------------------------- 右上角：重置 + 全屏 + 横竖屏 */
+
+.chrome-tools {
+    position: fixed;
+    top: calc(12px + var(--safe-top));
+    right: calc(12px + var(--safe-right));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    /* 比标签栏高一层：万一标签栏折行折到这里，按钮也得点得到 */
+    z-index: 11;
+}
+
+.chrome-tools-row {
+    display: flex;
+    align-items: center;
+}
+
+.chrome-tools-row .chrome-btn {
+    margin-left: 4px;
+}
+
+.chrome-tools-row .chrome-btn:first-child {
+    margin-left: 0;
+}
+
+/* 按钮下面那行小字：当前是「全屏且竖屏」这样的组合状态 */
+.chrome-tools-state {
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.2;
+    letter-spacing: 1px;
+    color: rgba(255, 255, 255, 0.55);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+/* 重置按钮比旁边两个胖一点、圆一点，字是淡红的（跟 Android 的 bg_switch_button 一样） */
+.chrome-reset {
+    padding: 8px 12px;
+    border-radius: 22px;
+    color: #EF9A9A;
+    font-size: 14px;
+}
+
+/* ------------------------------------------------------------------ 左下角联机条 */
+
+.chrome-net {
+    position: fixed;
+    left: calc(12px + var(--safe-left));
+    bottom: calc(12px + var(--safe-bottom));
+    display: flex;
+    align-items: center;
+    z-index: 10;
+}
+
+.chrome-address {
+    width: 130px;
+    margin: 0 6px;
+    padding: 7px 10px;
+    background: rgba(26, 26, 26, 0.902);
+    border: 1px solid rgba(255, 255, 255, 0.302);
+    border-radius: 18px;
+    color: #F0F0F0;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.2;
+    outline: none;
+}
+
+.chrome-address::placeholder {
+    color: rgba(255, 255, 255, 0.5);
+}
+
+/* ------------------------------------------------------------------ 右下角日志框 */
+
+.chrome-log {
+    position: fixed;
+    right: calc(12px + var(--safe-right));
+    bottom: calc(12px + var(--safe-bottom));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    z-index: 10;
+}
+
+.chrome-log-panel {
+    display: none;
+    width: 280px;
+    max-width: calc(100vw - 24px);
+    height: 170px;
+    margin-bottom: 6px;
+    padding: 8px;
+    overflow: auto;
+    background: rgba(16, 20, 24, 0.902);
+    border: 1px solid rgba(230, 178, 76, 0.4);
+    border-radius: 10px;
+    -webkit-overflow-scrolling: touch;
+}
+
+.chrome-log-panel.open {
+    display: block;
+}
+
+.chrome-log-text {
+    font-family: ui-monospace, Menlo, Consolas, "Courier New", monospace;
+    font-size: 10px;
+    line-height: 1.4;
+    color: #D8E8FF;
+    white-space: pre-wrap;
+    word-break: break-all;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* ------------------------------------------------------------------ 主页 / 占位页提示 */
+
+.chrome-hint {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    text-align: center;
+    color: rgba(255, 255, 255, 0.32);
+    font-size: 14px;
+    line-height: 1.8;
+    pointer-events: none;
+    z-index: 5;
+}

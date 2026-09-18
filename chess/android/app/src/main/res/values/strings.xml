@@ -20,6 +20,7 @@
     <string name="net_online">已连接</string>
     <string name="net_failed">连接失败</string>
     <string name="net_hint">192.168.1.7:8765</string>
+    <string name="net_hint_client">对方地址，如 192.168.5.213:8765</string>
     <string name="net_bad_address">地址不对</string>
 
     <!-- 右下角特殊日志框 -->
