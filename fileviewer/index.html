@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KiCad / 3D 预览器</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #1a1a2e; color: #ddd;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  #bar {
+    padding: 10px 16px; background: #16213e;
+    border-bottom: 1px solid #0f3460;
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  }
+  #close-btn {
+    padding: 8px 14px;
+    background: transparent;
+    border: 1px solid #0f3460;
+    color: #8888a0;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  #close-btn:hover { border-color: #e94560; color: #e94560; }
+  #view-btn {
+    padding: 8px 14px;
+    background: transparent;
+    border: 1px solid #0f3460;
+    color: #c0c0d0;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  #view-btn:hover { border-color: #e94560; color: #e94560; }
+  #view-btn.on { background: #e94560; border-color: #e94560; color: #fff; }
+  #view-btn.on:hover { background: #d03050; color: #fff; }
+  #view-btn:disabled { opacity: .35; cursor: default; border-color: #0f3460; color: #666680; }
+  #url-input {
+    flex: 1; padding: 8px 12px;
+    background: #0f0f1a; color: #ddd;
+    border: 1px solid #0f3460; border-radius: 4px;
+    font-size: 13px; font-family: inherit;
+    outline: none;
+  }
+  #url-input:focus { border-color: #e94560; }
+  #url-btn {
+    padding: 8px 18px;
+    background: #e94560; color: #fff;
+    border: none; border-radius: 4px;
+    cursor: pointer; font-size: 13px;
+    flex-shrink: 0;
+  }
+  #url-btn:hover { background: #d03050; }
+  #main {
+    flex: 1; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  #hint {
+    text-align: center; padding: 40px;
+    border: 2px dashed #0f3460; border-radius: 12px;
+    max-width: 480px; cursor: pointer;
+    transition: border-color .3s, background .3s;
+  }
+  #hint.over { border-color: #e94560; background: rgba(233,69,96,.08); }
+  #hint .ico { font-size: 42px; margin-bottom: 12px; }
+  #hint h2 { font-size: 18px; margin-bottom: 8px; }
+  #hint p { font-size: 13px; color: #8888a0; line-height: 1.6; }
+  #hint small { display: block; margin-top: 12px; font-size: 11px; color: #666680; }
+  #content {
+    position: absolute; inset: 0;
+    display: none;
+  }
+  #content.active { display: block; }
+  #cv {
+    display: block; width: 100%; height: 100%;
+    cursor: grab; touch-action: none;
+  }
+  #cv.dragging { cursor: grabbing; }
+
+  /* 3D 视图走 WebGL，与 2D canvas 互斥显示 */
+  #gl {
+    display: none; width: 100%; height: 100%;
+    cursor: grab; touch-action: none;
+  }
+  #gl.dragging { cursor: grabbing; }
+  #gl-tip {
+    display: none;
+    position: absolute; left: 12px; bottom: 12px;
+    background: rgba(22, 33, 62, 0.9);
+    border: 1px solid #0f3460; border-radius: 6px;
+    padding: 6px 10px; font-size: 11px; color: #8888a0;
+    pointer-events: none; z-index: 10;
+  }
+  #gl-tip.visible { display: block; }
+
+  /* 图层面板（右上） */
+  #layers {
+    display: none;
+    position: absolute; top: 12px; right: 12px;
+    background: rgba(22, 33, 62, 0.95);
+    border: 1px solid #0f3460; border-radius: 8px;
+    padding: 10px 12px; font-size: 12px;
+    backdrop-filter: blur(8px);
+    max-height: calc(100% - 24px); overflow-y: auto;
+    min-width: 150px; z-index: 10;
+  }
+  #layers.visible { display: block; }
+  #layers .title {
+    font-size: 11px; color: #666680; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 8px; padding-bottom: 6px;
+    border-bottom: 1px solid #0f3460;
+  }
+  #layers label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 0; cursor: pointer; user-select: none;
+    color: #c0c0d0;
+  }
+  #layers label:hover { color: #fff; }
+  #layers input[type="checkbox"] { accent-color: #e94560; cursor: pointer; }
+  #layers .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #layers .actions {
+    margin-top: 8px; padding-top: 6px; border-top: 1px solid #0f3460;
+    display: flex; gap: 8px;
+  }
+  #layers .actions button {
+    flex: 1; padding: 4px; font-size: 11px;
+    background: transparent; border: 1px solid #0f3460;
+    color: #8888a0; border-radius: 3px; cursor: pointer;
+  }
+  #layers .actions button:hover { border-color: #e94560; color: #e94560; }
+
+  /* 详情面板（左上） */
+  #properties {
+    display: none;
+    position: absolute; top: 12px; left: 12px;
+    background: rgba(22, 33, 62, 0.95);
+    border: 1px solid #0f3460; border-radius: 8px;
+    padding: 10px 12px; font-size: 12px;
+    backdrop-filter: blur(8px);
+    max-height: calc(100% - 24px); overflow-y: auto;
+    min-width: 200px; max-width: 600px;
+    z-index: 10;
+    color: #c0c0d0;
+  }
+  #properties.visible { display: block; }
+  #properties .pp-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px; padding-bottom: 6px;
+    border-bottom: 1px solid #0f3460;
+  }
+  #properties .pp-title {
+    font-size: 12px; color: #e0e0e0; font-weight: 600;
+  }
+  #properties .pp-close {
+    background: transparent; border: none;
+    color: #8888a0; cursor: pointer;
+    font-size: 16px; line-height: 1; padding: 0 4px;
+  }
+  #properties .pp-close:hover { color: #e94560; }
+  #properties .pp-rows {
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  #properties .pp-row {
+    display: flex; gap: 8px;
+  }
+  #properties .pp-key {
+    min-width: 70px; color: #666680; flex-shrink: 0;
+  }
+  #properties .pp-val {
+    color: #c0c0d0; word-break: break-all;
+  }
+  #properties .pp-source-title {
+    margin-top: 10px; padding-top: 8px;
+    border-top: 1px solid #0f3460;
+    font-size: 11px; color: #666680; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 6px;
+  }
+  #properties .pp-source {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px; line-height: 1.5;
+    color: #a0d0a0;
+    background: #0a0a14;
+    padding: 8px;
+    border-radius: 4px;
+    overflow-x: auto;
+    white-space: pre;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  #properties .pp-resize {
+    position: absolute; top: 0; right: 0;
+    width: 8px; height: 100%;
+    cursor: col-resize;
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 8px;
+  }
+  #properties .pp-resize:hover {
+    background: rgba(233, 69, 96, 0.3);
+  }
+  #coord-tip {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  background: rgba(22, 33, 62, 0.95);
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #a0d0a0;
+  white-space: nowrap;
+  z-index: 20;
+}
+
+  /* 底部模型库工具条 */
+  #libbar {
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 16px;
+    background: #16213e;
+    border-top: 1px solid #0f3460;
+    font-size: 12px;
+  }
+  #libbar.over { background: rgba(233, 69, 96, .12); }
+  #libbar .lib-label {
+    color: #666680; flex-shrink: 0;
+    text-transform: uppercase; letter-spacing: .5px; font-size: 11px;
+  }
+  #lib-input {
+    flex: 1; min-width: 0;
+    padding: 5px 10px;
+    background: #0f0f1a; color: #c0c0d0;
+    border: 1px solid #0f3460; border-radius: 4px;
+    font-size: 12px; font-family: inherit;
+    outline: none; cursor: default;
+  }
+  #lib-input::placeholder { color: #55556a; }
+  #libbar button {
+    padding: 5px 12px; font-size: 12px;
+    background: transparent; border: 1px solid #0f3460;
+    color: #8888a0; border-radius: 4px; cursor: pointer;
+    flex-shrink: 0;
+  }
+  #libbar button:hover { border-color: #e94560; color: #e94560; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="close-btn">关闭</button>
+  <button id="view-btn" style="display:none">3D 视图</button>
+  <input id="url-input" type="text" placeholder="输入 http:// 或 https:// 地址，或拖拽本地文件" spellcheck="false">
+  <button id="url-btn">确定</button>
+</div>
+<div id="main">
+  <div id="hint"></div>
+  <div id="content">
+    <canvas id="cv"></canvas>
+    <canvas id="gl"></canvas>
+    <div id="gl-tip"></div>
+    <div id="properties"></div>
+    <div id="layers"></div>
+    <div id="coord-tip"></div>
+  </div>
+</div>
+<div id="libbar">
+  <span class="lib-label">模型库</span>
+  <input id="lib-input" type="text" readonly
+         placeholder="把 3dmodels 目录或项目目录拖进来，作为元件模型库（可拖多个）">
+  <button id="lib-btn">选择目录</button>
+  <button id="lib-clear">清空</button>
+</div>
+
+<!-- 2D 渲染：依赖顺序 viewport → hittest → 各渲染器 -->
+<script src="render2d-viewport.js"></script>
+<script src="render2d-hittest.js"></script>
+<script src="render2d-pcb.js"></script>
+<script src="render2d-sch.js"></script>
+<!-- 3D 渲染管线（与文件格式无关）：依赖顺序 triangulate → math → camera → mesh → pick → webgl -->
+<script src="render3d-triangulate.js"></script>
+<script src="render3d-math.js"></script>
+<script src="render3d-camera.js"></script>
+<script src="render3d-models.js"></script>
+<script src="render3d-mesh.js"></script>
+<script src="render3d-pick.js"></script>
+<script src="render3d-webgl.js"></script>
+<!-- 格式解析：KiCad 文件 → 元素数据；独立模型 → 三角网格 -->
+<script src="parser-sexpr.js"></script>
+<script src="parser-kicad_pcb.js"></script>
+<script src="parser-kicad_sch.js"></script>
+<script src="parser-step.js"></script>
+<script src="parser-wrl.js"></script>
+<script src="parser-stl.js"></script>
+<script src="parser-3mf.js"></script>
+<!-- 面板与控制器 -->
+<script src="panel-properties.js"></script>
+<script src="panel-layers.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
