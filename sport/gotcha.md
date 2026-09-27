@@ -85,16 +85,16 @@ Android View 的构造必须真装上跑一次，或者至少 eyeball 一遍初�
 另外注意：**半圆两端必须在垂直于「对开方向」的那个轴上** —— 罚球圈是左右对开的，
 两端就得放在上下（`(ftl, ±r)`）。我第一版把两端放在左右，结果弧在端线方向完全不动。
 
-## 6. Gradle 工具链：只有这个工程要 JDK 25
+## 6. Gradle 工具链：只有这个工程要 JDK 25（**已改成 21**）
 
 **症状**：`./gradlew assD` 会卡在
 `Downloading toolchain from URI https://api.foojay.io/...`，要下 115 MB。
 
-**原因**：`gradle-daemon-jvm.properties` 里 `toolchainVersion=25`，而本机
+**原因**：`gradle-daemon-jvm.properties` 里原来写的是 `toolchainVersion=25`，而本机
 `/Library/Java/JavaVirtualMachines` 只有 8/10/11/17，`~/.gradle/jdks` 里只有 21。
 **别的工程要 17 或 21，所以它们不用下** —— 不是配置不一样，是版本正好都有。
 
-**解决**：把 `toolchainVersion` 改成 **21**（本机已有，零下载）。
+**解决**：`toolchainVersion` 已经改成 **21**（本机已有，零下载）。
 AGP 9.4.0 自己只要 JDK 17+（jar 里 6134 个 class 全是版本 61），21 完全够。
 
 **顺带**：把 `org.gradle.java.installations.paths` 写进**工程的** `gradle.properties`

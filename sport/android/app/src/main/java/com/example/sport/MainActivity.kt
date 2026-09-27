@@ -98,8 +98,15 @@ class MainActivity : AppCompatActivity() {
     private var linkState = LinkState.IDLE
     private var statusDetail = ""
 
-    /** 客户端上次输入的地址，切来切去不用重打。 */
-    private var clientAddress = ""
+    /**
+     * 本次启动**手工输入过**的地址，按模式分开记：
+     *  - `savedClientAddress`：客模式填过的对端地址
+     *  - `savedServerAddress`：服模式改过的「本机 IP:端口」
+     *
+     * 空串 = 本次启动还没输入过，那就填默认值（服模式默认本机局域网 IP + 上次的端口）。
+     */
+    private var savedClientAddress = ""
+    private var savedServerAddress = ""
 
     /** 每种球最后一包全量状态：切页 / 重连时用它对齐，不会丢对端的改动。 */
     private val lastState = HashMap<SportKind, StateChanged>()
@@ -199,12 +206,7 @@ class MainActivity : AppCompatActivity() {
         resetButton.setOnClickListener { resetCurrentPage("按钮") }
 
         // 左下角联机条：切换服 / 客、开始 / 停止
-        netMode.setOnClickListener {
-            if (session != null) return@setOnClickListener // 连着呢，先关了再切
-            netModeValue = if (netModeValue == NetMode.SERVER) NetMode.CLIENT else NetMode.SERVER
-            AppLog.log(if (netModeValue == NetMode.SERVER) "切换为服务端模式" else "切换为客户端模式")
-            applyNetMode()
-        }
+        netMode.setOnClickListener { switchNetMode() }
         netAction.setOnClickListener { toggleSession() }
 
         AppLog.log("应用启动，本机地址 ${NetAddress.localIpv4() ?: "（没有局域网 IP）"}")
@@ -294,7 +296,7 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 两种模式都**可以手动编辑**：
-     *  - 服务端：自动填「本机当前局域网 IP : 上次用的端口」，IP 和端口都能改，
+     *  - 服务端：填「本机局域网 IP : 端口」，IP 和端口都能改，
      *    服务端按端口监听（监听地址始终是 0.0.0.0，文本框里的 IP 是给对端填的）；
      *  - 客户端：填对方的地址。
      */
@@ -306,14 +308,50 @@ class MainActivity : AppCompatActivity() {
         refreshNetAction()
     }
 
-    /** 按当前模式和当前页刷新地址框（服务端 = 本机 IP + 端口；客户端 = 上次填的地址）。 */
+    /** 点「服 / 客」：先把当前模式输入过的东西记下来，再切过去。 */
+    private fun switchNetMode() {
+        if (session != null) return // 连着呢，先关了再切
+        rememberTypedAddress()
+        netModeValue = if (netModeValue == NetMode.SERVER) NetMode.CLIENT else NetMode.SERVER
+        AppLog.log(if (netModeValue == NetMode.SERVER) "切换为服务端模式" else "切换为客户端模式")
+        refreshNetAddress()
+        refreshNetAction()
+    }
+
+    /**
+     * 把地址框里**用户亲手输入**的内容记到当前模式名下（没输入过就是空串 = 用默认值）。
+     * 换模式、开始连接之前都调一次。
+     */
+    private fun rememberTypedAddress() {
+        if (session != null) return
+        val typed = netAddress.text.toString().trim()
+        when (netModeValue) {
+            NetMode.SERVER -> {
+                if (typed.isEmpty()) return
+                savedServerAddress = typed
+                // 端口也顺手记下来：下次回到服模式默认就用这个端口
+                serverPort = NetAddress.portOf(typed, serverPort)
+            }
+
+            NetMode.CLIENT -> savedClientAddress = typed
+        }
+    }
+
+    /**
+     * 按当前模式刷新地址框：
+     *  - 本次启动在这个模式里**输入过** → 保持上次输入的；
+     *  - 没输入过 → **两个模式都填「本机局域网 IP : 端口」**。
+     *
+     * 客模式也填本机地址，是为了少打字：连本机起的服务时地址已经是对的，
+     * 连同一局域网里别的机器只要把 IP 那一段改掉就行（端口一般不用动）。
+     */
     private fun refreshNetAddress() {
         if (session != null) return // 连着呢，别把用户正在看的地址冲掉
-        if (netModeValue == NetMode.SERVER) {
-            netAddress.setText("${NetAddress.localIpv4() ?: "0.0.0.0"}:$serverPort")
-        } else {
-            netAddress.setText(clientAddress)
+        val typed = when (netModeValue) {
+            NetMode.SERVER -> savedServerAddress
+            NetMode.CLIENT -> savedClientAddress
         }
+        netAddress.setText(typed.ifEmpty { NetAddress.serverAddress(serverPort) })
     }
 
     private fun toggleSession() {
@@ -352,7 +390,7 @@ class MainActivity : AppCompatActivity() {
 
         if (netModeValue == NetMode.SERVER) {
             // 端口以文本框里的为准（IP 部分只是给对端看的，服务端绑的是 0.0.0.0）
-            serverPort = NetAddress.portOf(netAddress.text.toString())
+            serverPort = NetAddress.portOf(netAddress.text.toString(), serverPort)
             AppLog.log("开始服务：端口 $serverPort，对端请连 ${netAddress.text}")
             linkState = LinkState.STARTING
             statusDetail = getString(R.string.net_starting)
@@ -368,7 +406,7 @@ class MainActivity : AppCompatActivity() {
                 refreshNetAction()
                 return
             }
-            clientAddress = netAddress.text.toString().trim()
+            savedClientAddress = netAddress.text.toString().trim()
             linkState = LinkState.STARTING
             statusDetail = getString(R.string.net_connecting)
             refreshNetAction()
