@@ -4,17 +4,13 @@
 
 - AGP 9.3.0 + Gradle 9.5（wrapper），`compileSdk`/`targetSdk = 37`，`minSdk = 28`
 - 依赖只有四个：`appcompat`、`core-ktx`、`material`、`Java-WebSocket:1.6.0`
-- `gradle/gradle-daemon-jvm.properties` 要求 **JDK 25**。本机没装 25，直接用 Android Studio 自带的 JBR 25，
-  并关掉工具链自动下载（原因见 [gotcha.md](gotcha.md) 第 9 条）：
+- 直接构建即可（`gradle/gradle-daemon-jvm.properties` 里已改成 `toolchainVersion=21`，本机就有，零下载）：
 
 ```bash
-cd android && ./gradlew :app:assembleDebug \
-  -Dorg.gradle.java.installations.paths="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
-  -Dorg.gradle.java.installations.auto-download=false
+cd android && ./gradlew :app:assembleDebug
 ```
 
-产物：`android/app/build/outputs/apk/debug/app-debug.apk`。
-用 Android Studio 直接打开 `android/` 构建也可以（IDE 自带 JBR 25，不用加参数）。
+  （如果哪天把 `toolchainVersion` 改回 25，就会卡在下载 115 MB 的 JDK 上 —— 见 [gotcha.md](gotcha.md) 第 9 条）
 
 - 只跑测试：把 `:app:assembleDebug` 换成 `:app:testDebugUnitTest`（9 个纯 JVM 测试，秒级）
 - 看日志：`adb logcat -s ChessApp:V AndroidRuntime:E`

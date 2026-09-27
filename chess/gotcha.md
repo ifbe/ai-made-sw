@@ -31,6 +31,10 @@ TCP 三次握手是**内核**用 listen backlog 完成的：只要监听 socket 
 甚至根本没在处理连接，`nc -vz` 照样 `succeeded!`。所以「能连上端口」不能证明 App 正常，
 唯一可信的信号是**应用日志里有没有「收到握手请求 / 客户端接入」**。
 
+同理，**App「自己连自己」也不能作为证据**：我们一度写过一段启动自检（服务端起来后自己用
+WebSocket 连一次 `ws://<本机IP>:<端口>`），它永远成功 —— 因为连自己的 IP 时内核直接走 loopback，
+**根本不经过 Wi-Fi**，外面连不上它照样成功。这段自检已经删掉了。
+
 ## 3. Java-WebSocket 默认 `reuseAddr = false` → `BindException: Address already in use`
 
 **症状**：关掉服务后立刻再开，报 `Address already in use`，可系统里并没有别的程序听这个端口。
@@ -105,3 +109,205 @@ AGP 9.3.0 + compileSdk 37 在 JDK 21 上构建正常。
 
 排查过程中曾 Ping 出 65ms（局域网正常 1~5ms），据此怀疑电脑上有 VPN/代理 —— 后来证明是**误导**：
 真正的根因是第 1 条的权限。**先看应用日志（`ChessApp` tag / 右下角日志框），再谈网络。**
+
+## 11. 别急着「换库 / 重写」
+
+定位到第 1 条之前，因为「同一个服务端、同一台手机，另一个 App（`chatroom`，targetSdk 35）能连，
+本项目（targetSdk 37）连不上」，曾把 WebSocket 库整个换掉：客户端从 Java-WebSocket 换成
+**OkHttp 4.12.0**（和 chatroom 同款），服务端换成**手写的极简 RFC6455 实现**（`MiniWsServer`，
+只用 `ServerSocket`）—— **问题依旧**，因为根因是权限，跟库没关系。
+
+**教训**：
+- 「A 能连、B 连不上」时，先比 **targetSdk / 权限 / 清单**这类平台差异，再比库；
+- 真要换实现，先想清楚「换完之后，什么现象会变化」—— 如果答案是「都不会变」，那就不用换；
+- 最后库还是换回 Java-WebSocket 了（两个实现都留过，接口只有 `send / listen / close` 三个方法，
+  换回来只改一个文件）。这次绕路本身没造成损失，但白花了一轮安装和测试的时间。
+
+---
+
+# iOS 侧的坑
+
+下面这些都是 iOS 版（见 [ios.md](ios.md)）真踩过的。
+
+## 12. SwiftUI 里「描边」的 Shape，命中区域是**整个矩形**
+
+**症状**：左下角地址框怎么点都没反应、弹不出虚拟键盘（但旁边「服 / 开始服务」按钮能点）；
+日志面板也无法滚动、无法选中复制。
+
+**原因**：SwiftUI 中 Shape 视图的命中测试用的是它的**填充路径**，跟你是 `fill` 还是 `stroke` 无关。
+所以 `.overlay(RoundedRectangle(...).strokeBorder(..., lineWidth: 1))` 这个「只画了 1pt 边框」的
+overlay，实际把整块矩形的触摸都拦截了。
+按钮还能用是因为 Button 的点击手势覆盖整个 label 子树；而 `TextField` 的聚焦手势在它**自己内部**，
+overlay 是它的**兄弟节点**，所以被吃掉了。
+
+**解决**：给纯装饰的描边加 `.allowsHitTesting(false)`。工程里 4 处都需要：
+`NetBarView`（地址框）、`Theme.TabButtonModifier`（所有小按钮）、`RootView`（重置按钮）、
+`LogPanelView`（日志面板边框）。
+
+## 13. 铺满屏的 `Color.clear` 当「占位」会吃掉全屏触摸
+
+**症状**：界面看起来完全正常，但棋盘**怎么拖都没反应**（按钮能点）。
+
+**原因**：`Color` 是**会绘制**的视图，命中区域就是整块矩形。`ZStack { Color.clear; 四个角控件 }`
+里它虽然在 ZStack 内部是最底层，但整个 ZStack 叠在棋盘之上，于是它替棋盘接住了所有触摸。
+
+**解决**：两选一 —— 保留它当「撑满屏的尺寸锚点」但加 `.allowsHitTesting(false)`；
+或者把四角改成 `VStack/HStack + Spacer` 定位（`Spacer` 是纯布局，不吃触摸）。
+现在用的是前者。**注意 `frame`/`padding`/`Spacer` 这些纯布局本身不吃触摸，`Color`/`Shape`/图片会。**
+
+## 14. 真机全黑：先看有没有「最早那一行」日志
+
+**症状**：打开 App 全黑，连左上角四个标签都没有；控制台一行日志都没有。
+
+**原因（两种完全不同的可能，必须分开）**：
+
+- 我那次是把 `RootView` 从 `ZStack{黑底, 棋盘, 四角控件}` 改成了
+  `.background{棋盘}.background{黑底}` 造成的（结构性改动，具体机制没能复现出来）；
+- 但**同样的症状也完全可能是「App 压根没启动」**（见下面第 19 条）。
+
+**解决**：在 `App.init()` 里打一行日志（比任何界面代码都早）：
+
+- 这行都没出现 → 进程没起来，去看第 19 条，**别改界面代码**；
+- 这行出现了、界面没有 → 才是渲染 / 布局问题。
+
+**教训**：不要为了一个「还没发生的问题」去动已经验证能跑的结构。给已有视图**加修饰符**
+（`.allowsHitTesting(false)` 这类）是安全的；**改根视图结构**不是 —— 要改就先想清楚
+「出问题时怎么判断是它」，并且准备好一键回退。
+
+## 15. Network.framework 的 WebSocket **客户端**必须用 URL endpoint
+
+**症状**：客户端第二次点连接直接崩：
+
+```
+[] nw_endpoint_get_url called with null endpoint, dumping backtrace:
+   ... nw_ws_create_client_request ...
+```
+
+**原因**：WebSocket 协议内部是**从 endpoint 里取 URL** 来拼握手请求行（`GET / HTTP/1.1` 和 `Host:`）
+的，函数就是 `nw_endpoint_get_url`。而 `NWConnection(to: .hostPort(host:port:))` 里并没有 URL，
+于是拿到 null。**这个坑会「延迟发作」**：第一次连接如果先在 TCP 层被权限挡住（第 16 条），
+压根走不到握手；等权限过了才第一次执行到 `nw_ws_create_client_request` —— 表现成「第一次没事、第二次崩」。
+
+**解决**：
+
+```swift
+let params: NWParameters = endpoint.scheme == "wss" ? NWParameters.tls : NWParameters.tcp
+params.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
+// ws://host:port/  —— 显式给 "/" 路径，空路径两边都不好解析
+let conn = NWConnection(to: .url(url), using: params)
+```
+
+服务端（`NWListener` + `NWProtocolWebSocket`）不需要 URL。
+
+## 16. iOS 本地网络权限：`POSIX 50 (ENETDOWN)` 不等于网络坏了
+
+**症状**：`连接失败：POSIXErrorCode(rawValue: 50): Network is down`，可 Wi-Fi 明明好着。
+
+**原因**：iOS 14+ 第一次访问局域网会弹「想查找并连接本地网络上的设备」，
+**弹框期间 / 被拒时拿到的就是 `ENETDOWN(50)`**（和 Android 16 的 `ACCESS_LOCAL_NETWORK` 是对等的坑）。
+前提是 Info.plist 里有 `NSLocalNetworkUsageDescription`（我们用 `INFOPLIST_KEY_` 加），
+否则**弹框都不弹、连接直接被拒**。
+
+**解决**：
+
+- 拿到 ENETDOWN **不要 `cancel()`**：让连接保持 `.waiting`，用户点「允许」之后路径一变它会自己接上；
+- 界面提示「缺少本地网络权限」，日志里写清去哪打开（设置 → 隐私与安全性 → 本地网络）；
+- 同一条错误只报一次（`.waiting` 会反复回调，不去重会刷屏）；
+- 只连手输的固定 IP **不需要** `NSBonjourServices`，也不需要 multicast entitlement。
+
+## 17. iOS 会把「有 emoji 版本的 pictograph」画成彩色 emoji —— 国际象棋白兵变黑兵
+
+**症状**：国际象棋里**白方的小兵全是黑的**，其他白子正常。
+
+**原因**：**♟ U+265F 在 Emoji 11.0（2018）被 emoji 化了**，而 iOS 的规则是
+「只要这个 pictograph 有 emoji 版本，就画成彩色 emoji」（见
+[Emojipedia: A Chess Piece is Emojified](https://blog.emojipedia.org/a-chess-piece-is-emojified/)）。
+系统字体（`Font.system` → SF Pro）**并不含**这六个棋类码位，一定要走字体回退；回退时 ♟ 被
+彩色 emoji 字体接走，而**彩色 emoji 完全忽略 `foregroundColor`** —— 于是「白色填充 + 深色描边」
+画出来还是黑的。其余五个码位没被 emoji 化，所以只有小兵出问题。
+
+**解决**：字形后面缀 **U+FE0E（VARIATION SELECTOR-15，强制文字呈现）**：`"\u{265F}\u{FE0E}"`。
+这样回退会选中文字字体 `AppleSymbols`（实测六个字形齐全、填充色生效）。
+**六个字形统一都缀**，将来再被 emoji 化也不怕。
+
+**排查手法（不用设备）**：模拟器运行时里就是**真实的 iOS 字体**
+（`/Library/Developer/CoreSimulator/Volumes/iOS_*/.../RuntimeRoot/System/Library/Fonts`）。用
+`CTFontManagerCreateFontDescriptorsFromURL` + `CTFontGetGlyphsForCharacters` 查码位覆盖，
+再用 `CTLineDraw` 画到 bitmap 数「不透明像素的平均亮度」——就能知道**填充色有没有被尊重**
+（实测 AppleSymbols 填充白色 → 0.961；AppleColorEmoji → 彩色位图，颜色无效）。
+
+## 18. 键盘避让：SwiftUI 自带，别自己再抬一次
+
+**症状**：点地址框，联机条「飞」到屏幕中上部，离键盘很远。
+
+**原因**：键盘弹出时系统会把**根视图底部安全区**抬高，不忽略安全区的 `CornerControls`
+已经自动上移一次；我又额外加了一层手算的 `keyboardInset` padding → **抬了两倍**
+（≈470 + 450pt，正好落到屏幕中上部）。
+另外那个手算公式在**横屏**下更离谱：`keyboardFrameEndUserInfoKey` 是**屏幕坐标**，
+横屏时和 `window.bounds` 不是同一套轴。
+
+**解决**：删掉手算那层，交给系统。真要自己算，必须先 `window.convert(frame, from: nil)` 转坐标系，
+并且先确认系统**没有**已经避让过。
+
+## 19. Xcode 版本 < 设备 iOS 版本 → `Sending qLaunchSuccess packet failed` + 黑屏 + 零日志
+
+**症状**：
+
+```
+Cannot launch '/private/var/containers/Bundle/Application/.../chess.app': Sending qLaunchSuccess packet failed
+```
+
+App 卡在启动屏（深色模式下就是全黑）、控制台一行日志都没有；重启设备之后有时又能起来。
+
+**原因**：**设备系统比 Xcode 支持的更新**。当时 Xcode 26.3 自带 iOS 26.2 SDK
+（[官方对照表](https://developer.apple.com/jp/xcode/system-requirements/)：Xcode 26.3 仅支持到 iOS 26.2），
+而 iPhone 是 **iOS 26.5** → 包能装上去，但调试启动握手谈不拢。
+**同一份代码**在老 iPad（iPadOS 16.7.16）上一切正常。
+
+**怎么确认**：`xcodebuild -showsdks` 看 SDK 版本；
+`xcrun devicectl device info details --device <id>` 看 `osVersionNumber`；
+再看 `~/Library/Developer/Xcode/iOS DeviceSupport/` 里是不是多了一份新系统的符号目录
+（说明设备刚升过级 —— 这次就是 `iPhone16,2 26.4.1` 旁边多了 `26.5`）。
+
+**解决**：把 Xcode 升到 ≥ 设备系统的版本（iOS 26.5 要 Xcode 26.5+）。
+临时绕过：**不连调试器**启动 —— 桌面点图标，或
+`xcrun devicectl device process launch --console --device <id> <bundle id>`。
+
+## 20. Debug 构建在老设备上启动慢，别急着优化首帧
+
+真机实测（iPad6,7 / A10X / Debug 配置）：
+
+```
+1400ms  App.init（我们代码的第一行）   ← dyld 加载 chess.debug.dylib（Xcode 16+ 把代码拆成单独 dylib，Debug 专属）
+ 250ms  RootView.body 第一次求值      ← 我们的视图树构建
+  65ms  RootView.onAppear             ← 含枚举本机网卡，实际 < 1ms
+ 506ms  首帧上屏                       ← 日志里那行 "Metal API Validation Enabled" 是 Debug 默认开的 GPU 验证层
+```
+
+**63% 的时间在我们代码跑起来之前**，我们自己的逻辑只有 250ms。提速办法（都不用改代码）：
+Edit Scheme → Run → Diagnostics 关掉 **Metal API Validation**；Build Settings 里 Debug 的
+**`ENABLE_DEBUG_DYLIB = NO`**；或者直接跑 Release（上架版本本来就不含这些）。
+
+**排查手法**：计时起点取**进程创建时刻**（`sysctl(KERN_PROC_PID)` 的 `p_starttime`），
+而不是我们代码第一次执行的时间 —— 否则第一行永远是 0ms，分不清是 dyld 慢还是我们慢。
+（`StartupClock` 的 epoch 换算记得自测：`CFAbsoluteTime = Unix 秒 − 978307200`。）
+
+## 21. 跨平台数值：Kotlin `Float.roundToInt()` ≠ Swift `rounded()`
+
+Kotlin 的 `roundToInt()` 是 `floor(v + 0.5)`（负数半格向 **+∞** 取整），
+Swift `rounded()` 默认是 `.toNearestOrAwayFromZero`（`-0.5 → -1`）。
+棋盘坐标里真会出现 `x.5` 格，所以 iOS 侧统一用 `Float.roundToIntK`（`floor(v + 0.5)`）。
+
+**这类差异肉眼看不出来，只有逐字节比对能抓出来** —— 这也是为什么要有黄金向量（见 [ios.md](ios.md)）。
+
+## 22. 别照设计文档抄实现，以 Android 源码为准
+
+[design.md](ios/design.md) 是复刻规格，但里面有 3 处和源码不一致，照文档写就会跑偏：
+
+| 文档说 | 源码实际 |
+|---|---|
+| §6.1 `subdivisions = lines + 1` | `BoardGeometry` 的**默认值其实是 20**，只有 `StoneBoardView` 显式传 `lines + 1`；照默认值写，五子棋格子会从 24.375pt 变 19.5pt |
+| §7.1 象棋第 1 层是「方块 + 边框」 | `boardBorderPaint` 声明了却**从未使用** —— Android 象棋盘其实没有边框 |
+| §7.8 「对端拖动也显示悬停」 | `drawHover` 先判**视图层** `dragging`，所以**只有本地拖才显示**悬停圈 |
+
+这三处都是黄金向量比对时抓出来的（第 1 处直接让 8 行输出对不上）。
