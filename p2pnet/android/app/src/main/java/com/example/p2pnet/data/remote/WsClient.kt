@@ -27,7 +27,29 @@ class WsClient(
         fun onUdpSend(text: String)
         fun onUdpRecv(text: String)
         fun onHelloDone(info: PeerInfo?, sock: DatagramSocket?, peerIp: String, peerPort: Int, mode: String)
+
+        /** hello socket 刚创建好（绑定完成）时回调，用于在界面上生成 socket 卡片 */
+        fun onUdpSocketBound(sock: DatagramSocket, localIp: String, localPort: Int) {}
+
+        /**
+         * UDP 打洞流程的每一步进度（界面上的 socket 卡片用来打勾）：
+         * SENT_TO_SERVER  已把 hello 包发给服务器
+         * SERVER_REPLIED  收到服务器回复（带服务器眼里我的公网 ip/port 和对方 ip/port）
+         * SENT_TO_PEER    已开始给对端发包
+         * PEER_REPLIED    已收到对端回包
+         */
+        fun onUdpSocketStep(
+            sock: DatagramSocket,
+            step: UdpStep,
+            myIp: String = "",
+            myPort: Int = 0,
+            peerIp: String = "",
+            peerPort: Int = 0
+        ) {}
     }
+
+    /** UDP socket 卡片的五个步骤 */
+    enum class UdpStep { SENT_TO_SERVER, SERVER_REPLIED, SENT_TO_PEER, PEER_REPLIED, HANDED_TO }
 
     data class PeerInfo(
         val name: String,
@@ -43,7 +65,10 @@ class WsClient(
         .build()
 
     private var ws: WebSocket? = null
+    private var wsOpen = false
     var listener: Listener? = null
+    /** 当前 hello 用的 socket（服务器回复要按它定位到界面上的那张卡片） */
+    private var helloSocket: DatagramSocket? = null
     private var serverIp = ""
     private var serverUdpPort = 0
     private var serverHost = ""
@@ -71,6 +96,7 @@ class WsClient(
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                wsOpen = true
                 listener?.onConnected()
             }
 
@@ -79,10 +105,12 @@ class WsClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                wsOpen = false
                 listener?.onError(t.message ?: "connection failed")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                wsOpen = false
                 listener?.onDisconnected()
             }
         })
@@ -118,6 +146,17 @@ class WsClient(
                     _helloPeerIp = info.peerIp
                     _helloPeerPort = info.peerPort
                     listener?.onUdpRecv("收到 thisisyourpeer_udp，设置停止标志")
+                    // 服务器回复：界面上的 socket 卡片打第 2 个勾，并显示公网 ip/port
+                    helloSocket?.let { s ->
+                        listener?.onUdpSocketStep(
+                            sock = s,
+                            step = UdpStep.SERVER_REPLIED,
+                            myIp = info.myIp,
+                            myPort = info.myPort,
+                            peerIp = info.peerIp,
+                            peerPort = info.peerPort
+                        )
+                    }
                     stopFlag.set(true)
                 }
                 "challenge" -> {
@@ -171,8 +210,16 @@ class WsClient(
             val ipv4Addr = Inet4Address.getByName("0.0.0.0")
             sock = DatagramSocket(null as java.net.InetSocketAddress?)
             sock.bind(java.net.InetSocketAddress(ipv4Addr, 0))
-            listener?.onUdpSend("UDP hello socket 绑定类型=${sock.localAddress.javaClass.name} 本地端口=${sock.localPort} 目标=$serverIp:$serverUdpPort")
-            val localPort = sock.localPort
+            val boundSock: DatagramSocket = sock ?: return
+            helloSocket = boundSock
+            listener?.onUdpSend("UDP hello socket 绑定类型=${boundSock.localAddress.javaClass.name} 本地端口=${boundSock.localPort} 目标=$serverIp:$serverUdpPort")
+            // 通知界面：socket 已创建，把本机实际绑定的地址/端口显示出来
+            listener?.onUdpSocketBound(
+                boundSock,
+                boundSock.localAddress?.hostAddress ?: "0.0.0.0",
+                boundSock.localPort
+            )
+            val localPort = boundSock.localPort
             // 重置共享状态
             stopFlag.set(false)
             _pendingPeerInfo = null
@@ -219,6 +266,8 @@ class WsClient(
             val pkt = DatagramPacket(data, data.size, addr, serverUdpPort)
             sock.send(pkt)
             listener?.onUdpSend("UDP burst[$i] → $payload")
+            // 第一个包发出去就算「发给服务器」这一步完成
+            if (i == 0) listener?.onUdpSocketStep(sock, UdpStep.SENT_TO_SERVER)
             Thread.sleep(30)
         }
         listener?.onUdpSend("burst 15个发完，进入维持阶段")
@@ -289,22 +338,38 @@ class WsClient(
         sendJson(JSONObject().put("type", "list"))
     }
 
+    /** 退出登录：只通知服务器结束登录会话，不断开 WebSocket */
+    fun sendLogout() {
+        sendJson(JSONObject().put("type", "logout"))
+    }
+
     fun disconnectOnly() {
         resetUdpState()
+        wsOpen = false
+        helloSocket = null
         ws?.close(1000, "bye")
         ws = null
     }
 
     fun login(useWss: Boolean, serverHost: String, serverPort: Int, username: String, password: String) {
-        val proto = if (useWss) "wss" else "ws"
-        connect("$proto://$serverHost:$serverPort/")
         this.serverHost = serverHost
         loginUsername = username
         loginPassword = password
-        sendJson(JSONObject().apply {
+
+        val loginMsg = JSONObject().apply {
             put("type", "login")
             put("username", username)
-        })
+        }
+
+        // 已经连着（例如刚退出登录但没断连接）就直接复用这条连接登录，不再新开一条
+        if (ws != null && wsOpen) {
+            sendJson(loginMsg)
+            return
+        }
+
+        val proto = if (useWss) "wss" else "ws"
+        connect("$proto://$serverHost:$serverPort/")
+        sendJson(loginMsg)
     }
 
     private fun sendJson(obj: JSONObject) {

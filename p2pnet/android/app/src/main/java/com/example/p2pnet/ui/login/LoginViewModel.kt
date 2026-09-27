@@ -4,12 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.p2pnet.data.local.LocalPrefs
 import com.example.p2pnet.data.repository.P2pRepository
+import com.example.p2pnet.net.UdpSessionInfo
+import com.example.p2pnet.service.SessionManager
 import com.example.p2pnet.ui.Page
 import com.example.p2pnet.ui.TabItem
 import com.example.p2pnet.ui.WgConfig
 import com.example.p2pnet.ui.WgInterface
 import com.example.p2pnet.ui.WgPeer
-import com.example.p2pnet.ui.toPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +19,9 @@ import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class LoginViewModel(
     private val repository: P2pRepository
@@ -61,17 +65,23 @@ class LoginViewModel(
         repository.sendList()
     }
 
-    fun onUdp() {
-        repository.sendP2pUdp(_uiState.value.targetUsername)
-    }
-
-    fun onTcp() {
-        repository.sendP2pTcp(_uiState.value.targetUsername)
-    }
-
-    fun onWghelp() {
-        val target = _uiState.value.targetUsername
+    // target 默认取“对方用户名”输入框的值；节点卡片上的按钮会显式传自己的用户名
+    fun onUdp(target: String = _uiState.value.targetUsername) {
         if (target.isNotEmpty()) {
+            pendingUdpTarget = target
+            repository.sendP2pUdp(target)
+        }
+    }
+
+    fun onTcp(target: String = _uiState.value.targetUsername) {
+        if (target.isNotEmpty()) {
+            repository.sendP2pTcp(target)
+        }
+    }
+
+    fun onWghelp(target: String = _uiState.value.targetUsername) {
+        if (target.isNotEmpty()) {
+            pendingUdpTarget = target
             repository.sendWghelp(target)
         }
     }
@@ -86,7 +96,7 @@ class LoginViewModel(
             }
 
             override fun onRawMessage(text: String) {
-                appendMessage(Direction.SERVER, text)
+                handleServerMessage(text)
             }
 
             override fun onSend(text: String) {
@@ -107,6 +117,21 @@ class LoginViewModel(
 
             override fun onHelloDone(info: com.example.p2pnet.data.remote.WsClient.PeerInfo?, sock: java.net.DatagramSocket?, peerIp: String, peerPort: Int, mode: String) {
                 appendMessage(Direction.SYSTEM, "UDP hello 线程已退出")
+            }
+
+            override fun onUdpSocketBound(sock: java.net.DatagramSocket, localIp: String, localPort: Int) {
+                adoptUdpSocket(sock, localIp, localPort)
+            }
+
+            override fun onUdpSocketStep(
+                sock: java.net.DatagramSocket,
+                step: com.example.p2pnet.data.remote.WsClient.UdpStep,
+                myIp: String,
+                myPort: Int,
+                peerIp: String,
+                peerPort: Int
+            ) {
+                sessionManager?.markStep(sock, step, myIp, myPort, peerIp, peerPort)
             }
 
             override fun onLoginSuccess(username: String) {
@@ -138,13 +163,16 @@ class LoginViewModel(
     fun onDisconnect() {
         repository.disconnectOnly()
         onStopService?.invoke()
+        // 不清空 messages：App 内日志跨连接保留，只有日志面板里的“清空”才会清
         _uiState.value = _uiState.value.copy(
             isConnected = false,
             isLoggedIn = false,
             loading = false,
-            messages = emptyList()
+            myIp = "",
+            myPort = 0,
+            peers = emptyList()
         )
-        stopUdpPeerSocket()
+        closeAllUdpSockets()
     }
 
     fun onLogin() {
@@ -161,6 +189,12 @@ class LoginViewModel(
         }
         repository.onUdpRecv = { text ->
             appendMessage(Direction.UDP_RECV, text)
+        }
+        repository.onUdpSocketBound = { sock, localIp, localPort ->
+            adoptUdpSocket(sock, localIp, localPort)
+        }
+        repository.onUdpSocketStep = { sock, step, myIp, myPort, peerIp, peerPort ->
+            sessionManager?.markStep(sock, step, myIp, myPort, peerIp, peerPort)
         }
         repository.onHelloDone = { info, sock, peerIp, peerPort, mode ->
             appendMessage(Direction.SYSTEM, "onHelloDone 被调用 mode=$mode")
@@ -186,11 +220,17 @@ class LoginViewModel(
                     } else {
                         appendMessage(Direction.SYSTEM, "WireGuard tab 未找到")
                     }
+                    // 5. 交给下游消费者：WireGuard
+                    sessionManager?.markStep(
+                        sock,
+                        com.example.p2pnet.data.remote.WsClient.UdpStep.HANDED_TO,
+                        handedTo = "wg"
+                    )
                 } else {
-                    // udp 模式：创建新 tab 并跳转
-                    navigateTo(info.toPage())
-                    appendMessage(Direction.SYSTEM, "navigateTo 完成，启动 socket")
-                    startUdpPeerSocket(info.toPage(), sock)
+                    // udp 模式：不再自动跳到 udptest 业务。
+                    // 探测（第 3、4 步）由 SessionManager 在收到服务器回复时自动开始，
+                    // 这里只记一笔日志，之后由用户在 socket 卡片上选用法。
+                    appendMessage(Direction.SYSTEM, "打洞完成，等待在 socket 卡片上选用法")
                 }
             } else {
                 appendMessage(Direction.SYSTEM, "onHelloDone info=null（hello线程超时或异常）")
@@ -200,7 +240,7 @@ class LoginViewModel(
             appendMessage(Direction.CLIENT, text)
         }
         repository.onRawMessage = { text ->
-            appendMessage(Direction.SERVER, text)
+            handleServerMessage(text)
         }
 
         viewModelScope.launch {
@@ -232,16 +272,17 @@ class LoginViewModel(
     }
 
     fun onLogout() {
-        repository.logout()
-        onStopService?.invoke()
+        // 只退出登录：给服务器发 logout，但保持 WebSocket 连接
+        //（isConnected 不动、不停前台服务、不清空已输入的密码、也不清空 App 内日志）
+        repository.logout(keepConnection = true)
         _uiState.value = _uiState.value.copy(
-            isConnected = false,
             isLoggedIn = false,
             loggedInUsername = "",
-            messages = emptyList(),
-            password = ""
+            myIp = "",
+            myPort = 0,
+            peers = emptyList()
         )
-        stopUdpPeerSocket()
+        closeAllUdpSockets()
     }
 
 
@@ -249,9 +290,12 @@ class LoginViewModel(
         _uiState.value = _uiState.value.copy(error = null)
     }
 
-    // ── UDP P2P socket ──
-    private var udpSock: DatagramSocket? = null
-    private var udpSockRunning = false
+    // ── UDP P2P session（socket 本身归 P2pService 的 SessionManager，这里只留观察与转发）──
+    private var sessionManager: SessionManager? = null
+
+    /** 最近一次点 udp / wghelp 的目标，socket 建好后用它把卡片挂到对应的对方卡片下面 */
+    private var pendingUdpTarget: String = ""
+
     private val _udpSockMessages = MutableStateFlow<List<String>>(emptyList())
     val udpSockMessages = _udpSockMessages
 
@@ -275,117 +319,101 @@ class LoginViewModel(
         _udpSockMessages.value = emptyList()
     }
 
-    // RTT 计算：跟踪每个 ping 的本地发送时刻，收到 pong 时查表算 RTT
-    private val sentPings = mutableMapOf<Int, Long>()
+    /** 外部（MainActivity）往 App 日志里写一条系统信息 */
+    fun appendSystemLog(text: String) {
+        appendMessage(Direction.SYSTEM, text)
+    }
 
-    fun startUdpPeerSocket(page: Page.UdpTest, inheritedSock: DatagramSocket? = null) {
-        try { udpSock?.close() } catch (_: Exception) {}
-        udpSock = null
-        udpSockRunning = false
+    /**
+     * UDP 日志统一入口：每条都带时间戳。
+     * 后台被系统冻结 / 循环被中断时，日志里会直接出现时间跳变或明确的退出原因。
+     */
+    /** 日志出口：UDP 相关的日志（含 SessionManager / usage 产生的）都进这个列表 */
+    private fun udpLog(text: String) {
+        val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        _udpSockMessages.value = _udpSockMessages.value + "[$ts] $text"
+    }
 
-        if (inheritedSock == null) {
-            _udpSockMessages.value = _udpSockMessages.value + "android: 无可用 socket，无法建立 P2P 连接"
+    // ── P2P session：由 P2pService 的 SessionManager 拥有，这里只做转发和观察 ──
+
+    /** socket 绑定完成（WsClient 回调）：交给 SessionManager 接管，之后 socket 归服务所有 */
+    private fun adoptUdpSocket(sock: DatagramSocket, localIp: String, localPort: Int) {
+        val manager = sessionManager
+        if (manager == null) {
+            appendMessage(Direction.SYSTEM, "后台服务未就绪，无法接管 socket ${localIp}:${localPort}")
+            try { sock.close() } catch (_: Exception) {}
             return
         }
+        manager.adopt(sock, pendingUdpTarget, localIp, localPort)
+    }
 
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                udpSock = inheritedSock
-                _udpSockMessages.value = _udpSockMessages.value + "android: 继承 hello socket 本地端口=${inheritedSock.localPort} 对方=${page.peerIp}:${page.peerPort}"
-
-                // 延迟到后台线程再更新 UI tab 信息
-                val localIp = udpSock!!.localAddress.hostAddress ?: ""
-                val localPort = udpSock!!.localPort
-                _udpSockMessages.value = _udpSockMessages.value + "android: P2P socket 启动 本机=$localIp:$localPort"
-                _udpSockMessages.value = _udpSockMessages.value + "android: P2P socket 启动 对方=${page.peerIp}:${page.peerPort}"
-                // 更新 tab 上的地址信息（在 coroutine 内做）
-                updateUdpPageLocalAddr(localIp, localPort)
-
-                udpSockRunning = true
-                val sock = udpSock!!
-
-                val addr = InetAddress.getByName(page.peerIp)
-                var seq = 1
-
-                // ---- 主循环：每秒发一个 ping ----
-                while (udpSockRunning && !sock.isClosed) {
-                    val ping = JSONObject().apply {
-                        put("type", "ping")
-                        put("seq", seq)
-                        put("ts", System.currentTimeMillis())
-                    }
-                    sentPings[seq] = System.currentTimeMillis()
-                    if (sentPings.size > 100) {
-                        sentPings.keys.minOrNull()?.let { sentPings.remove(it) }
-                    }
-                    val bytes = ping.toString().toByteArray()
-                    val pkt = DatagramPacket(bytes, bytes.size, addr, page.peerPort)
-                    sock.send(pkt)
-                    _udpSockMessages.value = _udpSockMessages.value + "send: ${addr.hostAddress}:${page.peerPort} $ping"
-
-                    // ---- 接收：等待对方回包或 ping ----
-                    val buf = ByteArray(2048)
-                    val recvPkt = DatagramPacket(buf, buf.size)
-                    try {
-                        sock.soTimeout = 1000
-                        sock.receive(recvPkt)
-                        val data = recvPkt.data.copyOf(recvPkt.length)
-
-                        // 尝试解析 JSON
-                        try {
-                            val msg = JSONObject(String(data, Charsets.UTF_8))
-                            when (msg.optString("type")) {
-                                "pong" -> {
-                                    val pongSeq = msg.optInt("seq")
-                                    val rtt = System.currentTimeMillis() - (sentPings.remove(pongSeq) ?: 0L)
-                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} $msg RTT=${rtt}ms"
-                                }
-                                "ping" -> {
-                                    // 回复 pong（和 udp.py 一致）
-                                    val pong = JSONObject().apply {
-                                        put("type", "pong")
-                                        put("seq", msg.optInt("seq"))
-                                        put("ts", msg.optLong("ts"))
-                                    }
-                                    val pongBytes = pong.toString().toByteArray()
-                                    val pongPkt = DatagramPacket(pongBytes, pongBytes.size, recvPkt.address, recvPkt.port)
-                                    sock.send(pongPkt)
-                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} $msg"
-                                    _udpSockMessages.value = _udpSockMessages.value + "send: ${recvPkt.address.hostAddress}:${recvPkt.port} $pong"
-                                }
-                                else -> {
-                                    _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} $msg"
-                                }
-                            }
-                        } catch (_: Exception) {
-                            // 非 JSON 包，直接记录原始数据
-                            _udpSockMessages.value = _udpSockMessages.value + "recv: ${recvPkt.address.hostAddress}:${recvPkt.port} [${data.size} bytes]"
-                        }
-                    } catch (_: Exception) {
-                        // 每秒超时一次（正常）
-                    }
-
-                    seq++
-                    kotlinx.coroutines.delay(1000)
+    /** 服务绑定好之后由 MainActivity 调进来；之后 session 的增删改都跟着它走 */
+    fun attachSessionManager(manager: SessionManager) {
+        sessionManager = manager
+        manager.onLog = { text -> udpLog(text) }
+        // 把服务里已有的 session 立刻同步过来（Activity 重建后卡片不会丢）
+        _uiState.value = _uiState.value.copy(udpSockets = manager.sessions.value)
+        viewModelScope.launch {
+            manager.sessions.collect { list ->
+                if (list != _uiState.value.udpSockets) {
+                    _uiState.value = _uiState.value.copy(udpSockets = list)
                 }
-            } catch (e: Exception) {
-                val trace = e.stackTrace.take(3).joinToString("\n") { "  ${it}" }
-                _udpSockMessages.value = _udpSockMessages.value + "android: error: ${e.javaClass.simpleName}: ${e.message}\n${trace}"
-            } finally {
-                try { udpSock?.close() } catch (_: Exception) {}
-                udpSock = null
-                udpSockRunning = false
-                sentPings.clear()
             }
         }
     }
 
-    fun stopUdpPeerSocket() {
-        udpSockRunning = false
-        try { udpSock?.close() } catch (_: Exception) {}
-        udpSock = null
-        sentPings.clear()
+    /** socket 卡片上点击某个用法 */
+    fun useUdpSocket(id: Long, usageId: String) {
+        val card = _uiState.value.udpSockets.firstOrNull { it.id == id } ?: return
+        // 已经交给它了，别重复交接
+        if (card.handedTo == usageId) return
+        val manager = sessionManager
+        if (manager == null) {
+            appendMessage(Direction.SYSTEM, "后台服务未就绪，无法交给 $usageId")
+            return
+        }
+
+        if (usageId == "udptest") {
+            // udptest 有自己的界面：建/切到 UDP tab，并把本机绑定写进页面
+            val page = Page.UdpTest(
+                targetUsername = card.target,
+                myIp = card.myPublicIp,
+                myPublicPort = card.myPublicPort,
+                myLocalIp = card.localIp,
+                myLocalPort = card.localPort,
+                peerIp = card.peerPublicIp,
+                peerPort = card.peerPublicPort
+            )
+            navigateTo(page)
+            updateUdpPageLocalAddr(card.localIp, card.localPort)
+        }
+
+        if (!manager.attachUsage(id, usageId)) {
+            appendMessage(Direction.SYSTEM, "socket 已关闭，无法交给 $usageId")
+        } else if (usageId != "udptest") {
+            // 尚未实现的用法：往 App 内日志也写一行，主页面上就能看到反馈
+            appendMessage(
+                Direction.SYSTEM,
+                "$usageId 用法尚未实现（socket ${card.localIp}:${card.localPort}）"
+            )
+        }
     }
+
+    /** 关闭某条 session（卡片上的 ✕） */
+    fun closeUdpSocket(id: Long) {
+        sessionManager?.close(id)
+    }
+
+    /** 断开 / 退出登录：把所有 session 和 socket 一起收掉 */
+    private fun closeAllUdpSockets() {
+        sessionManager?.closeAll()
+    }
+
+    /** 关掉 UDP tab：只摘掉用法（停 ping），session 和 socket 保留 */
+    private fun detachUdpUsages() {
+        sessionManager?.detachAllUsages()
+    }
+
 
     /** 在主线程更新 UdpTest page 的本地地址 */
     private fun updateUdpPageLocalAddr(localIp: String, localPort: Int) {
@@ -447,9 +475,9 @@ class LoginViewModel(
         val tabs = _uiState.value.tabs.toMutableList()
         if (index < 0 || index >= tabs.size || tabs.size <= 1) return
         val removed = tabs.removeAt(index)
-        // 如果关闭的是 UDP tab，停止 socket
+        // 如果关闭的是 UDP tab，只摘掉用法（停 ping），session/socket 保留
         if (removed.page is Page.UdpTest) {
-            stopUdpPeerSocket()
+            detachUdpUsages()
         }
         var current = _uiState.value.currentTabIndex
         var page = _uiState.value.currentPage
@@ -471,6 +499,51 @@ class LoginViewModel(
         )
         _uiState.value = _uiState.value.copy(
             messages = _uiState.value.messages + item
+        )
+    }
+
+    /** 服务端消息统一入口：记日志 + 解析 list 回复 */
+    private fun handleServerMessage(text: String) {
+        appendMessage(Direction.SERVER, text)
+        tryParseListResult(text)
+    }
+
+    /**
+     * 解析 list 回复：
+     * {"type":"list_result","users":[{"username":..,"ip":..,"port":..,"udp_port":..}, ...]}
+     * 把用户名等于自己的那条作为“我的 ip/port”，其余生成其他人的节点。
+     */
+    private fun tryParseListResult(text: String) {
+        val obj = try {
+            JSONObject(text)
+        } catch (_: Exception) {
+            return
+        }
+        if (obj.optString("type") != "list_result") return
+
+        val arr = obj.optJSONArray("users")
+        val count = arr?.length() ?: 0
+        val entries = ArrayList<PeerEntry>(count)
+        for (i in 0 until count) {
+            val u = arr?.optJSONObject(i) ?: continue
+            val name = u.optString("username", "")
+            if (name.isEmpty()) continue
+            entries.add(
+                PeerEntry(
+                    username = name,
+                    ip = u.optString("ip", ""),
+                    port = u.optInt("port", 0)
+                )
+            )
+        }
+
+        val myName = _uiState.value.loggedInUsername.ifBlank { _uiState.value.username }
+        val mine = entries.firstOrNull { it.username == myName }
+
+        _uiState.value = _uiState.value.copy(
+            myIp = mine?.ip ?: "",
+            myPort = mine?.port ?: 0,
+            peers = entries.filter { it.username != myName }
         )
     }
 

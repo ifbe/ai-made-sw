@@ -26,6 +26,11 @@ class LocalPrefs(context: Context) {
         get() = prefs.getBoolean(Constants.KEY_LOGGED_IN, false)
         set(value) = prefs.edit().putBoolean(Constants.KEY_LOGGED_IN, value).apply()
 
+    /** 「忽略电池优化」提示是否已经弹过（每次安装只弹一次） */
+    var batteryOptAsked: Boolean
+        get() = prefs.getBoolean(Constants.KEY_BATTERY_OPT_ASKED, false)
+        set(value) = prefs.edit().putBoolean(Constants.KEY_BATTERY_OPT_ASKED, value).apply()
+
     fun clearSession() {
         prefs.edit()
             .remove(Constants.KEY_USERNAME)

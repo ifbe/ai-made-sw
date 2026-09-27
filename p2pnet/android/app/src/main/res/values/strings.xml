@@ -1,3 +1,20 @@
 <resources>
     <string name="app_name">P2pnet</string>
+
+    <!-- 前台服务通知栏 -->
+    <string name="notification_channel_name">p2pnet 连接</string>
+    <string name="notification_channel_desc">保持 WebSocket 和 UDP 连接，锁屏/后台不断网</string>
+    <string name="notification_title">p2pnet 后台运行中</string>
+    <string name="notification_text">正在保持 WebSocket / UDP 连接</string>
+
+    <!-- 电池优化白名单引导（每次安装只提示一次） -->
+    <string name="battery_opt_title">保持后台连接</string>
+    <string name="battery_opt_message">按 Home 键 / 锁屏后要长时间保持 WebSocket 与 UDP 连接，需要允许 P2pnet 忽略电池优化。\n\n否则系统进入 Doze 后会挂起网络，连接会在后台静默断开（前台服务也救不回来）。</string>
+    <string name="battery_opt_positive">去设置</string>
+    <string name="battery_opt_negative">以后再说</string>
+
+    <!-- 实测到后台被挂起后的引导（%1$d = 挂起秒数） -->
+    <string name="suspend_title">后台连接被系统挂起</string>
+    <string name="suspend_message_doze">上次切到后台时，P2pnet 被系统挂起了约 %1$d 秒：这段时间 CPU 和网络都被停掉，WebSocket 与 UDP 的收发（每秒 ping/pong）全停，对端会认为你掉线了。\n\n原因是没加入 Doze 电池优化白名单 —— 在 Doze 下系统会挂起网络并忽略唤醒锁，前台服务也救不回来。\n\n请允许 P2pnet 忽略电池优化。</string>
+    <string name="suspend_message_rom">已经加入 Doze 白名单，但上次切到后台时 P2pnet 仍被系统挂起约 %1$d 秒 —— 这是厂商 ROM 的省电/自启动策略，代码层面无法绕过，只能手动加白名单：\n\n· 小米/红米：设置 → 应用设置 → 应用管理 → P2pnet → 省电策略=无限制、自启动=允许，并锁定后台任务\n· 华为/荣耀：设置 → 应用启动管理 → P2pnet → 手动管理（允许自启动/关联启动/后台活动）\n· OPPO/realme：设置 → 电池 → 应用耗电管理 → 允许后台运行\n· vivo/iQOO：设置 → 电池 → 后台高耗电 → 允许\n· 三星：设置 → 电池 → 后台使用限制 → 从「已休眠的应用」里移除\n\n点「去设置」可直接进应用详情页。</string>
 </resources>

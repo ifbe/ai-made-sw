@@ -5,6 +5,7 @@ plugins {
 
 android {
     namespace = "com.example.p2pnet"
+    buildToolsVersion = "37.0.0"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1

@@ -23,6 +23,8 @@ class P2pRepository(
     var onSend: ((String) -> Unit)? = null
     var onUdpSend: ((String) -> Unit)? = null
     var onUdpRecv: ((String) -> Unit)? = null
+    var onUdpSocketBound: ((java.net.DatagramSocket, String, Int) -> Unit)? = null
+    var onUdpSocketStep: ((java.net.DatagramSocket, WsClient.UdpStep, String, Int, String, Int) -> Unit)? = null
     var onHelloDone: ((WsClient.PeerInfo?, java.net.DatagramSocket?, String, Int, String) -> Unit)? = null
 
     fun useClient(client: WsClient?) {
@@ -58,6 +60,21 @@ class P2pRepository(
 
                 override fun onUdpRecv(text: String) {
                     this@P2pRepository.onUdpRecv?.invoke(text)
+                }
+
+                override fun onUdpSocketBound(sock: java.net.DatagramSocket, localIp: String, localPort: Int) {
+                    this@P2pRepository.onUdpSocketBound?.invoke(sock, localIp, localPort)
+                }
+
+                override fun onUdpSocketStep(
+                    sock: java.net.DatagramSocket,
+                    step: WsClient.UdpStep,
+                    myIp: String,
+                    myPort: Int,
+                    peerIp: String,
+                    peerPort: Int
+                ) {
+                    this@P2pRepository.onUdpSocketStep?.invoke(sock, step, myIp, myPort, peerIp, peerPort)
                 }
 
                 override fun onHelloDone(info: WsClient.PeerInfo?, sock: java.net.DatagramSocket?, peerIp: String, peerPort: Int, mode: String) {
@@ -98,8 +115,17 @@ class P2pRepository(
         }
     }
 
-    fun logout() {
-        ws.disconnectOnly()
+    /**
+     * 退出登录。
+     * keepConnection = true：只告诉服务器结束登录会话（logout），WebSocket 保持连接；
+     * keepConnection = false（默认）：直接断开连接。
+     */
+    fun logout(keepConnection: Boolean = false) {
+        if (keepConnection) {
+            ws.sendLogout()
+        } else {
+            ws.disconnectOnly()
+        }
         localPrefs.clearSession()
         _loggedInUsername = null
     }
