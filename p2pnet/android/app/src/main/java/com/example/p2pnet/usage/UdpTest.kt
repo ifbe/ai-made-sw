@@ -1,6 +1,7 @@
 package com.example.p2pnet.usage
 
 import com.example.p2pnet.net.UdpSession
+import com.example.p2pnet.net.formatHostPort
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -24,7 +25,7 @@ class UdpTest : Usage {
 
     override fun attach(session: UdpSession, env: UsageEnv) {
         detach(session)
-        env.log("android: 交给 udptest（对端 ${session.peerIp}:${session.peerPort}），开始 ping/pong")
+        env.log("android: 交给 udptest（对端 ${formatHostPort(session.peerIp, session.peerPort)}），开始 ping/pong")
 
         val sentPings = mutableMapOf<Int, Long>()
         var seq = 1
@@ -41,7 +42,7 @@ class UdpTest : Usage {
                     sentPings.keys.minOrNull()?.let { sentPings.remove(it) }
                 }
                 if (session.sendToPeer(ping.toString().toByteArray())) {
-                    env.log("send: ${session.peerIp}:${session.peerPort} $ping")
+                    env.log("send: ${formatHostPort(session.peerIp, session.peerPort)} $ping")
                 } else {
                     env.log("android: udptest 发包失败，循环退出")
                     break
@@ -56,14 +57,14 @@ class UdpTest : Usage {
                 val text = try { String(pkt.data, Charsets.UTF_8) } catch (_: Exception) { "" }
                 val msg = try { JSONObject(text) } catch (_: Exception) { null }
                 if (msg == null) {
-                    env.log("recv: ${pkt.fromIp}:${pkt.fromPort} [${pkt.data.size} bytes]")
+                    env.log("recv: ${formatHostPort(pkt.fromIp, pkt.fromPort)} [${pkt.data.size} bytes]")
                     return@collect
                 }
                 when (msg.optString("type")) {
                     "pong" -> {
                         val pongSeq = msg.optInt("seq")
                         val rtt = System.currentTimeMillis() - (sentPings.remove(pongSeq) ?: 0L)
-                        env.log("recv: ${pkt.fromIp}:${pkt.fromPort} $msg RTT=${rtt}ms")
+                        env.log("recv: ${formatHostPort(pkt.fromIp, pkt.fromPort)} $msg RTT=${rtt}ms")
                     }
                     "ping" -> {
                         // 回复 pong（和 udp.py 一致）
@@ -73,8 +74,8 @@ class UdpTest : Usage {
                             put("ts", msg.optLong("ts"))
                         }
                         session.sendTo(pkt.fromIp, pkt.fromPort, pong.toString().toByteArray())
-                        env.log("recv: ${pkt.fromIp}:${pkt.fromPort} $msg")
-                        env.log("send: ${pkt.fromIp}:${pkt.fromPort} $pong")
+                        env.log("recv: ${formatHostPort(pkt.fromIp, pkt.fromPort)} $msg")
+                        env.log("send: ${formatHostPort(pkt.fromIp, pkt.fromPort)} $pong")
                     }
                     else -> env.log("recv: ${pkt.fromIp}:${pkt.fromPort} $msg")
                 }

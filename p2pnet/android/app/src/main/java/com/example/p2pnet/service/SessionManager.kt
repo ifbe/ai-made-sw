@@ -3,6 +3,8 @@ package com.example.p2pnet.service
 import com.example.p2pnet.data.remote.WsClient
 import com.example.p2pnet.net.UdpSession
 import com.example.p2pnet.net.UdpSessionInfo
+import com.example.p2pnet.net.SessionStep
+import com.example.p2pnet.net.formatHostPort
 import com.example.p2pnet.usage.Tun
 import com.example.p2pnet.usage.UdpTest
 import com.example.p2pnet.usage.Usage
@@ -86,16 +88,106 @@ class SessionManager(private val scope: CoroutineScope) {
         return id
     }
 
-    /** 关闭一条 session（等于卡片上的 ✕） */
+    /** 关闭一条 session（等于卡片上的 ✕）。TCP 预览卡片没有真 socket，也走这里移除 */
     fun close(id: Long) {
         probeJobs.remove(id)?.cancel()
-        val session = live.remove(id) ?: return
-        activeUsage.remove(id)?.detach(session)
         val snapshot = info(id)
-        session.close()
+        val session = live.remove(id)
+        if (session != null) {
+            activeUsage.remove(id)?.detach(session)
+            session.close()
+        }
+        if (snapshot == null && session == null) return
         _sessions.value = _sessions.value.filterNot { it.id == id }
-        snapshot?.let { log("android: 已关闭 UDP socket ${it.localIp}:${it.localPort}") }
+        snapshot?.let {
+            if (it.kind == "tcp") log("android: 已关闭 TCP 流程卡片（target=${it.target}）")
+            else log("android: 已关闭 socket ${formatHostPort(it.localIp, it.localPort)}")
+        }
     }
+
+    /**
+     * 只做展示：登记一张流程预览卡片（tcp / direct / upnp 用）。
+     * 这三种打洞的真实逻辑都还没实现，所以这里只是把计划步骤画出来：
+     * 不建 socket、不发信令、不占用端口。
+     */
+    fun previewFlow(kind: String, target: String): Long {
+        val id = ++seq
+        _sessions.value = _sessions.value + UdpSessionInfo(
+            id = id,
+            kind = kind,
+            target = target,
+            plan = flowPlan(kind)
+        )
+        log("android: 显示 $kind 流程（真实逻辑尚未实现，仅预览）target=$target")
+        return id
+    }
+
+    private fun flowPlan(kind: String): List<SessionStep> = when (kind) {
+        "tcp" -> tcpFlowPlan()
+        "direct" -> directFlowPlan()
+        "upnp" -> upnpFlowPlan()
+        else -> emptyList()
+    }
+
+    /** TCP 打洞的计划步骤（对应 python 端 client/remote/tcp.py 的做法） */
+    private fun tcpFlowPlan(): List<SessionStep> = listOf(
+        SessionStep(
+            text = "1. 创建并绑定 3 个 socket",
+            detail = "a 注册 / b listen / c connect，三个绑同一本地端口（SO_REUSEADDR + SO_REUSEPORT）"
+        ),
+        SessionStep(
+            text = "2. 用 a 连服务器注册",
+            detail = "上报 username + session_key 签名，在网关上建立 NAT 映射"
+        ),
+        SessionStep(
+            text = "3. 服务器交换双方地址",
+            detail = "拿到对端 ip:port 和我的公网 ip:port"
+        ),
+        SessionStep(
+            text = "4. b listen 与 c connect 竞速",
+            detail = "accept / connect 谁先成功用谁；超时即失败（不 relay）"
+        )
+    )
+
+    /** direct 的计划步骤：v4/v6 全地址交换 + 并发探测 */
+    private fun directFlowPlan(): List<SessionStep> = listOf(
+        SessionStep(
+            text = "1. 向服务器请求交换全部地址",
+            detail = "服务器向对方索取候选表，并把我的候选表转给对方"
+        ),
+        SessionStep(
+            text = "2. 拿到双方候选地址",
+            detail = "v4 公网 / v4 本机 / 全局 v6，每条带 ip:port"
+        ),
+        SessionStep(
+            text = "3. 对每个候选并发探测",
+            detail = "按地址族各建一个 socket 发 app 层 probe（无 root 做不了 ICMP ping）"
+        ),
+        SessionStep(
+            text = "4. 第一个回包的候选胜出",
+            detail = "用胜出的 socket 建 session，再在卡片上选应用"
+        )
+    )
+
+    /** upnp 的计划步骤：双方各自让网关开洞，把映射当作候选 */
+    private fun upnpFlowPlan(): List<SessionStep> = listOf(
+        SessionStep(
+            text = "1. SSDP 发现网关 IGD",
+            detail = "组播 M-SEARCH 到 239.255.255.250:1900（需要 MulticastLock）"
+        ),
+        SessionStep(
+            text = "2. 取设备描述，定位 WANIPConnection",
+            detail = "解析设备 XML，拿到 SOAP control URL"
+        ),
+        SessionStep(
+            text = "3. AddPortMapping 申请外部端口",
+            detail = "外部端口 → 本机 UDP 端口，并用 GetExternalIPAddress 取公网 IP"
+        ),
+        SessionStep(
+            text = "4. 把映射当作候选上报",
+            detail = "双方都成功后按 direct 的方式互相探测；退出时 DeletePortMapping 清理"
+        )
+    )
 
     /** 断开连接 / 退出登录时把所有 session 收掉 */
     fun closeAll() {
@@ -186,7 +278,7 @@ class SessionManager(private val scope: CoroutineScope) {
      */
     private fun startProbe(session: UdpSession) {
         if (probeJobs[session.id]?.isActive == true) return
-        log("android: 开始探测对端 ${session.peerIp}:${session.peerPort}（${UDP_PROBE_TIMEOUT_MS / 1000}s）")
+        log("android: 开始探测对端 ${formatHostPort(session.peerIp, session.peerPort)}（${UDP_PROBE_TIMEOUT_MS / 1000}s）")
         probeJobs[session.id] = scope.launch(Dispatchers.IO) {
             var probeSeq = 1
             val deadline = System.currentTimeMillis() + UDP_PROBE_TIMEOUT_MS
@@ -200,7 +292,7 @@ class SessionManager(private val scope: CoroutineScope) {
                     log("android: 探测发包失败，停止探测")
                     return@launch
                 }
-                log("send: ${session.peerIp}:${session.peerPort} $probe")
+                log("send: ${formatHostPort(session.peerIp, session.peerPort)} $probe")
                 markStep(session.id, WsClient.UdpStep.SENT_TO_PEER)
 
                 val got = withTimeoutOrNull(1000) { session.incoming.first() }

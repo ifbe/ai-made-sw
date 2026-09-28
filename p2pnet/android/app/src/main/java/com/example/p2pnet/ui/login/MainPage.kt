@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.p2pnet.net.UdpSessionInfo
+import com.example.p2pnet.net.formatHostPort
 import com.example.p2pnet.ui.Page
 import android.os.Build
 import android.graphics.Rect
@@ -168,7 +169,7 @@ fun MainPage(viewModel: LoginViewModel) {
                             Text("list")
                         }
                         OutlinedButton(
-                            onClick = { viewModel.onWghelp() },
+                            onClick = { /* wghelp 已移除：wg 改在 socket 卡片上选 */ },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.outlinedButtonColors(
                                 contentColor = MaterialTheme.colorScheme.secondary
@@ -869,7 +870,7 @@ private fun FreeLayer(
     }
 }
 
-/** UDP socket 卡片：显示本机实际绑定的地址/端口，整卡可拖动，右上角 ✕ 关闭 */
+/** socket 卡片：UDP 显示本机绑定 + 五步进度；TCP 目前只显示流程步骤。整卡可拖动，右上角 ✕ 关闭 */
 @Composable
 private fun UdpSocketCardView(
     card: UdpSessionInfo,
@@ -878,6 +879,7 @@ private fun UdpSocketCardView(
     onUse: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val isPreview = card.kind != "udp"
     Card(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
@@ -893,7 +895,7 @@ private fun UdpSocketCardView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "UDP socket",
+                    text = if (isPreview) "${card.kind} 流程预览" else "UDP socket",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -913,37 +915,52 @@ private fun UdpSocketCardView(
                     )
                 }
             }
-            Text(
-                text = "本机绑定 ${card.localIp}:${card.localPort}",
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .padding(start = 8.dp, end = 8.dp, bottom = 2.dp)
-            )
+            if (isPreview) {
+                // tcp / direct / upnp：只显示计划步骤（真实逻辑还没实现，所以全是 ○）
+                card.plan.forEach { step ->
+                    UdpStepRow(step.text, step.done)
+                    if (step.detail.isNotEmpty()) UdpInfoRow(step.detail)
+                }
+                Text(
+                    text = "（仅流程预览，尚未实现真实握手）",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 4.dp)
+                )
+            } else {
+                Text(
+                    text = "本机绑定 ${formatHostPort(card.localIp, card.localPort)}",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .padding(start = 8.dp, end = 8.dp, bottom = 2.dp)
+                )
 
-            // 打洞四步，每完成一步打勾
-            UdpStepRow("发给服务器", card.sentToServer)
-            UdpStepRow("收到服务器回复", card.serverReplied)
-            if (card.serverReplied) {
-                UdpInfoRow("公网 ${card.myPublicIp}:${card.myPublicPort}")
-                UdpInfoRow("对方 ${card.peerPublicIp}:${card.peerPublicPort}")
-            }
-            UdpStepRow("发给对端", card.sentToPeer)
-            UdpStepRow("收到对端回复", card.peerReplied)
+                // 打洞四步，每完成一步打勾
+                UdpStepRow("发给服务器", card.sentToServer)
+                UdpStepRow("收到服务器回复", card.serverReplied)
+                if (card.serverReplied) {
+                    UdpInfoRow("公网 ${formatHostPort(card.myPublicIp, card.myPublicPort)}")
+                    UdpInfoRow("对方 ${formatHostPort(card.peerPublicIp, card.peerPublicPort)}")
+                }
+                UdpStepRow("发给对端", card.sentToPeer)
+                UdpStepRow("收到对端回复", card.peerReplied)
 
-            // 第 5 行：选用法。第 4 步（收到对端回复）打勾之后才可点
-            Row(
-                modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                UsageButton("udptest", card.peerReplied, card.handedTo == "udptest") { onUse("udptest") }
-                UsageButton("tun", card.peerReplied, card.handedTo == "tun") { onUse("tun") }
-                UsageButton("switch", card.peerReplied, card.handedTo == "switch") { onUse("switch") }
-                UsageButton("wg", card.peerReplied, card.handedTo == "wg") { onUse("wg") }
+                // 第 5 行：选用法。第 4 步（收到对端回复）打勾之后才可点
+                Row(
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    UsageButton("udptest", card.peerReplied, card.handedTo == "udptest") { onUse("udptest") }
+                    UsageButton("tun", card.peerReplied, card.handedTo == "tun") { onUse("tun") }
+                    UsageButton("switch", card.peerReplied, card.handedTo == "switch") { onUse("switch") }
+                    UsageButton("wg", card.peerReplied, card.handedTo == "wg") { onUse("wg") }
+                }
             }
         }
     }
@@ -1054,16 +1071,20 @@ private fun PeerNode(
                     .height(PeerActionHeight),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                PeerAction("wghelp") { viewModel.onWghelp(peer.username) }
+                // 这里只有「打洞」行为（direct / upnp / udp / tcp）；
+                // 任何「应用」行为（udptest / tun / switch / wg / 聊天…）都在打洞成功后
+                // 出现在 socket 卡片第 5 行上选，不放在这里。
+                PeerAction("direct") { viewModel.onDirect(peer.username) }
+                PeerAction("upnp") { viewModel.onUpnp(peer.username) }
                 PeerAction("udp") { viewModel.onUdp(peer.username) }
-                PeerAction("tcp") { viewModel.navigateTo(Page.Chat(peer.username)) }
+                PeerAction("tcp") { viewModel.onTcp(peer.username) }
             }
         }
     }
 }
 
 /** 其他人节点下面那排按钮的宽度（比均分窄） */
-private val PeerActionWidth = 52.dp
+private val PeerActionWidth = 44.dp
 
 @Composable
 private fun RowScope.PeerAction(text: String, onClick: () -> Unit) {

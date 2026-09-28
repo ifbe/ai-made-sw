@@ -3,11 +3,14 @@ package com.example.p2pnet.data.remote
 import android.os.Handler
 import android.os.Looper
 import com.example.p2pnet.data.local.LocalPrefs
+import com.example.p2pnet.net.formatHostPort
+import com.example.p2pnet.net.hostForUrl
 import okhttp3.*
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -188,7 +191,7 @@ class WsClient(
     }
 
     private fun startUdpHello() {
-        // 捕获当前 mode（sendP2pUdp 或 sendWghelp 设置的），hello 线程结束时用它决定路由
+        // 捕获当前 mode（现在只有 udp 打洞会设置它），hello 线程结束时随结果一起回调
         val mode = _helloMode
         listener?.onUdpSend("startUdpHello ENTRY serverIp=$serverIp serverUdpPort=$serverUdpPort mode=$mode")
         if (serverIp.isEmpty() && serverHost.isNotEmpty()) {
@@ -207,16 +210,19 @@ class WsClient(
         // 主线程创建 socket，然后直接返回，不阻塞 WebSocket 线程
         var sock: DatagramSocket? = null
         try {
-            val ipv4Addr = Inet4Address.getByName("0.0.0.0")
-            sock = DatagramSocket(null as java.net.InetSocketAddress?)
-            sock.bind(java.net.InetSocketAddress(ipv4Addr, 0))
-            val boundSock: DatagramSocket = sock ?: return
+            val boundSock: DatagramSocket = createHelloSocket()
+            sock = boundSock
             helloSocket = boundSock
-            listener?.onUdpSend("UDP hello socket 绑定类型=${boundSock.localAddress.javaClass.name} 本地端口=${boundSock.localPort} 目标=$serverIp:$serverUdpPort")
+            val isV6 = boundSock.localAddress is Inet6Address
+            listener?.onUdpSend(
+                "UDP hello socket 绑定=${formatHostPort(boundSock.localAddress?.hostAddress ?: "", boundSock.localPort)}" +
+                    " 地址族=${if (isV6) "v6 双栈（可收发 v4/v6）" else "v4"}" +
+                    " 目标=${formatHostPort(serverIp, serverUdpPort)}"
+            )
             // 通知界面：socket 已创建，把本机实际绑定的地址/端口显示出来
             listener?.onUdpSocketBound(
                 boundSock,
-                boundSock.localAddress?.hostAddress ?: "0.0.0.0",
+                boundSock.localAddress?.hostAddress ?: if (isV6) "::" else "0.0.0.0",
                 boundSock.localPort
             )
             val localPort = boundSock.localPort
@@ -320,6 +326,28 @@ class WsClient(
         helloThread = null
     }
 
+    /**
+     * 建一个 v4/v6 都能用的 hello socket。
+     *
+     * 首选绑 `::`（Linux/Android 默认 `net.ipv6.bindv6only=0`，双栈 socket 既能发给 v6 目的地，
+     * 也能发给 v4 目的地——Java 会自动走 v4-mapped 地址）；只有双栈不可用时才退回绑 `0.0.0.0`。
+     *
+     * 注意：这里只解决「本机能不能收发两个地址族」。真正走 v6 还要服务端也监听 v6
+     * （现在 server.py 是 `HOST='0.0.0.0'` 纯 v4），以及 DNS 能解析出 AAAA。
+     */
+    private fun createHelloSocket(): DatagramSocket {
+        try {
+            val dual = DatagramSocket(null as java.net.InetSocketAddress?)
+            dual.bind(java.net.InetSocketAddress(Inet6Address.getByName("::"), 0))
+            return dual
+        } catch (t: Throwable) {
+            android.util.Log.w("UDP", "双栈绑定(::)失败，退回 v4: ${t.javaClass.simpleName}: ${t.message}")
+        }
+        val v4 = DatagramSocket(null as java.net.InetSocketAddress?)
+        v4.bind(java.net.InetSocketAddress(Inet4Address.getByName("0.0.0.0"), 0))
+        return v4
+    }
+
     fun sendP2pUdp(target: String) {
         _helloMode = "udp"
         sendJson(JSONObject().put("type", "p2pudp").put("target", target))
@@ -327,11 +355,6 @@ class WsClient(
 
     fun sendP2pTcp(target: String) {
         sendJson(JSONObject().put("type", "p2ptcp").put("target", target))
-    }
-
-    fun sendWghelp(target: String) {
-        _helloMode = "wg"
-        sendJson(JSONObject().put("type", "wghelp").put("target", target))
     }
 
     fun sendList() {
@@ -368,7 +391,8 @@ class WsClient(
         }
 
         val proto = if (useWss) "wss" else "ws"
-        connect("$proto://$serverHost:$serverPort/")
+        // serverHost 可能是裸 v6 字面量，拼 URL 要加方括号
+        connect("$proto://${hostForUrl(serverHost)}:$serverPort/")
         sendJson(loginMsg)
     }
 

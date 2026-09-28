@@ -3,6 +3,7 @@ package com.example.p2pnet.data.repository
 import android.util.Log
 import com.example.p2pnet.data.local.LocalPrefs
 import com.example.p2pnet.data.remote.WsClient
+import com.example.p2pnet.net.hostForUrl
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 import kotlin.coroutines.resume
@@ -132,7 +133,8 @@ class P2pRepository(
 
     fun connectOnly(useWss: Boolean, host: String, port: Int) {
         val proto = if (useWss) "wss" else "ws"
-        ws.connect("$proto://$host:$port/")
+        // host 可能是裸 v6 字面量，拼 URL 要加方括号
+        ws.connect("$proto://${hostForUrl(host)}:$port/")
     }
 
     fun disconnectOnly() {
@@ -144,7 +146,6 @@ class P2pRepository(
     }
 
     fun sendList() = ws.sendList()
-    fun sendWghelp(target: String) = ws.sendWghelp(target)
     fun sendP2pUdp(target: String) = ws.sendP2pUdp(target)
     fun sendP2pTcp(target: String) = ws.sendP2pTcp(target)
     fun getServerHost(): String = localPrefs.serverHost

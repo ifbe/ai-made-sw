@@ -1,13 +1,23 @@
 package com.example.p2pnet.net
 
 /**
- * 一条 UDP session 的界面快照（SessionManager 通过 StateFlow 推给 UI）。
- * 界面上的 socket 卡片就是照它渲染的：本机绑定 + 打洞五步进度 + 选中的用法。
+ * 一条 session 的界面快照（SessionManager 通过 StateFlow 推给 UI）。
+ * 界面上的 socket 卡片就是照它渲染的：本机绑定 + 打洞步骤 + 选中的用法。
+ *
+ * ⚠️ 名字里的 `Udp` 是历史遗留：`kind = "tcp"` 时这张卡片也被复用（TCP 的步骤和 UDP 完全不同，
+ * 用 [plan] 单独描述）。等 TCP 打洞逻辑真正落地时再统一改名 / 重构。
  */
 data class UdpSessionInfo(
     val id: Long,
+    /** "udp" = 真的打洞出来的 session；"tcp" = 目前只做流程展示 */
+    val kind: String = "udp",
     /** 对端用户名 */
     val target: String = "",
+    /**
+     * 自定义步骤列表。非空时卡片按它渲染步骤（TCP 用），
+     * 空时按下面的 UDP 五步布尔渲染。
+     */
+    val plan: List<SessionStep> = emptyList(),
     /** 本机实际绑定的地址/端口 */
     val localIp: String = "",
     val localPort: Int = 0,
@@ -27,4 +37,11 @@ data class UdpSessionInfo(
     val peerReplied: Boolean = false,
     /** 5. 交给哪个用法（"udptest" / "tun" / "switch" / "wg"），空 = 还没选 */
     val handedTo: String = ""
+)
+
+/** 卡片上的一步（文字 + 可选说明 + 是否已完成） */
+data class SessionStep(
+    val text: String,
+    val detail: String = "",
+    val done: Boolean = false
 )

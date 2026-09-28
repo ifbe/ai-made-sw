@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.p2pnet.data.local.LocalPrefs
 import com.example.p2pnet.data.repository.P2pRepository
 import com.example.p2pnet.net.UdpSessionInfo
+import com.example.p2pnet.net.formatHostPort
 import com.example.p2pnet.service.SessionManager
 import com.example.p2pnet.ui.Page
 import com.example.p2pnet.ui.TabItem
@@ -73,17 +74,42 @@ class LoginViewModel(
         }
     }
 
-    fun onTcp(target: String = _uiState.value.targetUsername) {
-        if (target.isNotEmpty()) {
-            repository.sendP2pTcp(target)
-        }
+    /**
+     * direct：先跟服务器换一遍双方所有地址（v4/v6），再逐个并发探测。
+     * 目前**只显示流程**：不发信令（理由同 onTcp：别把对端拉进我们没实现的流程）。
+     */
+    fun onDirect(target: String = _uiState.value.targetUsername) {
+        showFlowPreview("direct", target)
     }
 
-    fun onWghelp(target: String = _uiState.value.targetUsername) {
-        if (target.isNotEmpty()) {
-            pendingUdpTarget = target
-            repository.sendWghelp(target)
+    /**
+     * upnp：双方各自让路由器开洞，把映射出来的公网地址当作候选。
+     * 目前**只显示流程**；真正的实现计划做在 net/UpnpPortMapper.kt 里，由 direct 流程调用。
+     */
+    fun onUpnp(target: String = _uiState.value.targetUsername) {
+        showFlowPreview("upnp", target)
+    }
+
+    /**
+     * tcp：TCP 打洞（3 个 socket 同端口 + listen/connect 竞速）。
+     * 目前**只显示流程**：不建 socket、也不发 `p2ptcp` 信令——
+     * 免得我们在毫无实现的情况下，把对端（Python 客户端）拉进真实的 TCP 打洞流程。
+     * 真正的逻辑落地时，这里再补 `repository.sendP2pTcp(target)`。
+     */
+    fun onTcp(target: String = _uiState.value.targetUsername) {
+        showFlowPreview("tcp", target)
+    }
+
+    /** 三种「打洞方式」目前都只做流程预览 */
+    private fun showFlowPreview(kind: String, target: String) {
+        if (target.isEmpty()) return
+        val manager = sessionManager
+        if (manager == null) {
+            appendMessage(Direction.SYSTEM, "后台服务未就绪，无法显示 $kind 流程")
+            return
         }
+        manager.previewFlow(kind, target)
+        appendMessage(Direction.SYSTEM, "显示 $kind 流程（真实逻辑尚未实现）：target=$target")
     }
 
     fun onConnect() {
@@ -201,37 +227,10 @@ class LoginViewModel(
             if (info != null && sock != null) {
                 appendMessage(Direction.SYSTEM, "P2P已建立: ${info.name} (${info.peerIp}:${info.peerPort})")
                 appendMessage(Direction.SYSTEM, "peer info: 本机=${info.myIp}:${info.myPort} 对方=${info.peerIp}:${info.peerPort}")
-                if (mode == "wg") {
-                    // wghelp 模式：找到已有的 WireGuard tab，更新数据后跳转
-                    val tabs = _uiState.value.tabs
-                    val wgIndex = tabs.indexOfFirst { it.page is Page.WireGuard }
-                    if (wgIndex >= 0) {
-                        val updatedPage = Page.WireGuard(
-                            targetUsername = info.name,
-                            myIp = info.myIp,
-                            myPort = info.myPort,
-                            peerIp = info.peerIp,
-                            peerPort = info.peerPort
-                        )
-                        val updatedTabs = tabs.toMutableList()
-                        updatedTabs[wgIndex] = updatedTabs[wgIndex].copy(page = updatedPage)
-                        _uiState.value = _uiState.value.copy(tabs = updatedTabs, currentTabIndex = wgIndex, currentPage = updatedPage)
-                        appendMessage(Direction.SYSTEM, "已跳转到 WireGuard tab")
-                    } else {
-                        appendMessage(Direction.SYSTEM, "WireGuard tab 未找到")
-                    }
-                    // 5. 交给下游消费者：WireGuard
-                    sessionManager?.markStep(
-                        sock,
-                        com.example.p2pnet.data.remote.WsClient.UdpStep.HANDED_TO,
-                        handedTo = "wg"
-                    )
-                } else {
-                    // udp 模式：不再自动跳到 udptest 业务。
-                    // 探测（第 3、4 步）由 SessionManager 在收到服务器回复时自动开始，
-                    // 这里只记一笔日志，之后由用户在 socket 卡片上选用法。
-                    appendMessage(Direction.SYSTEM, "打洞完成，等待在 socket 卡片上选用法")
-                }
+                // 打洞到这里就结束了：**不做任何「应用」行为**（不跳 tab、不自动交给某个用法）。
+                // 第 3、4 步的探测由 SessionManager 在收到服务器回复时自动开始，
+                // 之后由用户在 socket 卡片第 5 行选用法（udptest / tun / switch / wg）。
+                appendMessage(Direction.SYSTEM, "打洞完成，等待在 socket 卡片上选用法")
             } else {
                 appendMessage(Direction.SYSTEM, "onHelloDone info=null（hello线程超时或异常）")
             }
@@ -373,30 +372,64 @@ class LoginViewModel(
             return
         }
 
-        if (usageId == "udptest") {
-            // udptest 有自己的界面：建/切到 UDP tab，并把本机绑定写进页面
-            val page = Page.UdpTest(
-                targetUsername = card.target,
-                myIp = card.myPublicIp,
-                myPublicPort = card.myPublicPort,
-                myLocalIp = card.localIp,
-                myLocalPort = card.localPort,
-                peerIp = card.peerPublicIp,
-                peerPort = card.peerPublicPort
-            )
-            navigateTo(page)
-            updateUdpPageLocalAddr(card.localIp, card.localPort)
+        when (usageId) {
+            "udptest" -> {
+                // udptest 有自己的界面：建/切到 UDP tab，并把本机绑定写进页面
+                val page = Page.UdpTest(
+                    targetUsername = card.target,
+                    myIp = card.myPublicIp,
+                    myPublicPort = card.myPublicPort,
+                    myLocalIp = card.localIp,
+                    myLocalPort = card.localPort,
+                    peerIp = card.peerPublicIp,
+                    peerPort = card.peerPublicPort
+                )
+                navigateTo(page)
+                updateUdpPageLocalAddr(card.localIp, card.localPort)
+            }
+            "wg" -> {
+                // 原 wghelp 的行为挪到这里：把这条已打通的 socket 的对端/公网地址填进 WireGuard 页并跳过去
+                openWireGuardTab(card)
+            }
         }
 
         if (!manager.attachUsage(id, usageId)) {
             appendMessage(Direction.SYSTEM, "socket 已关闭，无法交给 $usageId")
-        } else if (usageId != "udptest") {
+        } else if (usageId == "tun" || usageId == "switch") {
             // 尚未实现的用法：往 App 内日志也写一行，主页面上就能看到反馈
             appendMessage(
                 Direction.SYSTEM,
-                "$usageId 用法尚未实现（socket ${card.localIp}:${card.localPort}）"
+                "$usageId 用法尚未实现（socket ${formatHostPort(card.localIp, card.localPort)}）"
             )
         }
+    }
+
+    /** 把一条已打通的 session 交给 WireGuard 页：填公网地址并跳过去（原 wghelp 的行为） */
+    private fun openWireGuardTab(card: UdpSessionInfo) {
+        val tabs = _uiState.value.tabs
+        val wgIndex = tabs.indexOfFirst { it.page is Page.WireGuard }
+        if (wgIndex < 0) {
+            appendMessage(Direction.SYSTEM, "WireGuard tab 未找到")
+            return
+        }
+        val updatedPage = Page.WireGuard(
+            targetUsername = card.target,
+            myIp = card.myPublicIp,
+            myPort = card.myPublicPort,
+            peerIp = card.peerPublicIp,
+            peerPort = card.peerPublicPort
+        )
+        val updatedTabs = tabs.toMutableList()
+        updatedTabs[wgIndex] = updatedTabs[wgIndex].copy(page = updatedPage)
+        _uiState.value = _uiState.value.copy(
+            tabs = updatedTabs,
+            currentTabIndex = wgIndex,
+            currentPage = updatedPage
+        )
+        appendMessage(
+            Direction.SYSTEM,
+            "已交给 WireGuard：公网 ${formatHostPort(card.myPublicIp, card.myPublicPort)} ↔ 对端 ${formatHostPort(card.peerPublicIp, card.peerPublicPort)}"
+        )
     }
 
     /** 关闭某条 session（卡片上的 ✕） */
@@ -601,7 +634,8 @@ class LoginViewModel(
                     myPort = page.myPort,
                     privateKey = "", // 需要从本地存储读取
                     peers = listOf(WgPeer(
-                        endpoint = "${page.peerIp}:${page.peerPort}",
+                        // WG 配置里的 Endpoint 是 host:port，v6 必须写成 [v6]:port
+                        endpoint = formatHostPort(page.peerIp, page.peerPort),
                         publicKey = "", // 需要从对方获取
                         presharedKey = "",
                         allowedIPs = "0.0.0.0/0"
