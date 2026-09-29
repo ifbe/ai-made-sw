@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-remote/wireguard.py - WireGuard 加密隧道客户端
+app/wg-python.py - 自己实现的 WireGuard 隧道客户端（纯用户态）
 
 功能：
-  - 连接 switch.py 的 Unix socket（像 udp.py / tcp.py 一样"插网线"）
+  - 连接 switch.py 的 Unix socket（像 udptest.py / tcp.py 一样"插网线"）
   - 单进程管理多个 peers（WireGuard 原生支持一对多隧道）
-  - 无 TUN 网卡，纯用户态 WireGuard 加密传输
+  - 无 TUN 网卡，纯用户态 WireGuard 加密传输（Noise IK + ChaCha20-Poly1305 都自己写）
+  - **不需要 root、不需要内核模块、不需要 wireguard-tools**
+
+对比：`app/wg-calltool.py` 是"调系统 wg 工具"那条路（`ip link add type wireguard` +
+`wg set`，需要 root + wireguard-tools + 内核模块）。两个是同一件事的两种做法。
 
 与裸 UDP 的区别：ChaCha20-Poly1305 加密、Noise IK 密钥交换、自动 keepalive
 WireGuard 没有内置打洞，需要 server 提供 peer 的公网 IP:port 和公钥
@@ -160,12 +164,14 @@ MSG_TRANSPORT = 4
 class WgPeer:
     """管理单个 peer 的 WireGuard 会话"""
 
-    def __init__(self, name, endpoint_ip, endpoint_port, peer_pubkey_bytes, our_private_bytes):
+    def __init__(self, name, endpoint_ip, endpoint_port, peer_pubkey_bytes, our_private_bytes,
+                 local_port=None):
         self.name = name
         self.endpoint_ip = endpoint_ip
         self.endpoint_port = endpoint_port
         self.peer_pubkey = peer_pubkey_bytes
         self.our_private = our_private_bytes
+        self.local_port = local_port
 
         # 密钥
         self.our_public = self.our_private.public_key().public_bytes(
@@ -182,6 +188,10 @@ class WgPeer:
 
         # UDP socket 到 peer
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if self.local_port:
+            # 复用打洞时已经打开的本地端口（NAT 映射不能废），不能换随机端口
+            self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_sock.bind(('0.0.0.0', self.local_port))
         self.udp_sock.setblocking(False)
 
         # WireGuard 消息计数器
@@ -429,7 +439,7 @@ class WireGuardClient:
             self.log(f"连接 switch 失败: {e}")
             return False
 
-    def add_peer(self, name, endpoint_ip, endpoint_port, peer_pubkey_b64):
+    def add_peer(self, name, endpoint_ip, endpoint_port, peer_pubkey_b64, local_port=None):
         """添加 peer"""
         import base64
         peer_pubkey_bytes = base64.b64decode(peer_pubkey_b64)
@@ -439,9 +449,11 @@ class WireGuardClient:
             serialization.NoEncryption()
         )
 
-        peer = WgPeer(name, endpoint_ip, endpoint_port, peer_pubkey_bytes, our_private_bytes)
+        peer = WgPeer(name, endpoint_ip, endpoint_port, peer_pubkey_bytes, our_private_bytes,
+                      local_port=local_port)
         self.peers[name] = peer
-        self.log(f"添加 peer {name}: {endpoint_ip}:{endpoint_port} pubkey={peer_pubkey_b64[:16]}...")
+        self.log(f"添加 peer {name}: {endpoint_ip}:{endpoint_port} pubkey={peer_pubkey_b64[:16]}..."
+                 + (f" localport={local_port}" if local_port else ""))
 
         # 立即发起握手
         peer.new_handshake()
@@ -469,9 +481,10 @@ class WireGuardClient:
             ip = obj.get('ip')
             port = obj.get('port')
             pubkey = obj.get('pubkey')
+            local_port = obj.get('localport')
             if not all([name, ip, port, pubkey]):
                 return {'error': 'missing fields'}
-            self.add_peer(name, ip, port, pubkey)
+            self.add_peer(name, ip, port, pubkey, local_port=local_port)
             return {'ok': True, 'pubkey': base64.b64encode(self.public_key).decode()}
         elif c == 'remove_peer':
             name = obj.get('name')

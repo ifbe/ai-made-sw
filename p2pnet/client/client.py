@@ -3,12 +3,24 @@
 """
 p2pnet 命令行客户端
 python3 client.py --server 127.0.0.1 --port 10000
-支持: login, login <username>, list, p2pudp
+
+命令分四段：
+  1. 基础      : help / quit / login / logout / list / del
+  2. p2p       : direct / upnp / udp / tcp
+  3. 打完洞以后的协议: udptest <洞> / proxy <洞> <host:port> / ffmpeg <洞> / wg-py <洞> / wg-sh <洞>
+  4. 被调时的自动操作: onholefrompeer / onholefromself / onpeerwant{udp,tcp,direct,upnp}
+
+这个文件只负责：连服务器 / 收 WS 消息 / CLI 命令 / 维护洞的**总表格** /
+把打好的洞交给 app/ 下的协议（拉子进程）。
+**每个洞的打洞步骤在 hole/ 里**（hole/udp.py 6 步、hole/tcp.py 5 步、direct/upnp 占位），
+通过 hole/core.py 注入的钩子回调回来。
+洞标识可以是 fd=<fd> / port=<本端端口> / #<编号> / <用户名>。
 """
 
 import os
 import sys
 import json
+import time
 import argparse
 import socket
 import hashlib
@@ -18,15 +30,25 @@ import base64
 import struct
 import secrets
 import errno
+import array
+import select
 import threading
 import subprocess
+
+# 打洞步骤（每个洞怎么打）都在 hole/ 里；这里的 client.py 管总表格 + CLI + 拉起子进程
+from hole import core as hole_core
+from hole import udp as hole_udp
+from hole import tcp as hole_tcp
+from hole import direct as hole_direct
+from hole import upnp as hole_upnp
+from hole import stop_hole as hole_stop_hole
 
 IS_WINDOWS = sys.platform == 'win32'
 
 
 def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_exit=False,
                    peer_name='', peer_ip='', peer_port=0, my_ip='', my_port=0, name=None,
-                   _log_file=None):
+                   _log_file=None, stdin_pipe=False, stdout_pipe=False, pass_fds=()):
     """
     启动子进程。
     new_window=True  且平台支持时：新开终端窗口运行
@@ -50,19 +72,36 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
         'popen': None, 'close_on_exit': close_on_exit,
         'peer_name': peer_name, 'peer_ip': peer_ip, 'peer_port': peer_port,
         'my_ip': my_ip, 'my_port': my_port,
+        'hole_id': None,   # 这个子进程是为哪条洞拉起来的（list 里要按洞列出来）
     }
 
     if not new_window:
         # 后台直接跑
-        if _log_file:
-            stdout_redirect = open(_log_file, 'a')
+        if stdout_pipe:
+            # 要读子进程的 stdout（switch 的 console 走 stdin/stdout JSON），日志留给 stderr
+            stdout_arg, stderr_arg = subprocess.PIPE, None
         else:
-            stdout_redirect = None
+            stdout_arg = open(_log_file, 'a') if _log_file else None
+            stderr_arg = subprocess.STDOUT
+        extra = {}
+        if pass_fds:
+            # 把已经建立的内核 socket（TCP 洞）继承给子进程，它直接用，不重做握手
+            if os.name == 'posix':
+                extra['pass_fds'] = tuple(pass_fds)
+            else:
+                # Windows：没有 pass_fds，只能把句柄标成可继承 + close_fds=False
+                # ⚠️ 这条分支没有环境验证过（开发机是 Linux）
+                import msvcrt
+                for _fd in pass_fds:
+                    os.set_handle_inheritable(msvcrt.get_osfhandle(_fd), True)
+                extra['close_fds'] = False
         p = subprocess.Popen(
             args, cwd=cwd, env=env,
-            stdout=stdout_redirect,
-            stderr=subprocess.STDOUT,
+            stdin=(subprocess.PIPE if stdin_pipe else None),
+            stdout=stdout_arg,
+            stderr=stderr_arg,
             start_new_session=True,
+            **extra
         )
         child_entry['pid'] = p.pid
         child_entry['popen'] = p
@@ -108,7 +147,7 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
             _time.sleep(0.2)
             try:
                 r2 = subprocess.run(
-                    ['pgrep', '-f', f'python.*remote/{_name}'],
+                    ['pgrep', '-f', f'python.*app/{_name}'],
                     capture_output=True, text=True,
                 )
                 if r2.returncode == 0:
@@ -180,12 +219,32 @@ def launch_in_new_terminal(args, cwd=None, env=None, new_window=True, close_on_e
         return child_entry
 
 
-# 后台 UDP hello 线程
-udp_hello_running = False
-_hello_stop_event = threading.Event()  # 信号线程退出（替代 _udp_hello_running 轮询）
-_hello_sock_ready = threading.Event()  # socket 创建并 bind 完成后 signaling
-udp_hello_thread = None
-udp_hello_sock = None
+# ====== 打洞表（洞）======
+#
+# 每条洞:
+#   proto           : 'udp' / 'tcp'
+#   id              : 编号（#1, #2 ...）
+#   fd              : 主进程 socket 的真实 OS fd（udp 有；tcp 为 None）
+#   peer            : 对方用户名
+#   my_ip/my_port   : 本端（my_ip = 服务器看到的公网地址，my_port = 本地监听端口）
+#   peer_ip/peer_port : 对端（服务器看到的公网地址）
+#   status          : 打洞中 / 已打通 / 已交给 X / 地址已交换 / 拉起失败
+#   handed_to       : None 或已移交给的用法（udptest / tun / ffmpeg / wg / tcp.py ...）
+#   sock            : 未移交时主进程持有的 UDP socket（移交后置 None）
+#   stop            : 通知该洞的 ping/pong 线程退出
+#   thread          : 该洞的 ping/pong 线程
+#
+# 打洞的**步骤**在 hole/ 里（hole/udp.py 6 步、hole/tcp.py 5 步），
+# 这里只放"总表格"和跟它配套的查/删/显示。
+holes = []
+_holes_lock = threading.Lock()
+_hole_seq = 0
+
+# 打洞成功后要自动拉起的用法（None = 只记录，等用户自己用 udptest fd=N 等拉起）
+_pending_usage = None
+# wg 用：对方 WireGuard 公钥（服务端未实现 thisisyourpeer_wg，只能命令行给）
+_pending_wg_pubkey = None
+
 if IS_WINDOWS:
     import msvcrt
 
@@ -200,23 +259,28 @@ recv_buf = b''
 peers = []
 
 # WireGuard 共享进程（单实例）
-WG_ADMIN_PATH = None  # wireguard.py 的 admin socket 路径
-WG_PROC = None        # wireguard.py 进程
+WG_ADMIN_PATH = None  # wg-python.py 的 admin socket 路径
+WG_PROC = None        # wg-python.py 进程
 
 # Switch 共享进程（单实例）
 SWITCH_PROC = None    # switch.py 进程
-SWITCH_SOCK_PATH = None  # switch 的 Unix socket 路径（供 udp.py/tcp.py 连接）
-WG_NATIVE_MODE = False  # True = 使用原生 WireGuard（wghelp），不用 wireguard.py
-WG_NATIVE_MY_KEY = ''   # wghelp 命令时存储我的私钥
-WG_NATIVE_MY_IP = ''    # wghelp 命令时存储我的 mesh IP
-FFMPEG_MODE = False     # True = 收到 thisisyourpeer_udp 时拉起 ffmpeg.sh（不用 udp.py）
+SWITCH_SOCK_PATH = None  # switch 的 Unix socket 路径（供 udptest.py/tcp.py 连接）
+SWITCH_CTL_PATH = None   # switch 的控制通道（用 SCM_RIGHTS 把 TCP 洞的 fd 送进去）
+# wg-sh（系统 wg 版，app/wg-calltool.py + app/wghelp.sh）需要的参数：
+# 服务端没实现 thisisyourpeer_wg，对方公钥/mesh IP 拿不到，只能命令行给
+WG_SH_MY_KEY = ''       # 我的私钥
+WG_SH_MY_IP = ''        # 我的 mesh IP
+WG_SH_PEER_PUBKEY = ''  # 对方公钥
+WG_SH_PEER_IP = ''      # 对方 mesh IP
+WG_SH_IFACE = 'wghelp0' # WireGuard 接口名
 STARTUP_FFMPEG = []     # 启动时自动 ffmpeg 视频连接（每个元素: peer_name）
 # 启动命令（login 成功后自动执行）
-STARTUP_APPMODE = None
+STARTUP_ON_SELF = None  # --onholefromself
+STARTUP_ON_PEER = None  # --onholefrompeer
 STARTUP_UDP = []
 STARTUP_TCP = []
 STARTUP_WG = []
-STARTUP_WGHELP = []  # 每个元素: (user, key, mesh_ip)
+STARTUP_WGSH = []    # 每个元素: (user, 我的私钥, 我的meshIP, 对方公钥, 对方meshIP, 接口名)
 # 运行参数（由 argparse 设置）
 NEW_WINDOW = False  # 默认当前窗口（后台运行写日志）；--new-window 开启新窗口
 CLOSE_WINDOW = False  # 默认窗口保留（子进程结束后不自动关窗口）
@@ -256,11 +320,26 @@ def sign_with_session_key(message=b'ping'):
 SERVER_IP = None
 SERVER_PORT = None
 
-# 本地模式：
-#   None        -> fake（默认）
-#   'auto'      -> auto（tun→tap→fake）
-LOCAL_MODE = None  # 初始为 fake
-LOCAL_DEVICE = None  # 设备名，如 '/dev/utun3'（仅展示用）
+# 被调时的自动操作：洞打通之后自动跑什么
+#   本端发起打洞（我敲 udp/tcp <user>） → ON_SELF_HOLE
+#   对方打进来（服务器通知我）        → ON_PEER_HOLE
+# 每个变量是 None 或 (模式, 设备)；None = 当前行为（洞记下来，等用户自己 udptest fd=N 拉起）
+ON_SELF_HOLE = None
+ON_PEER_HOLE = None
+# 对方来找我时怎么办（按协议分开；auto = 参与（默认，当前行为） / none = 静默拒绝）
+#   udp/tcp : 收到 send_udp_to_server / send_tcp_to_server 时要不要参与打洞
+#   direct  : 收到别人的 p2pdirect（对方要我的地址）时要不要回地址
+#   upnp    : 暂时没有消费者（upnp 本身还没实现），先把状态位留着
+ON_PEER_WANT = {'udp': 'auto', 'tcp': 'auto', 'direct': 'auto', 'upnp': 'auto'}
+
+# list 命令在等服务器回谁：'all' = 三块都打 / 'peer' = 只打同服务器的人 / None = 没在等
+_list_what = None
+
+# 洞打通可以自动跑 / 手动拉起的用法
+HOLE_USAGES = ('udptest', 'tun', 'tap', 'auto', 'switch', 'proxy', 'ffmpeg', 'wg-py', 'wg-sh')
+# onholefromself / onholefrompeer 能设的值（video/file 还没实现，允许设，拉起时会提示 TODO）
+ON_HOLE_MODES = ('udptest', 'tun', 'tap', 'auto', 'switch', 'proxy',
+                 'ffmpeg', 'wg-py', 'wg-sh', 'video', 'file')
 
 # 线程安全的消息队列
 input_queue = []
@@ -272,6 +351,7 @@ def ts():
     return _time.strftime("%H:%M:%S")
 
 def log(msg):
+    hole_core.finish_open()   # 别的输出来了，先把没定结果的步骤行收尾
     print(f"[{ts()}][client] {msg}")
     sys.stdout.flush()
 
@@ -280,6 +360,28 @@ def dbg(msg):
     if DEBUG:
         print(f"[DEBUG] {msg}", file=sys.stderr)
 
+
+# ====== 打洞模块接线（打洞步骤在 hole/ 里）======
+#
+# hole/udp.py   UDP 打洞 6 步   hole/tcp.py  TCP 打洞 5 步
+# hole/direct.py / hole/upnp.py 占位
+#
+# hole/ 不反向 import client：这里把日志、WS 发送、建洞记录（总表格）、
+# 以及"洞通了怎么办"的钩子注入给它。
+
+def _hole_configure():
+    """把 client 这边的钩子注入 hole/（在 main() 里调一次）"""
+    hole_core.log = log
+    hole_core.ws_send = lambda obj: ws_send(ws_sock, obj)
+    hole_core.record_hole = _record_hole
+    hole_core.holes_lock = _holes_lock
+    hole_core.sign_session = lambda: sign_with_session_key(b'ping')
+    hole_core.on_udp_ready = _auto_handover
+    hole_core.launch_tcp = _launch_tcp_on_hole
+    hole_core.get_server = lambda: (SERVER_IP, SERVER_PORT)
+    hole_core.get_username = lambda: logged_in_user
+    hole_core.get_debug = lambda: DEBUG
+    hole_core.get_onpeerwant = lambda kind: ON_PEER_WANT.get(kind, 'auto')
 
 # ====== WebSocket 编解码 ======
 
@@ -390,154 +492,978 @@ def windows_input_thread():
             import time; time.sleep(0.05)
 
 
-# ====== UDP Hello 后台线程 ======
+# ====== 打洞：主进程自己做第 5/6 步 ======
 
-def start_udp_hello(server_ip, server_udp_port, username, local_port):
-    """后台线程：持续往服务器 UDP 端口发 hello，直到 stop_udp_hello 被调用"""
-    global udp_hello_running, udp_hello_sock
-    import time
+def _new_hole_id():
+    global _hole_seq
+    _hole_seq += 1
+    return _hole_seq
 
-    # 保持 IPv4（服务器是 IPv4 0.0.0.0），避免 IPv6 socket 发到 IPv4 服务器失败
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.bind(('0.0.0.0', local_port))
-    except Exception:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(('0.0.0.0', 0))
-    local_bound_port = sock.getsockname()[1]
-    udp_hello_sock = sock
-    _hello_stop_event.clear()  # 重置事件，表示线程正在运行
-    _hello_sock_ready.set()  # 通知 socket 已创建并 bind 完成
-    log(f"[UDP hello] 开始，往 {server_ip}:{server_udp_port} 发送 hello (本地端口 {local_bound_port})")
-    udp_hello_running = True  # 只在这里设置一次，不在循环里设置
 
-    def _send_hello():
-        sig = sign_with_session_key(b'ping') if session_key else None
-        payload = {'type': 'p2pudp_hello', 'username': username}
-        if sig:
-            payload['signature'] = sig
-        msg = json.dumps(payload).encode()
-        if DEBUG:
-            print(f"[DEBUG] UDP hello -> {server_ip}:{server_udp_port}: {payload}")
-        sock.sendto(msg, (server_ip, server_udp_port))
+def _record_hole(proto, peer, peer_ip, peer_port, my_ip, my_port,
+                 fd=None, sock=None, status='打洞中'):
+    """往洞表里加一条记录"""
+    hole = {
+        'proto': proto, 'id': _new_hole_id(), 'fd': fd, 'peer': peer,
+        'my_ip': my_ip, 'my_port': my_port,
+        'peer_ip': peer_ip, 'peer_port': peer_port,
+        # 候选地址：服务器给的 srflx 是第一个；之后收到对方包的源地址（peer-reflexive）
+        # 会往里追加。每轮往所有候选都发一份 ping。
+        'candidates': ([{'ip': peer_ip, 'port': peer_port}]
+                       if (peer_ip and peer_port) else []),
+        'status': status, 'handed_to': None, 'sock': sock,
+        'stop': threading.Event(), 'thread': None, 'rtt': None,
+        'created': time.time(), 'local_init': False,
+    }
+    with _holes_lock:
+        holes.append(hole)
+    return hole
 
-    # burst：15个，30ms间隔，0.45s 发完
-    # burst 期间不响应 stop，必须发满 15 个打洞
-    for i in range(15):
-        _send_hello()
-        time.sleep(0.03)
-    log(f"[UDP hello] burst 发完 15 个，检查 stop")
-    # burst 发完了，再检查是否要退出
-    if not udp_hello_running:
-        sock.close()
-        _hello_stop_event.set()
-        log("[UDP hello] 已停止")
-        return
-    # burst 之后每秒发 1 个维持映射，最多等 10 秒，超时主动放弃
-    import time as _time
-    start_time = _time.time()
-    while udp_hello_running:
-        if _time.time() - start_time > 10:
-            log(f"[UDP hello] 10s 无响应，主动放弃")
-            break
-        time.sleep(1)
-        if not udp_hello_running:
-            break
+
+def _on_hole_cfg(hole):
+    """按角色取"洞打通自动跑什么"，返回 (模式, 设备)；没设返回 (None, None)"""
+    cfg = ON_SELF_HOLE if hole.get('local_init') else ON_PEER_HOLE
+    if not cfg:
+        return None, None
+    return cfg
+
+
+def _auto_handover(hole):
+    """
+    打洞成功后要不要"自动执行"，看两个状态变量（都在"被调时的自动操作"里）：
+
+      ON_SELF_HOLE : 本端发起打洞（我敲 udp/tcp <user>）→ 打通后自动跑什么
+      ON_PEER_HOLE : 对方打进来 → 打通后自动跑什么
+      _pending_usage : ffmpeg/wg <user> 这类一次性用法，优先于上面两个
+
+    没设 → 不自动执行，只把洞记下来，等用户自己 udptest fd=N 等拉起（= 当前行为）。
+    """
+    global _pending_usage
+    usage = _pending_usage
+    device = None
+    if usage:
+        _pending_usage = None
+    else:
+        usage, device = _on_hole_cfg(hole)
+
+    local = bool(hole.get('local_init'))
+    who = '本端发起' if local else '对方发起'
+    var = 'onholefromself' if local else 'onholefrompeer'
+    if usage:
+        log(f"[洞 #{hole['id']}] {var} = {usage}"
+            + (f" {device}" if device else '')
+            + f"（{who}），打洞成功，自动拉起...")
+        _handover_hole(hole, usage, device)
+    else:
+        log(f"[洞 #{hole['id']}] {var} 未设定（{who}），不自动拉起；"
+            f"洞保持打通状态，用 udptest fd={hole['fd']} 等自己拉起")
+
+
+def _looks_like_hole_selector(s):
+    """fd=21 / port=50001 / #1 / 21 这种是洞标识，不是用户名"""
+    s = (s or '').strip()
+    return ('=' in s) or s.startswith('#') or s.isdigit()
+
+
+def _resolve_hole(arg):
+    """把 fd=N / port=N / #N / N / name=X / <用户名> 解析成一条洞记录。
+    返回 (hole, errmsg)。"""
+    s = (arg or '').strip()
+    if not s:
+        return None, "缺少洞标识（fd=<fd> / port=<本端端口> / #<编号> / <用户名>）"
+
+    kind, val = 'auto', s
+    if '=' in s:
+        k, v = s.split('=', 1)
+        kind, val = k.strip().lower(), v.strip()
+    elif s.startswith('#'):
+        kind, val = 'id', s[1:].strip()
+    elif not s.isdigit():
+        kind, val = 'name', s
+
+    with _holes_lock:
+        cands = list(holes)
+
+    def _rank(h):
+        if h['status'] == '已打通' and not h['handed_to']:
+            return 0
+        if h['status'] == '打洞中':
+            return 1
+        return 2
+    cands.sort(key=_rank)
+
+    def _match(pred):
+        for h in cands:
+            if pred(h):
+                return h
+        return None
+
+    if kind in ('fd', 'id', 'port', 'auto'):
         try:
-            _send_hello()
-        except Exception:
-            break
+            n = int(val)
+        except ValueError:
+            return None, f"洞标识不是数字: {s}"
+        if kind in ('fd', 'auto'):
+            h = _match(lambda x: x.get('fd') == n)
+            if h:
+                return h, None
+        if kind in ('id', 'auto'):
+            h = _match(lambda x: x.get('id') == n)
+            if h:
+                return h, None
+        if kind in ('port', 'auto'):
+            h = _match(lambda x: x.get('my_port') == n)
+            if h:
+                return h, None
+        return None, f"找不到洞 {s}（用 hole 看已有洞）"
 
-    sock.close()
-    _hello_stop_event.set()  # 通知 stop_udp_hello() 线程已完全退出
-    log("[UDP hello] 已停止")
+    if kind in ('name', 'peer', 'user'):
+        h = _match(lambda x: x.get('peer') == val)
+        if h is None:
+            h = _match(lambda x: str(x.get('peer', '')).startswith(val))
+        if h is None:
+            return None, f"找不到和 {val} 的洞（用 hole 看已有洞）"
+        return h, None
+
+    return None, f"不认识的洞标识: {s}"
 
 
-def stop_udp_hello():
-    """发送停止信号给 hello 线程，阻塞等待线程真正退出（最多约10s）"""
-    global udp_hello_running, udp_hello_sock, udp_hello_thread
-    udp_hello_running = False
-    _hello_stop_event.set()  # 通知线程退出
-    # 等线程自己发完 burst 再退出（burst 最多 0.45s，keep-alive sleep 最多 1s）
-    # 用小 timeout 轮询，直到线程退出
-    if udp_hello_thread:
-        import time as _time
-        start = _time.time()
-        while udp_hello_thread.is_alive() and (_time.time() - start) < 12:
-            udp_hello_thread.join(timeout=0.5)
-        udp_hello_thread = None
+def _split_pubkey(arg):
+    """从 'bob pubkey=xxx' 里分出用户名和可选 pubkey=..."""
+    pubkey = None
+    rest = []
+    for tok in (arg or '').split():
+        if tok.startswith('pubkey='):
+            pubkey = tok[len('pubkey='):]
+        else:
+            rest.append(tok)
+    return ' '.join(rest), pubkey
 
 
-def start_udp_hello_thread(server_ip, server_udp_port, username):
-    """启动 UDP hello 线程，使用随机可用端口"""
-    global udp_hello_running, udp_hello_thread
-    # 防止重复启动：如果线程已经在运行，不启动新的
-    if udp_hello_running and udp_hello_thread and udp_hello_thread.is_alive():
+# 打完洞之后的用法（HOLE_USAGES 见文件开头全局区）
+
+
+def _handover_hole(hole, usage, device=None):
+    """把打好的洞交给某个用法。
+
+    主进程先 close 自己的 socket（让子进程能 bind 同一个本地端口，NAT 映射不废），
+    再把 地址/端口 传给子进程 —— 不传 fd。
+    洞记录不删，只把 status 改成 "已交给 X"。"""
+    if not hole:
+        log("没有可用的洞")
+        return False
+    if hole.get('handed_to'):
+        log(f"[洞 #{hole['id']}] 已经交给 {hole['handed_to']}，不能重复拉起")
+        return False
+    if hole['proto'] != 'udp':
+        log(f"[洞 #{hole['id']}] 是 {hole['proto']} 洞，不能这样拉起")
+        return False
+    if hole['status'] != '已打通':
+        log(f"[洞 #{hole['id']}] 还没打通（{hole['status']}），不能拉起 {usage}")
+        return False
+
+    # ---- 先校验，避免关了 socket 才发现拉不起来（洞就废了）----
+    if usage not in HOLE_USAGES:
+        log(f"[洞 #{hole['id']}] 用法 {usage} 还没实现（TODO），洞保持打通状态")
+        return False
+    if usage == 'wg-py' and not _pending_wg_pubkey:
+        log("[P2P] wg-py 需要对方的 WireGuard 公钥（服务端暂未实现 thisisyourpeer_wg，拿不到）")
+        log("      请用: wg-py <洞> pubkey=<对方公钥base64>")
+        return False
+    if usage == 'wg-sh' and not (WG_SH_MY_KEY and WG_SH_MY_IP and WG_SH_PEER_PUBKEY):
+        log("[P2P] wg-sh 需要: 我的私钥 / 我的 mesh IP / 对方公钥 / 对方 mesh IP")
+        log("      请用: wg-sh <洞> <我的私钥> <我的meshIP> <对方公钥> <对方meshIP> [接口名]")
+        return False
+
+    # ---- 关掉主进程 socket，等 ping 线程退出，释放本地端口 ----
+    hole['stop'].set()
+    sock = hole.get('sock')
+    if sock is not None:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        hole['sock'] = None
+    t = hole.get('thread')
+    if t and t.is_alive() and t is not threading.current_thread():
+        t.join(timeout=2.0)
+
+    if usage == 'udptest':
+        ok = _launch_udptest(hole)                     # 纯互发测试
+    elif usage in ('tun', 'tap', 'auto'):
+        ok = _launch_vpn(hole, usage, device)          # 单人单 tun/tap
+    elif usage == 'switch':
+        ok = _switch_plug(hole)                        # 插到已在跑的虚拟交换机上（多人多洞）
+    elif usage == 'proxy':
+        ok = _launch_proxy(hole, device)               # device 这一格放目标 host:port
+    elif usage == 'ffmpeg':
+        ok = _launch_ffmpeg(hole)
+    elif usage == 'wg-py':
+        ok = _launch_wg_python(hole)
+    elif usage == 'wg-sh':
+        ok = _launch_wg_calltool(hole)
+    else:
+        log(f"[洞 #{hole['id']}] 不认识的用法: {usage}")
+        return False
+
+    if ok:
+        hole['handed_to'] = usage
+        hole['status'] = f'已交给 {usage}'
+        # 具体交给谁（switch 会写成"switch 的 port1 端口"，其余就是 usage 本身）
+        detail = hole.get('handed_detail') or usage
+        log(f"[洞 #{hole['id']}] {hole['peer']} 已交给 {detail}"
+            f"（本端端口 {hole['my_port']} ↔ 对端 {hole['peer_ip']}:{hole['peer_port']}）")
+    else:
+        hole['status'] = '拉起失败'
+    return ok
+
+
+def _launch_hole_program(base_args, hole, name):
+    """把一条打好的 UDP 洞交给 app/ 下的某个"使用者程序"
+
+    只传地址/端口（不传 fd）：使用者程序自己 bind 同一个本地端口，NAT 映射才不废。
+    打洞阶段学到的额外候选（peer-reflexive）一并带过去，
+    不然使用者程序又会只往服务器给的那个地址发。
+    """
+    remote_args = list(base_args) + [
+        '--peeraddr', str(hole['peer_ip']),
+        '--peerport', str(hole['peer_port']),
+        '--localport', str(hole['my_port']),
+    ]
+    extra = [c for c in hole.get('candidates', [])
+             if (c['ip'], c['port']) != (hole['peer_ip'], hole['peer_port'])]
+    if extra:
+        remote_args += ['--peercandidates',
+                        ','.join(f"{c['ip']}:{c['port']}" for c in extra)]
+        log(f"[P2P] 额外候选地址: " + ', '.join(f"{c['ip']}:{c['port']}" for c in extra))
+
+    _log_file = None
+    if REMOTELOG:
+        try:
+            os.makedirs('/tmp/p2pnet', exist_ok=True)
+        except OSError:
+            pass
+        _log_file = f"/tmp/p2pnet/{name}-{logged_in_user}_{hole['peer']}_{int(time.time())}.log"
+        remote_args += ['--remotelog', _log_file]
+
+    try:
+        entry = launch_in_new_terminal(
+            remote_args,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env={**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''},
+            new_window=NEW_WINDOW, close_on_exit=CLOSE_WINDOW,
+            peer_name=hole['peer'], peer_ip=hole['peer_ip'], peer_port=hole['peer_port'],
+            my_ip=hole['my_ip'], my_port=hole['my_port'],
+            name=name, _log_file=_log_file,
+        )
+        if entry:
+            entry['hole_id'] = hole['id']
+    except Exception as e:
+        log(f"[P2P] 拉起 {name} 失败: {e}")
+        return False
+    log(f"[P2P] {name} 已拉起（本端端口 {hole['my_port']}）")
+    return True
+
+
+def _launch_udptest(hole):
+    """交给 app/udptest.py：只做互发 ping/pong 测试"""
+    return _launch_hole_program([sys.executable, 'app/udptest.py'], hole, 'udptest')
+
+
+def _launch_vpn(hole, dev, devname=None):
+    """交给 app/vpn.py：一个洞 ↔ 一个 tun/tap（单人单 tun）"""
+    args = [sys.executable, 'app/vpn.py', '--dev', dev]
+    if devname:
+        args += ['--devname', str(devname)]
+    return _launch_hole_program(args, hole, 'vpn')
+
+
+def _launch_proxy(hole, target):
+    """交给 app/proxy.py：把洞里的数据转发到 target（host:port）"""
+    if not target:
+        log("[P2P] proxy 需要目标地址（用法: proxy <洞> <host:port>，"
+            "或 onholefrompeer proxy <host:port>）")
+        return False
+    return _launch_hole_program([sys.executable, 'app/proxy.py', '--target', str(target)],
+                                hole, 'proxy')
+
+
+def _launch_ffmpeg(hole):
+    """在打好的洞上跑 ffmpeg.sh <my_ip> <my_port> <peer_ip> <peer_port>"""
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg.sh')
+    if not os.path.exists(script_path):
+        log(f"[P2P] 错误: ffmpeg.sh 不在当前目录: {script_path}")
+        return False
+    call_args = ['bash', script_path,
+                 hole['my_ip'] or '0.0.0.0', str(hole['my_port']),
+                 str(hole['peer_ip']), str(hole['peer_port'])]
+    try:
+        entry = launch_in_new_terminal(
+            call_args,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            new_window=True, close_on_exit=False,
+            peer_name=hole['peer'], peer_ip=hole['peer_ip'], peer_port=hole['peer_port'],
+            my_ip=hole['my_ip'], my_port=hole['my_port'], name='ffmpeg',
+        )
+        if entry:
+            entry['hole_id'] = hole['id']
+    except Exception as e:
+        log(f"[P2P] ffmpeg 拉起失败: {e}")
+        return False
+    log("[P2P] ffmpeg 已在新窗口启动")
+    return True
+
+
+def _launch_tcp_on_hole(hole, sock, peer_name, peer_ip, peer_port, my_ip, my_port):
+    """TCP 打洞第 5 步：把**已建立连接的内核 socket** 继承给 app/tcptest.py
+
+    和 UDP 完全不同：UDP 可以"主进程关掉 socket、子进程 bind 同一端口"接着用；
+    TCP 一关连接就没了，子进程重建会**重新 SYN/ACK**，NAT 那边对不上。
+    所以这里把 fd 直接继承过去（pass_fds），子进程拿它就用，不重建、不重连。
+
+    代价：必须后台拉起（新终端窗口没法继承 fd），所以看不到窗口，只能靠日志。
+    """
+    # 本地这头挂什么，按角色取 onholefromself / onholefrompeer
+    mode, _device = _on_hole_cfg(hole)
+    if mode == 'switch':
+        return _switch_plug_fd(hole, sock, peer_name)
+
+    fd = sock.fileno()
+    try:
+        os.set_inheritable(fd, True)
+    except (AttributeError, OSError):
+        pass
+    remote_args = [sys.executable, 'app/tcptest.py',
+                   '--hole-fd', str(fd),
+                   '--peername', peer_name or '']
+    _log_file = None
+    if REMOTELOG:
+        try:
+            os.makedirs('/tmp/p2pnet', exist_ok=True)
+        except OSError:
+            pass
+        _log_file = f"/tmp/p2pnet/tcptest-{logged_in_user}_{peer_name}_{int(time.time())}.log"
+        remote_args += ['--remotelog', _log_file]
+    hole['tcp_fd'] = fd
+    log(f"[P2P] 把已建立的连接（内核 fd={fd}）继承给 app/tcptest.py"
+        f"（对端 {peer_ip}:{peer_port}）")
+    try:
+        entry = launch_in_new_terminal(
+            remote_args,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env={**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''},
+            new_window=False,          # 继承 fd 只能后台拉起（新窗口没法继承）
+            close_on_exit=CLOSE_WINDOW,
+            peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
+            my_ip=my_ip, my_port=my_port,
+            name='tcptest', _log_file=_log_file, pass_fds=(fd,),
+        )
+        if entry:
+            entry['hole_id'] = hole['id']
+    except Exception as e:
+        log(f"[P2P] 拉起 tcptest.py 失败: {e}")
+        return False
+    # 子进程已经拿到这个 fd 了，父进程这份可以关掉（连接由子进程那份撑着，不是"关连接"）
+    try:
+        sock.close()
+    except OSError:
+        pass
+    log(f"[P2P] tcptest.py 已拉起（fd={fd}）")
+    return True
+
+
+def _launch_wg_python(hole):
+    """在打好的洞上跑自己实现的 WireGuard（app/wg-python.py），
+    本端监听端口 = 洞的本地端口（映射不废），对端 endpoint = 洞里的对端公网地址。
+    服务端没实现 thisisyourpeer_wg，对方公钥只能命令行给。"""
+    global WG_ADMIN_PATH, WG_PROC
+    pubkey = _pending_wg_pubkey
+    if not pubkey:
+        log("[P2P] wg-py 需要对方公钥: wg-py <洞> pubkey=<base64>")
+        return False
+
+    if WG_ADMIN_PATH and os.path.exists(WG_ADMIN_PATH):
+        log(f"[P2P] wg-python.py 已运行，添加 peer {hole['peer']}...")
+        return _wg_admin_add_peer(hole, pubkey)
+
+    log(f"[P2P] 启动 wg-python.py（第一个 peer: {hole['peer']}）...")
+    env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
+    admin_path = f'/tmp/p2pnet/wg-admin-{os.getpid()}.sock'
+    remote_args = [sys.executable, 'app/wg-python.py',
+                   '--socketpath', SWITCH_SOCK_PATH or f'/tmp/p2pnet/switch-{os.getpid()}.sock',
+                   '--adminpath', admin_path]
+    if REMOTELOG:
+        try:
+            os.makedirs('/tmp/p2pnet', exist_ok=True)
+        except OSError:
+            pass
+        remote_args += ['--log', f"/tmp/p2pnet/wg-{logged_in_user}_main_{int(time.time())}.log"]
+    try:
+        entry = launch_in_new_terminal(
+            remote_args,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env, new_window=NEW_WINDOW, close_on_exit=CLOSE_WINDOW,
+            peer_name=hole['peer'], peer_ip=hole['peer_ip'], peer_port=hole['peer_port'],
+            my_ip=hole['my_ip'], my_port=hole['my_port'], name='wg',
+        )
+        WG_ADMIN_PATH = admin_path
+        WG_PROC = entry
+        if entry:
+            entry['hole_id'] = hole['id']
+        time.sleep(0.5)
+        return _wg_admin_add_peer(hole, pubkey)
+    except Exception as e:
+        log(f"[P2P] 启动 wg-python.py 失败: {e}")
+    return False
+
+
+def _launch_wg_calltool(hole):
+    """把洞交给 app/wg-calltool.py（调系统 wg：ip link add type wireguard + wg set）
+
+    它自己不碰数据面，只把洞的本端端口当成内核 WireGuard 的 listen-port，
+    这样打洞时建立的 NAT 映射才不废；对端 endpoint 就是洞里的对端公网地址。
+    """
+    remote_args = [sys.executable, 'app/wg-calltool.py',
+                   '--my-privkey', WG_SH_MY_KEY,
+                   '--my-ip', WG_SH_MY_IP,
+                   '--peer-pubkey', WG_SH_PEER_PUBKEY,
+                   '--peer-ip', WG_SH_PEER_IP,
+                   '--iface', WG_SH_IFACE]
+    log(f"[P2P] 交给 wg-calltool.py（系统 wg）: "
+        f"listen-port={hole['my_port']} endpoint={hole['peer_ip']}:{hole['peer_port']}")
+    log(f"[P2P]   需要 root + wireguard-tools + 内核模块；mesh {WG_SH_MY_IP} ↔ {WG_SH_PEER_IP}")
+    return _launch_hole_program(remote_args, hole, 'wg-sh')
+
+
+def _wg_admin_add_peer(hole, pubkey_b64):
+    """通过 admin socket 给 wg-python.py 加 peer"""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect(WG_ADMIN_PATH)
+        cmd = json.dumps({'cmd': 'add_peer', 'name': hole['peer'],
+                          'ip': hole['peer_ip'], 'port': hole['peer_port'],
+                          'pubkey': pubkey_b64, 'localport': hole['my_port']})
+        sock.sendall((cmd + '\n').encode())
+        data = b''
+        while b'\n' not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        sock.close()
+        if data:
+            resp = json.loads(data.decode('utf-8').strip())
+            if resp.get('ok'):
+                log(f"[P2P] WG peer {hole['peer']} 已添加"
+                    f"（endpoint {hole['peer_ip']}:{hole['peer_port']}，"
+                    f"本端端口 {hole['my_port']}）")
+                return True
+            log(f"[P2P] 添加 WG peer 失败: {resp.get('error')}")
+    except Exception as e:
+        log(f"[P2P] WG admin socket 错误: {e}")
+    return False
+
+
+def close_all_holes(reason=''):
+    """关掉所有洞的 socket（退出/被踢/登出）"""
+    with _holes_lock:
+        hs = list(holes)
+    for h in hs:
+        hole_stop_hole(h)
+        if h['status'] == '打洞中':
+            h['status'] = f'已断开({reason})' if reason else '已断开'
+
+
+def _fmt_addr(ip, port):
+    if not ip and not port:
+        return '-'
+    return f'{ip or "?"}:{port}'
+
+
+def _print_people(users):
+    """同服务器的人（list peer / list 的第一块）"""
+    log(f"--- 同服务器的人（{len(users)}）---")
+    if not users:
+        log("  (无在线用户)")
         return
-    _hello_sock_ready.clear()  # 重置 socket 就绪事件
-    import random
-    local_port = random.randint(50000, 65000)
-    t = threading.Thread(target=start_udp_hello, args=(server_ip, server_udp_port, username, local_port), daemon=True)
-    t.start()
-    udp_hello_thread = t
-    return t
+    for u in users:
+        udp_port = u.get('udp_port')
+        udp_s = f"  udp={udp_port}" if udp_port else ""
+        log(f"  {u.get('username',''):<16} {u.get('ip','')}:{u.get('port','')}{udp_s}")
+
+
+def _print_procs():
+    """所有子进程（peer 命令 / list proc）"""
+    if not peers:
+        log("  (没有运行的子进程)")
+        return
+    for i, c in enumerate(peers):
+        winfo = ''
+        if c['type'] == 'window':
+            winfo = '  [窗口]' if c['close_on_exit'] else '  [窗口·保留]'
+        else:
+            winfo = '  [后台]'
+        hid = c.get('hole_id')
+        htag = f"  [洞 #{hid}]" if hid is not None else ''
+        log(f"  [{i}] pid={c['pid']}  name={c['name']}{winfo}{htag}")
+        log(f"       对端: {c['peer_name']}  {c['peer_ip']}:{c['peer_port']}  "
+            f"本端: {c['my_ip']}:{c['my_port']}")
+
+
+def _print_holes():
+    """打印洞表（list hole / list 的第二块）"""
+    with _holes_lock:
+        hs = list(holes)
+    if not hs:
+        log("  (没有洞)")
+        return
+    for h in hs:
+        fd_s = str(h['fd']) if h['fd'] is not None else '-'
+        extra = ''
+        if h['proto'] == 'udp' and h.get('rtt'):
+            extra = f"RTT={h['rtt']:.0f}ms"
+        ncand = len(h.get('candidates') or [])
+        cand_s = f"候选={ncand} " if ncand > 1 else ''
+        reach = h.get('reachable')
+        if reach is not None:
+            cand_s = f"可达={len(reach)}/{len(h.get('peer_addrs') or [])} " 
+        log(f"  #{h['id']:<3} {h['proto']:<4} {h['status']:<14} {h['peer'] or '?':<14} "
+            f"fd={fd_s:<6} 本端 {_fmt_addr(h['my_ip'], h['my_port'])}  "
+            f"对端 {_fmt_addr(h['peer_ip'], h['peer_port'])}  {cand_s}{extra}")
+        if reach:
+            log(f"       可达地址: " + ', '.join(reach))
+    ready = [h for h in hs if h['status'] == '已打通']
+    if ready:
+        log("  已打通，可拉起: " + " / ".join(f"udptest fd={h['fd']}" for h in ready))
+
+
+def _print_serving_procs():
+    """打印"正在为这些洞服务的子进程"（list 的第三块）"""
+    serving = [c for c in peers if c.get('hole_id') is not None]
+    if not serving:
+        log("  (没有为洞服务的子进程)")
+        return
+    for c in serving:
+        winfo = ''
+        if c['type'] == 'window':
+            winfo = '  [窗口]' if c['close_on_exit'] else '  [窗口·保留]'
+        else:
+            winfo = '  [后台]'
+        log(f"  [洞 #{c['hole_id']}] pid={c['pid']}  name={c['name']}{winfo}")
+        log(f"       对端: {c['peer_name']}  {c['peer_ip']}:{c['peer_port']}  "
+            f"本端: {c['my_ip']}:{c['my_port']}")
+
+
+def _print_list_result(users):
+    """list 不带参数：三块都打"""
+    log("=== list ===")
+    _print_people(users)
+    log("--- 洞 ---")
+    _print_holes()
+    log("--- 为这些洞服务的子进程 ---")
+    _print_serving_procs()
+
+
+# ====== del：一个命令管所有删除 ======
+
+def _kill_child(c):
+    """停掉一个子进程"""
+    p = c.get('popen')
+    pid = c.get('pid')
+    if p is not None:
+        p.terminate()
+        log(f"已 terminate pid={pid} ({c['name']})")
+        return
+    if pid is None:
+        return
+    try:
+        import signal as _sig
+        if IS_WINDOWS:
+            os.kill(pid, _sig.CTRL_C_EVENT)
+        else:
+            os.kill(pid, _sig.SIGINT)
+        log(f"已发送 SIGINT pid={pid} ({c['name']})")
+    except (ProcessLookupError, OSError):
+        log(f"进程已不存在: pid={pid}")
+    except PermissionError:
+        log(f"权限不足: pid={pid}")
+
+
+def _delete_procs(val):
+    """del proc=<pid|名字|all>"""
+    v = (val or '').strip()
+    if not v:
+        log("用法: del proc=<pid|名字|all>（用 list proc 看有哪些）")
+        return
+    if v.lower() == 'all':
+        targets = list(peers)
+    elif v.isdigit():
+        targets = [c for c in peers if str(c.get('pid')) == v]
+    else:
+        targets = [c for c in peers if c.get('name') == v]
+    if not targets:
+        log(f"没有匹配的子进程: {v}（用 list proc 看有哪些）")
+        return
+    for c in list(targets):
+        _kill_child(c)
+        try:
+            peers.remove(c)
+        except ValueError:
+            pass
+    log(f"已停掉 {len(targets)} 个子进程")
+
+
+def _delete_holes(val):
+    """del hole=<洞标识|all>"""
+    v = (val or '').strip()
+    if not v:
+        log("用法: del hole=<洞标识|all>（洞标识: #1 / fd=21 / port=50001 / <用户名>）")
+        return
+    if v.lower() == 'all':
+        with _holes_lock:
+            hs = list(holes)
+            holes.clear()
+        for h in hs:
+            hole_stop_hole(h)
+            if h.get('switch_port'):
+                _switch_cmd({'cmd': 'unplug', 'name': h['switch_port']})
+        log(f"已删除 {len(hs)} 条洞")
+        return
+    hole, err = _resolve_hole(v)
+    if hole is None:
+        log(err)
+        return
+    with _holes_lock:
+        if hole in holes:
+            holes.remove(hole)
+    hole_stop_hole(hole)
+    if hole.get('switch_port'):
+        _switch_cmd({'cmd': 'unplug', 'name': hole['switch_port']})
+    extra = ''
+    if hole.get('handed_to'):
+        extra = (f"（原来交给 {hole['handed_to']} 的子进程没动，"
+                 f"要停掉用 del proc=<pid>）")
+    log(f"已删除 [洞 #{hole['id']}] {hole['peer'] or '?'}{extra}")
+
+
+def _set_onpeerwant(cmd, arg):
+    """onpeerwantudp / onpeerwanttcp / onpeerwantdirect / onpeerwantupnp [auto|none]
+
+    对方来找我时怎么办：auto = 参与（默认，当前行为）/ none = 静默拒绝（不参与，本地留一行提示）。
+    """
+    kind = cmd[len('onpeerwant'):]        # udp / tcp / direct / upnp
+    if not arg:
+        log(f"{cmd} = {ON_PEER_WANT.get(kind, 'auto')}")
+        log("  auto  - 参与（默认，当前行为）")
+        log("  none  - 静默拒绝：不参与，本地留一行提示")
+        if kind == 'upnp':
+            log("  注意: upnp 本身还没实现，这一项目前没有消费者，只是先把状态位留着")
+        return
+    val = arg.split()[0].lower()
+    if val in ('auto', 'none'):
+        ON_PEER_WANT[kind] = val
+        log(f"{cmd} = {val}")
+    else:
+        log(f"未知取值: {val}，可用: auto / none")
+
+
+def _set_on_hole_cmd(cmd, arg):
+    """onholefromself / onholefrompeer [模式] [设备] [洞标识]
+
+    不带洞标识 → 只改状态变量（该角色的洞打通后自动跑什么）
+    带洞标识   → 同时立刻把这个洞交给该模式拉起
+    """
+    global ON_SELF_HOLE, ON_PEER_HOLE
+    name = 'onholefromself' if cmd == 'onholefromself' else 'onholefrompeer'
+    cur = ON_SELF_HOLE if cmd == 'onholefromself' else ON_PEER_HOLE
+    who = '本端发起打洞' if cmd == 'onholefromself' else '对方打进来'
+
+    if not arg:
+        shown = (f"{cur[0]}" + (f" {cur[1]}" if cur[1] else '')) if cur else 'none（不自动跑）'
+        log(f"{name} = {shown}   （{who}、洞打通后自动跑）")
+        log(f"  用法: {name} <模式> [设备] [洞标识]")
+        log("  模式: " + ' / '.join(ON_HOLE_MODES) + " / none")
+        log(f"  带洞标识 = 同时立刻在这个洞上拉起，如 {name} tun fd=21")
+        return
+
+    toks = arg.strip().split()
+    sub = toks[0].lower()
+    rest = toks[1:]
+
+    if sub == 'none':
+        if cmd == 'onholefromself':
+            ON_SELF_HOLE = None
+        else:
+            ON_PEER_HOLE = None
+        log(f"{name} = none（洞打通后不自动跑）")
+        return
+
+    if sub not in ON_HOLE_MODES:
+        log(f"未知模式: {sub}，可用: " + ' / '.join(ON_HOLE_MODES) + " / none")
+        return
+
+    dev = None
+    if sub in ('tun', 'tap') and rest and not _looks_like_hole_selector(rest[0]):
+        dev = rest.pop(0)
+    hole_arg = ' '.join(rest).strip()
+
+    if cmd == 'onholefromself':
+        ON_SELF_HOLE = (sub, dev)
+    else:
+        ON_PEER_HOLE = (sub, dev)
+    log(f"{name} = {sub}" + (f" {dev}" if dev else '') + "（洞打通后自动跑）")
+
+    if sub == 'switch':
+        _do_start_switch()
+    if sub in ('video', 'file'):
+        log(f"  注意: {sub} 还没实现（TODO），真拉起时会提示")
+
+    if hole_arg:
+        hole, err = _resolve_hole(hole_arg)
+        if hole is None:
+            log(err)
+        else:
+            _handover_hole(hole, sub, dev)
+
 
 def print_help():
     log("=== p2pnet 客户端 ===")
+
+    # ---------- 第一段：基础 ----------
+    log("── 基础 ──")
     log("  help              - 显示帮助")
-    log("  quit             - 退出")
+    log("  quit              - 退出")
+    log("  login [<username>] - 登录（不写用户名就交互式问；随后提示输入密码）")
+    log("  logout            - 登出（连接不断，可以再 login）")
+    log("  list [peer|hole|proc] - 不带参数列出三样；peer=同服务器的人 / hole=所有洞 / proc=所有子进程")
+    log("  del hole=<洞标识|all>   - 删洞（关掉它的 socket）")
+    log("  del proc=<pid|名字|all> - 杀掉子进程")
+    log("  洞标识: fd=<fd> | port=<本端端口> | #<编号> | <用户名>")
+    log("  ----------------------------------------")
 
-    log("  login            - 交互式登录（提示输入用户名和密码）")
-    log("  login <username> - 登录，随后提示输入密码")
-    log("  list             - 发送 list")
+    # ---------- 第二段：p2p ----------
+    log("── p2p ──")
+    log("  direct <user>     - 不用打洞，看对方哪些地址 ICMP 可达（枚举 v4/v6 + 并发 ping）")
+    log("  upnp              - 和路由器协商直接开端口映射（不用打洞）            [协议待定]")
+    log("  udp <user>        - 和对方打 UDP 洞（只做打洞 1~6 步，不自动拉起协议）")
+    log("  tcp <user>        - 和对方打 TCP 洞（地址交换后由 tcp.py 完成连接）")
+    log("  打洞过程每步一行: [洞 #N 对端] [第几步/共几步] 正在干嘛 然后接 （✓）/（✗）")
+    log("  ----------------------------------------")
 
-    log("  appmode            - 显示当前模式")
-    log("  appmode fake       - 模式: fake（测试用，无网络）")
-    log("  appmode tun [dev] - 模式: tun（tun 设备汇入 p2p 网络）")
-    log("  appmode tap [dev] - 模式: tap（tap 设备汇入 p2p 网络）")
-    log("  appmode auto      - 模式: auto（tun→tap→fake，自动选择）")
-    log("  appmode switch   - 模式: switch（拉起 switch.py 做 P2P 交换中心）")
-    log("  appmode video    - 模式: video（拉起 video.py 做 P2P 视频通话，TODO）")
-    log("  appmode file     - 模式: file（拉起 file.py 做 P2P 文件传输，TODO）")
+    # ---------- 第三段：打完洞以后的协议 ----------
+    log("── 打完洞以后的协议（udptest/ffmpeg/wireguard 等等）──")
+    log("  udptest <洞>      - 在这个洞上跑 app/udptest.py（只做互发 ping/pong 测试）")
+    log("  proxy <洞> <host:port> - 把洞里的数据转发到这个地址（app/proxy.py）")
+    log("  ffmpeg <洞>       - 在这个洞上跑 ffmpeg 视频")
+    log("  wg-py <洞> [pubkey=<对方公钥>]  - 自己实现的 WireGuard（app/wg-python.py，不用 root）")
+    log("  wg-sh <洞> <我的私钥> <我的meshIP> <对方公钥> <对方meshIP> [接口名]")
+    log("                                - 调系统 wg（app/wg-calltool.py → wghelp.sh，需 root）")
+    log("  ----------------------------------------")
 
-    log("  peer              - 列出所有 P2P 连接")
-    log("  kill <pid>|all  - 杀掉指定 PID 的 peer，或 kill all 杀掉全部")
-    log("  udp <user>   - 请求与对方建立 UDP P2P 连接")
-    log("  tcp <user>   - 请求与对方建立 TCP P2P 连接")
-    log("  wg  <user>   - 请求与对方建立 WireGuard P2P 连接（单进程多 peer）")
-    log("  wghelp <user> <私钥> <mesh_ip>  - WireGuard NAT 穿透（原生 WG）")
-    log("  ffmpeg <user> - P2P 视频通话（打完洞后拉起 ffmpeg）")
+    # ---------- 第四段：被调时的自动操作 ----------
+    log("── 被调时的自动操作（对方来找我 / 洞打通时自动做什么）──")
+    log("  onpeerwantdirect [auto|none] - 别人 direct 来要我的地址时回不回")
+    log("  onpeerwantupnp [auto|none]   - 别人想让我开端口映射时（upnp 还没实现，暂无消费者）")
+    log("  onpeerwantudp [auto|none]    - 别人找我打 UDP 洞时参不参与")
+    log("  onpeerwanttcp [auto|none]    - 别人找我打 TCP 洞时参不参与")
+    log("      auto = 参与（默认） / none = 静默拒绝，本地留一行提示")
+    log("  onholefromself [模式] [设备] [洞] - 本端发起的洞打通后自动跑什么")
+    log("  onholefrompeer [模式] [设备] [洞] - 对方发起的洞打通后自动跑什么")
+    log("      none(默认) / udptest / tun [设备] / tap [设备] / auto / switch / proxy <host:port> / ffmpeg / wg")
+    log("      tun/tap/auto 交给 app/vpn.py（单人单 tun）；switch 交给 app/switch.py（多人多洞）")
+    log("      带洞标识 = 同时立刻在该洞上拉起（如 onholefrompeer tun fd=21）")
+    log("========================================")
+    log("  也可先打洞再拉起: udp <user> → list → udptest <洞>")
+    log("  ffmpeg/wg 也支持先打洞: ffmpeg <user> / wg <user> [pubkey=...]")
 
 # ====== Switch 进程管理 ======
 
+def _switch_text_of(obj):
+    """把内部的命令 dict 拼成 switch console 需要的**文本命令**（switch 的 stdin 是文本）
+
+      {'cmd':'plug', ...}   → plug localport=50001 peer=1.2.3.4:30001 [candidates=a:1]
+      {'cmd':'unplug', ...} → unplug port1
+      其他（status 等）      → 直接是动词
+    """
+    c = obj.get('cmd', '')
+    if c == 'plug':
+        parts = [f"plug localport={obj.get('localport')}",
+                 f"peer={obj.get('peer_ip')}:{obj.get('peer_port')}"]
+        if obj.get('peercandidates'):
+            parts.append(f"candidates={obj['peercandidates']}")
+        return ' '.join(parts)
+    if c == 'unplug':
+        return f"unplug {obj.get('name')}"
+    return c
+
+
+def _parse_switch_reply(line):
+    """switch 的文本回复 → dict：'ok k=v k=v' / 'err 消息'"""
+    line = (line or '').strip()
+    if line.startswith('err'):
+        return {'ok': False, 'error': line[3:].strip()}
+    if not line.startswith('ok'):
+        return None
+    out = {'ok': True}
+    for tok in line[2:].split():
+        k, sep, v = tok.partition('=')
+        if sep:
+            out[k] = v
+    return out
+
+
+def _switch_cmd(obj, timeout=5.0):
+    """给 switch.py 的 console 发一条**文本命令**，返回它回复解析成的 dict（失败/超时 None）
+
+    switch.py 的 console 就是它的 stdin/stdout：stdin 收文本命令、stdout 回文本
+    （ok ... / err ...），日志走 stderr（不污染协议）。
+    ctl socket（传 fd 那条）仍然是 JSON —— 见 _switch_plug_fd。
+    """
+    if SWITCH_PROC is None or not SWITCH_PROC.get('popen'):
+        return None
+    p = SWITCH_PROC['popen']
+    if p.stdin is None or p.stdout is None or p.poll() is not None:
+        log("[switch] 控制通道不可用（switch 没起来或已退出）")
+        return None
+    line = _switch_text_of(obj)
+    try:
+        p.stdin.write((line + '\n').encode('utf-8'))
+        p.stdin.flush()
+    except Exception as e:
+        log(f"[switch] 写命令失败: {e}")
+        return None
+    try:
+        r, _, _ = select.select([p.stdout], [], [], timeout)
+        if not r:
+            log(f"[switch] 命令 {line.split()[0]} 没有回应（{timeout:.0f}s）")
+            return None
+        raw = p.stdout.readline()
+        if not raw:
+            return None
+        return _parse_switch_reply(raw.decode('utf-8', 'replace'))
+    except Exception as e:
+        log(f"[switch] 读回复失败: {e}")
+        return None
+
+
+def _switch_plug(hole):
+    """把一条打好的洞"插到" switch 上（console plug）
+
+    switch 自己 bind 这个本地端口、自己保活，把这条洞当成一个交换机端口接进 L2/L3 转发。
+    多人多洞 = 插多根线。
+    """
+    if SWITCH_PROC is None:
+        _do_start_switch()
+    if SWITCH_PROC is None:
+        log(f"[洞 #{hole['id']}] switch 没起来，无法接洞")
+        return False
+    extra = [c for c in hole.get('candidates', [])
+             if (c['ip'], c['port']) != (hole['peer_ip'], hole['peer_port'])]
+    resp = _switch_cmd({
+        'cmd': 'plug',
+        'localport': hole['my_port'],
+        'localaddr': '0.0.0.0',
+        'peer_ip': hole['peer_ip'],
+        'peer_port': hole['peer_port'],
+        'peercandidates': ','.join(f"{c['ip']}:{c['port']}" for c in extra),
+    })
+    if not resp or not resp.get('ok'):
+        log(f"[洞 #{hole['id']}] 给 switch 插线失败: {(resp or {}).get('error', '没回应')}")
+        return False
+    hole['switch_port'] = resp.get('name')
+    hole['handed_detail'] = f"switch 的 {resp.get('name')} 端口"
+    return True
+
+
+def _switch_plug_fd(hole, sock, peer_name=''):
+    """把一条**已建立连接的 TCP socket** 用 **SCM_RIGHTS** 送进常驻的 switch
+
+    switch 一直在跑，没法用 pass_fds（那是拉起新进程时用的）。所以走 Unix socket
+    的辅助数据（SCM_RIGHTS）把 fd 复制进 switch 的进程，让它当成一个 port 用。
+    送完这边就可以关掉自己那份了（内核里 switch 那份撑着，不是"关连接"）。
+
+    Windows 没有 SCM_RIGHTS，得换 DuplicateHandle + 控制通道 —— TODO，没实现。
+    """
+    if os.name != 'posix':
+        log("[P2P] 常驻进程接 TCP 洞目前只支持 POSIX（SCM_RIGHTS）；Windows 要用 "
+            "DuplicateHandle，还没实现")
+        return False
+    if SWITCH_PROC is None:
+        _do_start_switch()
+    if not SWITCH_CTL_PATH or not os.path.exists(SWITCH_CTL_PATH):
+        log(f"[P2P] switch 控制通道不可用（{SWITCH_CTL_PATH}）")
+        return False
+    fd = sock.fileno()
+    try:
+        os.set_inheritable(fd, False)      # 走 SCM_RIGHTS，不需要可继承
+    except OSError:
+        pass
+    msg = (json.dumps({'cmd': 'plug_fd', 'peer': peer_name or hole.get('peer') or ''}) + '\n').encode()
+    fds = array.array('i', [fd])
+    try:
+        ctl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        ctl.settimeout(5.0)
+        ctl.connect(SWITCH_CTL_PATH)
+        ctl.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds)])
+        r, _, _ = select.select([ctl], [], [], 5.0)
+        line = ctl.recv(4096) if r else b''
+        ctl.close()
+    except OSError as e:
+        log(f"[P2P] 用 SCM_RIGHTS 把 fd 送进 switch 失败: {e}")
+        return False
+    try:
+        resp = json.loads(line.decode('utf-8').split('\n')[0])
+    except Exception:
+        log("[P2P] switch 没给有效回复")
+        return False
+    if not resp.get('ok'):
+        log(f"[P2P] switch 插 fd 失败: {resp.get('error')}")
+        return False
+    hole['switch_port'] = resp.get('name')
+    hole['handed_detail'] = f"switch 的 {resp.get('name')} 端口（SCM_RIGHTS 送的 fd={fd}）"
+    log(f"[P2P] 已把 fd={fd}（对端 {resp.get('peer')}）送进 switch，插成 {resp.get('name')}")
+    try:
+        sock.close()                        # switch 那份已经拿到，父进程这份可以关
+    except OSError:
+        pass
+    return True
+
+
 def _do_start_switch():
-    """拉起 switch.py 作为子进程，stdin/stdout 做控制通道"""
-    global SWITCH_PROC, SWITCH_SOCK_PATH, LOCAL_MODE
+    """拉起 switch.py 作为子进程，stdin/stdout 做控制通道（JSON 行）"""
+    global SWITCH_PROC, SWITCH_SOCK_PATH, SWITCH_CTL_PATH
     if SWITCH_PROC is not None:
         log("switch 已在运行")
         return
     import time as _t
     sock_path = f'/tmp/p2pnet/switch-{os.getpid()}.sock'
+    ctl_path = f'/tmp/p2pnet/switch-{os.getpid()}.ctl.sock'
     SWITCH_SOCK_PATH = sock_path
+    SWITCH_CTL_PATH = ctl_path
     # 清理旧 socket 文件
-    if os.path.exists(sock_path):
-        os.remove(sock_path)
+    for _p in (sock_path, ctl_path):
+        if os.path.exists(_p):
+            os.remove(_p)
     switch_args = [sys.executable, 'app/switch.py',
                    '--type', 'unixsocket',
-                   '--socketpath', sock_path]
+                   '--socketpath', sock_path,
+                   '--ctlpath', ctl_path]
     try:
         entry = launch_in_new_terminal(
             switch_args,
             cwd=os.path.dirname(os.path.abspath(__file__)),
             env={**os.environ, 'PYTHONUNBUFFERED': '1'},
-            new_window=False,  # 后台运行，stdout 给 client.py 读
+            new_window=False,     # 后台运行
             name='switch',
+            stdin_pipe=True,      # console 命令从这里进
+            stdout_pipe=True,     # JSON 回复从这里出（日志走 stderr）
         )
         SWITCH_PROC = entry
         # 等 switch 启动并开始接受连接
         _t.sleep(0.5)
-        log(f"switch.py 已启动（{sock_path}），peer 连接请用 --udp/--tcp/--wg")
-        LOCAL_MODE = 'switch'
+        log(f"switch.py 已启动（unix socket {sock_path}）")
+        log("        UDP 洞打通后会自动插上去；--tcp/--wg 仍走这个 socket")
     except Exception as e:
         log(f"switch.py 启动失败: {e}")
 
@@ -545,13 +1471,18 @@ def _do_start_switch():
 # ====== 启动时自动执行的命令 ======
 
 def _do_startup_commands():
-    """登录成功后自动执行启动命令（--appmode/--udp/--tcp/--wg/--wghelp）"""
-    global STARTUP_APPMODE, STARTUP_UDP, STARTUP_TCP, STARTUP_WG, STARTUP_WGHELP, STARTUP_FFMPEG
-    global WG_NATIVE_MODE, WG_NATIVE_MY_KEY, WG_NATIVE_MY_IP
+    """登录成功后自动执行启动命令（--onholefromself/--onholefrompeer/--udp/--tcp/--wg-py/--wg-sh）"""
+    global STARTUP_ON_SELF, STARTUP_ON_PEER
+    global STARTUP_UDP, STARTUP_TCP, STARTUP_WG, STARTUP_WGSH, STARTUP_FFMPEG
+    global WG_SH_MY_KEY, WG_SH_MY_IP, WG_SH_PEER_PUBKEY, WG_SH_PEER_IP, WG_SH_IFACE
 
-    if STARTUP_APPMODE:
-        log(f"[启动] 设置 appmode = {STARTUP_APPMODE}")
-        process_input_line(f'appmode {STARTUP_APPMODE}')
+    if STARTUP_ON_SELF:
+        log(f"[启动] 设置 onholefromself = {STARTUP_ON_SELF}")
+        process_input_line(f'onholefromself {STARTUP_ON_SELF}')
+
+    if STARTUP_ON_PEER:
+        log(f"[启动] 设置 onholefrompeer = {STARTUP_ON_PEER}")
+        process_input_line(f'onholefrompeer {STARTUP_ON_PEER}')
 
     for target in STARTUP_UDP:
         log(f"[启动] UDP 连接 {target}...")
@@ -562,22 +1493,21 @@ def _do_startup_commands():
         process_input_line(f'tcp {target}')
 
     for target in STARTUP_WG:
-        log(f"[启动] WireGuard 连接 {target}...")
-        process_input_line(f'wg {target}')
+        log(f"[启动] WireGuard（自己实现）连接 {target}...")
+        process_input_line(f'wg-py {target}')
 
-    for user, key, mesh_ip in STARTUP_WGHELP:
-        log(f"[启动] WireGuard NAT穿透连接 {user}...")
-        WG_NATIVE_MODE = True
-        WG_NATIVE_MY_KEY = key
-        WG_NATIVE_MY_IP = mesh_ip
-        process_input_line(f'wg {user}')  # 发 p2pwg 握手
+    for user, mykey, myip, peerpub, peerip, iface in STARTUP_WGSH:
+        log(f"[启动] WireGuard（系统 wg）连接 {user}...")
+        WG_SH_MY_KEY, WG_SH_MY_IP = mykey, myip
+        WG_SH_PEER_PUBKEY, WG_SH_PEER_IP, WG_SH_IFACE = peerpub, peerip, iface
+        process_input_line(f'wg-sh {user} {mykey} {myip} {peerpub} {peerip} {iface}')
 
     for target in STARTUP_FFMPEG:
         log(f"[启动] ffmpeg 视频连接 {target}...")
         process_input_line(f'ffmpeg {target}')
 
     STARTUP_UDP = STARTUP_TCP = STARTUP_WG = []
-    STARTUP_WGHELP = []
+    STARTUP_WGSH = []
     STARTUP_FFMPEG = []
 
 
@@ -585,6 +1515,7 @@ def _do_startup_commands():
 
 def handle_server_message(obj):
     global pending_auth, logged_in_user, session_key, ARGS_USER, ARGS_PASS
+    global _list_what
 
     if obj.get('type') == 'challenge':
         if pending_auth is None:
@@ -639,230 +1570,70 @@ def handle_server_message(obj):
         _do_startup_commands()
     elif obj.get('type') == 'list_result':
         users = obj.get('users', [])
-        if not users:
-            log("(无在线用户)")
-        for u in users:
-            log(f"  {u.get('username',''):<16} {u.get('ip','')}:{u.get('port','')}")
+        what = _list_what or 'all'
+        _list_what = None
+        if what == 'peer':
+            log("=== list peer ===")
+            _print_people(users)
+        else:
+            _print_list_result(users)
     elif obj.get('type') == 'user_joined':
         log(f"+ 用户上线: {obj.get('username','')}")
     elif obj.get('type') == 'user_left':
         log(f"- 用户下线: {obj.get('username','')}")
     elif obj.get('type') == 'error':
-        log(f"错误: {obj.get('message','')}")
+        msg = obj.get('message', '')
+        _list_what = None      # list 请求被拒（比如没登录），别再等 list_result
+        # 打洞被服务器拒绝（比如目标不存在）→ 原因直接写进那一步的 （✗）
+        if not (hole_udp.on_error(msg) or hole_tcp.on_error(msg)):
+            log(f"错误: {msg}")
+    elif obj.get('type') == 'logout_ok':
+        hole_udp.stop_all_hellos()
+        close_all_holes('登出')
+        pending_auth = None
+        logged_in_user = None
+        session_key = None
+        log("已登出（连接还在，可以再 login）")
     elif obj.get('type') == 'kicked':
         logged_in_user = None
         session_key = None
-        stop_udp_hello()
+        hole_udp.stop_all_hellos()
+        close_all_holes('被踢')
         log(f"被踢: {obj.get('message','')}")
     elif obj.get('type') == 'incoming_p2pudp':
         from_user = obj.get('from_username', '')
         log(f"⚠️  {from_user} 请求和你建立 UDP P2P 连接，输入 udp {from_user} 回应")
     elif obj.get('type') == 'send_udp_to_server':
-        udpport = obj.get('udpport', 9999)
-        log(f"[P2P] 服务器要求往 UDP {udpport} 发包，开始 UDP hello...")
-        # 启动 UDP hello 线程
-        start_udp_hello_thread(SERVER_IP, udpport, logged_in_user)
+        hole_udp.on_send_udp_to_server(obj.get('udpport', SERVER_PORT or 10000))
     elif obj.get('type') == 'thisisyourpeer_udp':
-        peer_name = obj.get('name', '')
-        peer_ip = obj.get('ip', '')
-        peer_port = obj.get('port', 0)
-        my_ip = obj.get('my_ip', '')
-        my_port = obj.get('my_port', 0)
-        log(f"[P2P] 收到对端 {peer_name} 地址: {peer_ip}:{peer_port}，本端: {my_ip}:{my_port}，停止 UDP hello...")
-        _hello_sock_ready.wait(timeout=3)  # 等 socket 创建完成再读端口
-        hello_port = udp_hello_sock.getsockname()[1] if udp_hello_sock else 0
-        stop_udp_hello()
-
-        # FFMPEG_MODE：拉起 ffmpeg.sh 做 P2P 视频，不走 udp.py
-        global FFMPEG_MODE
-        if FFMPEG_MODE:
-            FFMPEG_MODE = False
-            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg.sh')
-            # 对方接收端口 = 对方 hello_port（打洞时的本地端口）
-            peer_recv_port = obj.get('peer_hello_port', peer_port)
-            my_ip_addr = obj.get('my_ip', '0.0.0.0')
-            log(f"[P2P] ffmpeg 双向通话: 本机端口={hello_port} -> 对方端口={peer_recv_port}")
-            try:
-                call_args = ['bash', script_path,
-                             my_ip_addr, str(hello_port),
-                             peer_ip, str(peer_recv_port)]
-                entry = launch_in_new_terminal(
-                    call_args,
-                    cwd=os.path.dirname(os.path.abspath(__file__)),
-                    new_window=True, close_on_exit=False,
-                    peer_name=peer_name, name='ffmpeg',
-                )
-                peers.append(entry)
-                log(f"[P2P] ffmpeg 已启动（新窗口），持续 1 小时")
-            except Exception as e:
-                log(f"[P2P] ffmpeg 启动失败: {e}")
-            return True
-
-        env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
-
-        _log = REMOTELOG
-        if _log:
-            import time as _t
-            _log_file = f"/tmp/p2pnet/udp-{logged_in_user}_{peer_name}_{int(_t.time())}.log"
-        else:
-            _log_file = None
-
-        remote_args = [sys.executable, 'remote/udp.py',
-                       '--peeraddr', peer_ip,
-                       '--peerport', str(peer_port),
-                       '--localport', str(hello_port)]
-        if LOCAL_MODE in ('tun', 'tap'):
-            sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
-            remote_args += ['--socketpath', sock_path]
-            log(f"[P2P] {LOCAL_MODE} 模式，socket={sock_path}")
-        elif LOCAL_MODE == 'switch' and SWITCH_SOCK_PATH:
-            remote_args += ['--socketpath', SWITCH_SOCK_PATH]
-            log(f"[P2P] switch 模式，socket={SWITCH_SOCK_PATH}")
-        if _log_file:
-            remote_args += ['--remotelog', _log_file]
-
-        try:
-            entry = launch_in_new_terminal(
-                remote_args,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-                env=env,
-                new_window=NEW_WINDOW,
-                close_on_exit=CLOSE_WINDOW,
-                peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
-                my_ip='0.0.0.0', my_port=hello_port,
-                name='udp',
-                _log_file=_log_file,
-            )
-        except Exception as e:
-            log(f"[P2P] 启动 udp.py 失败: {e}")
+        hole_udp.on_thisisyourpeer(obj)
     elif obj.get('type') == 'p2pudp_pending':
         target = obj.get('target', '')
         log(f"P2P UDP 等待 {target} 确认...")
     elif obj.get('type') == 'send_tcp_to_server':
-        tcpport = obj.get('tcpport', SERVER_PORT)
-        log(f"[P2P] 服务器要求连接 TCP P2P 端口 {tcpport}（打洞用）...")
-        # 停止 UDP hello（如果还在跑）
-        stop_udp_hello()
-        import socket as _socket
-        try:
-            server_info = _socket.getaddrinfo(SERVER_IP, tcpport, _socket.AF_UNSPEC, _socket.SOCK_STREAM)
-            family, socktype, proto, _, sockaddr = server_info[0]
-            tcp_sock = _socket.socket(family, socktype, proto)
-            tcp_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-            tcp_sock.connect(sockaddr)
-            sig = sign_with_session_key(b'ping') if session_key else None
-            payload = {'username': logged_in_user}
-            if sig:
-                payload['signature'] = sig
-            if DEBUG:
-                sk_hex = binascii.hexlify(session_key).decode() if session_key else 'None'
-                print(f"[DEBUG] TCP registration -> {SERVER_IP}:{tcpport}: {payload}")
-            tcp_sock.sendall((json.dumps(payload) + '\n').encode())
-            log(f"[P2P] 已发送 TCP 注册到 {SERVER_IP}:{tcpport}，NAT 映射已建立")
-            # 打洞用，发完就关闭，映射留在 NAT 里
-            tcp_sock.close()
-        except Exception as e:
-            log(f"[P2P] 连接 TCP P2P 端口失败: {e}")
+        # 改用 TCP 了，停掉还在发 hello 的 UDP socket
+        hole_udp.stop_all_hellos()
+        hole_tcp.on_send_tcp_to_server(obj.get('tcpport', SERVER_PORT))
     elif obj.get('type') == 'thisisyourpeer_tcp':
-        peer_name = obj.get('name', '')
-        peer_ip = obj.get('ip', '')
-        peer_port = obj.get('port', 0)
-        my_ip = obj.get('my_ip', '')
-        my_port = obj.get('my_port', 0)
-        log(f"[P2P] 收到对端 {peer_name} TCP 地址: {peer_ip}:{peer_port}，本端: {my_ip}:{my_port}，启动 tcp.py...")
-        env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'P2P_USER': logged_in_user or ''}
-
-        _log = REMOTELOG
-        if _log:
-            import time as _t
-            _log_file = f"/tmp/p2pnet/tcp-{logged_in_user}_{peer_name}_{int(_t.time())}.log"
-        else:
-            _log_file = None
-
-        remote_args = [sys.executable, 'remote/tcp.py',
-                       '--peeraddr', peer_ip, '--peerport', str(peer_port),
-                       '--localport', str(my_port), '--peername', peer_name]
-        if LOCAL_MODE in ('tun', 'tap'):
-            sock_path = f'/tmp/p2p/{logged_in_user}-{peer_name}.sock'
-            remote_args += ['--socketpath', sock_path]
-            log(f"[P2P] {LOCAL_MODE} 模式，socket={sock_path}")
-        elif LOCAL_MODE == 'switch' and SWITCH_SOCK_PATH:
-            remote_args += ['--socketpath', SWITCH_SOCK_PATH]
-            log(f"[P2P] switch 模式，socket={SWITCH_SOCK_PATH}")
-        if _log_file:
-            remote_args += ['--remotelog', _log_file]
-
-        try:
-            entry = launch_in_new_terminal(
-                remote_args,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-                env=env,
-                new_window=NEW_WINDOW,
-                close_on_exit=CLOSE_WINDOW,
-                peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
-                my_ip=my_ip, my_port=my_port,
-                name='tcp',
-                _log_file=_log_file,
-            )
-        except Exception as e:
-            log(f"[P2P] 启动 tcp.py 失败: {e}")
+        hole_tcp.on_thisisyourpeer(obj)
+    elif obj.get('type') in ('p2pdirect', 'p2pdirect_reply'):
+        hole_direct.on_peer(obj)
     elif obj.get('type') == 'incoming_p2pwg':
         from_user = obj.get('from_username', '')
-        log(f"⚠️  {from_user} 请求和你建立 WireGuard P2P 连接，输入 wg {from_user} 回应")
+        log(f"⚠️  {from_user} 请求和你建立 WireGuard P2P 连接，输入 wg-py {from_user} 回应")
     elif obj.get('type') == 'thisisyourpeer_wg':
-        global WG_ADMIN_PATH, WG_PROC, WG_NATIVE_MODE, WG_NATIVE_MY_KEY, WG_NATIVE_MY_IP
-        peer_name = obj.get('name', '')
-        peer_ip = obj.get('ip', '')       # peer's mesh IP (e.g. 192.168.250.3)
-        peer_port = obj.get('port', 0)     # peer's WireGuard ListenPort
-        peer_pubkey = obj.get('peer_pubkey', '')
-        peer_public_addr = obj.get('peer_public_addr', '')  # peer's public ip:port (hole-punched)
-        import time as _t
-
-        # -------- wghelp 模式：拉起 wghelp.sh 配置原生 WireGuard --------
-        if WG_NATIVE_MODE:
-            my_privkey = WG_NATIVE_MY_KEY
-            my_ip = WG_NATIVE_MY_IP
-            # peer_public_addr 优先，否则 fallback 到 peer_ip:peer_port
-            if peer_public_addr:
-                endpoint = peer_public_addr
-            else:
-                endpoint = f"{peer_ip}:{peer_port}"
-            log(f"[P2P] wghelp: 配置原生 WireGuard...")
-            log(f"  我的 mesh IP: {my_ip}")
-            log(f"  对方 mesh IP: {peer_ip}")
-            log(f"  对方公钥: {peer_pubkey[:16]}...")
-            log(f"  对方 Endpoint: {endpoint}")
-
-            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wghelp.sh')
-            if not os.path.exists(script_path):
-                log(f"[P2P] 错误: wghelp.sh 不在当前目录: {script_path}")
-                WG_NATIVE_MODE = False
-                return True
-
-            # wghelp.sh: <私钥> <我meshIP> <对方公钥> <对方meshIP> <对方公网地址:端口>
-            wg_args = ['sudo', 'bash', script_path, my_privkey, my_ip, peer_pubkey, peer_ip, endpoint]
-            try:
-                entry = launch_in_new_terminal(
-                    wg_args,
-                    cwd=os.path.dirname(os.path.abspath(__file__)),
-                    new_window=True,
-                    close_on_exit=False,
-                    peer_name=peer_name, peer_ip=peer_ip, peer_port=peer_port,
-                    name='wghelp',
-                )
-                if entry:
-                    peers.append(entry)
-                log(f"[P2P] wghelp.sh 已在新窗口启动（可能需要输入 sudo 密码）")
-                log(f"[P2P] 运行后检查: ping {peer_ip} && wg show")
-            except Exception as e:
-                log(f"[P2P] wghelp.sh 启动失败: {e}")
-            WG_NATIVE_MODE = False
-            return True
+        # 服务端从未实现这个 type（wg-python.py / wg-calltool.py 的公钥都得命令行给），
+        # 这里只留个说明，别再指望它。两条 wg 路现在都是"洞打通 → 移交"：
+        #   wg-py <洞> [pubkey=...]                      → app/wg-python.py（自己实现）
+        #   wg-sh <洞> <私钥> <我的meshIP> <对方公钥> <对方meshIP> → app/wg-calltool.py（系统 wg）
+        log("[P2P] 服务端未实现 thisisyourpeer_wg：对方公钥/mesh IP 请用命令行给"
+            "（wg-py ... pubkey=<公钥> / wg-sh <洞> <私钥> <我的meshIP> <对方公钥> <对方meshIP>）")
+        return True
 
         def _do_add_peer():
             """通过 admin socket 添加 peer（闭包捕获 peer_name 等）"""
             if not WG_ADMIN_PATH or not os.path.exists(WG_ADMIN_PATH):
-                log(f"[P2P] wireguard.py 未运行，无法添加 peer {peer_name}")
+                log(f"[P2P] wg-python.py 未运行，无法添加 peer {peer_name}")
                 return False
             import json as _json
             try:
@@ -902,7 +1673,7 @@ def handle_server_message(obj):
             _log = REMOTELOG
             _log_file = f"/tmp/p2pnet/wg-{logged_in_user}_main_{int(_t.time())}.log" if _log else None
 
-            remote_args = [sys.executable, 'remote/wireguard.py',
+            remote_args = [sys.executable, 'app/wg-python.py',
                            '--socketpath', SWITCH_SOCK_PATH or f'/tmp/p2pnet/switch-{os.getpid()}.sock',
                            '--adminpath', admin_path]
             if _log_file:
@@ -924,13 +1695,16 @@ def handle_server_message(obj):
                 _t.sleep(0.5)  # 等 wireguard.py 启动
                 _do_add_peer()
             except Exception as e:
-                log(f"[P2P] 启动 wireguard.py 失败: {e}")
+                log(f"[P2P] 启动 wg-python.py 失败: {e}")
     else:
         log(f"[消息] {json.dumps(obj)}")
 
 
 def process_input_line(line):
-    global pending_auth, WG_NATIVE_MODE, WG_NATIVE_MY_KEY, WG_NATIVE_MY_IP
+    global pending_auth
+    global WG_SH_MY_KEY, WG_SH_MY_IP, WG_SH_PEER_PUBKEY, WG_SH_PEER_IP, WG_SH_IFACE
+    global _pending_usage, _pending_wg_pubkey
+    global _list_what
     parts = line.split(maxsplit=1)
     cmd = parts[0]
     arg = parts[1].strip() if len(parts) > 1 else ''
@@ -950,173 +1724,160 @@ def process_input_line(line):
         pending_auth = (username,)
         ws_send(ws_sock, {"type": "login", "username": username})
         log(f"等待服务器验证...")
-    elif cmd == 'list':
-        ws_send(ws_sock, {"type": "list"})
-    elif cmd == 'appmode':
-        global LOCAL_MODE, LOCAL_DEVICE
-        if not arg:
-            mode = LOCAL_MODE if LOCAL_MODE else 'fake'
-            dev = LOCAL_DEVICE or '(无)'
-            log(f"当前模式: {mode}  设备: {dev}")
+    elif cmd == 'logout':
+        ws_send(ws_sock, {"type": "logout"})
+        return True
+    elif cmd == 'del':
+        # del hole=<洞标识|all>   /   del proc=<pid|名字|all>
+        if '=' not in arg:
+            log("用法: del hole=<洞标识|all>   /   del proc=<pid|名字|all>")
+            log("  洞标识: #1 / fd=21 / port=50001 / <用户名>")
             return True
-        parts = arg.strip().split(maxsplit=1)
-        sub = parts[0]
-        dev = parts[1] if len(parts) > 1 else None
-        if sub == 'fake':
-            LOCAL_MODE = 'fake'
-            LOCAL_DEVICE = None
-            log("模式: fake（测试用，无网络）")
-        elif sub in ('tun', 'tap'):
-            LOCAL_MODE = sub
-            LOCAL_DEVICE = dev
-            log(f"模式: {sub}（tun 设备汇入 p2p 网络，设备: {dev or '(无)'}）")
-        elif sub == 'auto':
-            LOCAL_MODE = 'auto'
-            LOCAL_DEVICE = None
-            log("模式: auto（tun→tap→fake，自动选择）")
-        elif sub == 'switch':
-            _do_start_switch()
-        elif sub == 'video':
-            LOCAL_MODE = 'video'
-            LOCAL_DEVICE = None
-            log("模式: video（拉起 video.py 做 P2P 视频通话，TODO）")
-        elif sub == 'file':
-            LOCAL_MODE = 'file'
-            LOCAL_DEVICE = None
-            log("模式: file（拉起 file.py 做 P2P 文件传输，TODO）")
+        kind, _, val = arg.partition('=')
+        kind = kind.strip().lower()
+        if kind == 'hole':
+            _delete_holes(val)
+        elif kind == 'proc':
+            _delete_procs(val)
         else:
-            log(f"未知 appmode: {sub}，可用: fake / tun [设备名] / tap [设备名] / auto / switch / video / file")
+            log(f"未知类别: {kind}，可用: hole / proc")
+        return True
+    elif cmd == 'list':
+        # list [peer|hole|proc]
+        #   不带参数 = 三块都打；peer = 同服务器的人；hole = 所有洞；proc = 所有子进程
+        sub = arg.split()[0].lower() if arg.strip() else ''
+        if sub in ('', 'all'):
+            _list_what = 'all'
+            ws_send(ws_sock, {"type": "list"})
+        elif sub == 'peer':
+            _list_what = 'peer'
+            ws_send(ws_sock, {"type": "list"})
+        elif sub == 'hole':
+            log("=== 洞 ===")
+            _print_holes()
+        elif sub == 'proc':
+            log("=== 子进程 ===")
+            _print_procs()
+        else:
+            log(f"未知参数: {sub}，可用: (空) / peer / hole / proc")
+        return True
+    elif cmd in ('onholefrompeer', 'onholefromself'):
+        # onholefrompeer / onholefromself [模式] [设备] [洞标识]
+        #   不带洞标识: 只改状态变量（该角色洞打通后自动跑什么）
+        #   带洞标识  : 同时立刻把这个洞交给该模式拉起
+        _set_on_hole_cmd(cmd, arg)
+        return True
+    elif cmd in ('onpeerwantudp', 'onpeerwanttcp', 'onpeerwantdirect', 'onpeerwantupnp'):
+        _set_onpeerwant(cmd, arg)
+        return True
+    elif cmd == 'direct':
+        # 请求对方全部地址（v4+v6），逐个 ping 看能不能直连 —— 协议待定
+        hole_direct.run(arg)
+        return True
+    elif cmd == 'upnp':
+        # 和路由器协商直接开端口映射 —— 协议待定
+        hole_upnp.run()
         return True
     elif cmd == 'udp':
         if not arg:
             log("用法: udp <对方用户名>")
+            log("  只做打洞 1~6 步；打完洞用 hole 看洞，再 udptest <洞> 等拉起")
             return True
-        target = arg.strip()
-        ws_send(ws_sock, {"type": "p2pudp", "target": target})
-        log(f"P2P UDP 请求已发送给服务器，等待 {target} 确认...")
+        target = arg.split()[0]
+        hole_udp.start(target)
     elif cmd == 'tcp':
         if not arg:
             log("用法: tcp <对方用户名>")
             return True
-        target = arg.strip()
-        ws_send(ws_sock, {"type": "p2ptcp", "target": target})
-        log(f"P2P TCP 请求已发送给服务器，等待 {target} 确认...")
-    elif cmd == 'wg':
+        target = arg.split()[0]
+        hole_tcp.start(target)
+    elif cmd == 'proxy':
+        parts = arg.split()
+        if len(parts) < 2:
+            log("用法: proxy <洞标识> <host:port>   （洞标识: fd=21 / port=50001 / #1 / bob）")
+            log("      把这条洞里的数据转发到 host:port（app/proxy.py）")
+            return True
+        hole, err = _resolve_hole(parts[0])
+        if hole is None:
+            log(err)
+            return True
+        _handover_hole(hole, 'proxy', parts[1])
+        return True
+    elif cmd == 'udptest':
         if not arg:
-            log("用法: wg <对方用户名>")
+            log("用法: udptest <洞标识>   （洞标识: fd=21 / port=50001 / #1 / bob）")
             return True
-        target = arg.strip()
-        WG_NATIVE_MODE = False
-        ws_send(ws_sock, {"type": "p2pwg", "target": target})
-        log(f"P2P WireGuard 请求已发送给服务器，等待 {target} 确认...")
-    elif cmd == 'wghelp':
-        # wghelp: 前半段同 wg，后半段拉起 wghelp.sh 配置原生 WireGuard
+        hole, err = _resolve_hole(arg)
+        if hole is None:
+            log(err)
+            return True
+        _handover_hole(hole, 'udptest')
+        return True
+    elif cmd == 'wg-py':
         if not arg:
-            log("用法: wghelp <对方用户名> <我的私钥> <我的mesh IP>")
-            log("  例: wghelp bob YGzbJJ8... 192.168.250.2")
-            log("  注意: 私钥会传入 wghelp.sh（当前目录），不要在共享环境使用")
+            log("用法: wg-py <对方用户名> [pubkey=<对方WireGuard公钥base64>]")
+            log("      wg-py <洞标识> [pubkey=<...>]   # 在已打通的洞上跑自己实现的 WireGuard")
+            log("  app/wg-python.py: 纯用户态实现，不需要 root / 内核模块 / wireguard-tools")
+            log("  注意: 服务端未实现 thisisyourpeer_wg，对方公钥只能自己给")
             return True
-        parts = arg.strip().split()
-        if len(parts) < 3:
-            log("用法: wghelp <对方用户名> <我的私钥> <我的mesh IP>")
+        target, pubkey = _split_pubkey(arg)
+        hole, err = _resolve_hole(target)
+        if hole is not None:
+            _pending_wg_pubkey = pubkey
+            _handover_hole(hole, 'wg-py')
             return True
-        target = parts[0]
-        my_privkey = parts[1]
-        my_ip = parts[2]
-        WG_NATIVE_MODE = True
-        WG_NATIVE_MY_KEY = my_privkey
-        WG_NATIVE_MY_IP = my_ip
-        ws_send(ws_sock, {"type": "p2pwg", "target": target})
-        log(f"P2P WireGuard NAT穿透请求已发送，等待 {target} 确认...")
+        if _looks_like_hole_selector(target):
+            log(err)
+            return True
+        # 不是洞 → 当成用户名：先打 UDP 洞，成功后自动拉起
+        _pending_usage = 'wg-py'
+        _pending_wg_pubkey = pubkey
+        hole_udp.start(target)
+    elif cmd == 'wg-sh':
+        # 调系统 wg（app/wg-calltool.py → app/wghelp.sh）：需要 root + wireguard-tools + 内核模块
+        usage_txt = ("用法: wg-sh <对方用户名|洞标识> <我的私钥> <我的meshIP> "
+                     "<对方公钥> <对方meshIP> [接口名]")
+        if not arg:
+            log(usage_txt)
+            log("  例: wg-sh bob YGzbJJ8... 192.168.250.2 BDDBwN2... 192.168.250.3 wghelp0")
+            log("  app/wg-calltool.py: 调系统的 wg / ip 命令（内核 WireGuard）")
+            log("  注意: 私钥会传给 wghelp.sh，不要在共享环境使用")
+            return True
+        toks = arg.strip().split()
+        if len(toks) < 5:
+            log(usage_txt)
+            return True
+        target = toks[0]
+        globals()['WG_SH_MY_KEY'] = toks[1]
+        globals()['WG_SH_MY_IP'] = toks[2]
+        globals()['WG_SH_PEER_PUBKEY'] = toks[3]
+        globals()['WG_SH_PEER_IP'] = toks[4]
+        if len(toks) >= 6:
+            globals()['WG_SH_IFACE'] = toks[5]
+        hole, err = _resolve_hole(target)
+        if hole is not None:
+            _handover_hole(hole, 'wg-sh')
+            return True
+        if _looks_like_hole_selector(target):
+            log(err)
+            return True
+        _pending_usage = 'wg-sh'
+        hole_udp.start(target)
     elif cmd == 'ffmpeg':
-        # ffmpeg: 前半段同 udp（p2pudp 握手），后半段拉起 ffmpeg.sh 做视频流
+        # 带洞标识 = 在已打通的洞上拉 ffmpeg；否则当用户名，先打洞再自动拉 ffmpeg
         if not arg:
-            log("用法: ffmpeg <对方用户名>")
-            log("  打洞成功后自动拉起 ffplay/ffmpeg 进行 P2P 视频通话")
+            log("用法: ffmpeg <对方用户名>   或   ffmpeg <洞标识>")
             return True
-        target = arg.strip()
-        global FFMPEG_MODE
-        FFMPEG_MODE = True
-        ws_send(ws_sock, {"type": "p2pudp", "target": target})
-        log(f"P2P ffmpeg 视频请求已发送，等待 {target} 确认...")
-    elif cmd == 'peer':
-        if not peers:
-            log("没有运行的子进程")
-        else:
-            for i, c in enumerate(children):
-                winfo = ''
-                if c['type'] == 'window':
-                    winfo = '  [窗口]' if c['close_on_exit'] else '  [窗口·保留]'
-                else:
-                    winfo = '  [后台]'
-                pn = c['peer_name']
-                pi = c['peer_ip']
-                pp = c['peer_port']
-                mi = c['my_ip']
-                mp = c['my_port']
-                log(f"  [{i}] pid={c['pid']}  name={c['name']}{winfo}")
-                log(f"       对端: {pn}  {pi}:{pp}  本端: {mi}:{mp}")
-        return True
-    elif cmd == 'kill':
-        if not arg or arg.strip() == 'all':
-            # kill all peers
-            if not peers:
-                log("没有运行的 peer")
-            else:
-                for c in list(peers):
-                    p = c.get('popen')
-                    pid = c.get('pid')
-                    if p is not None:
-                        p.terminate()
-                        log(f"已 terminate pid={pid} ({c['name']})")
-                    elif pid is not None:
-                        try:
-                            import signal as _sig
-                            if IS_WINDOWS:
-                                os.kill(pid, _sig.CTRL_C_EVENT)
-                            else:
-                                os.kill(pid, _sig.SIGINT)
-                            log(f"已发送 SIGINT pid={pid} ({c['name']})")
-                        except (ProcessLookupError, OSError):
-                            log(f"进程已不存在: pid={pid}")
-                        except PermissionError:
-                            log(f"权限不足: pid={pid}")
-                    peers.remove(c)
+        hole, err = _resolve_hole(arg)
+        if hole is not None:
+            _handover_hole(hole, 'ffmpeg')
             return True
-
-        try:
-            target_pid = int(arg.strip())
-        except ValueError:
-            log(f"无效 PID: {arg}")
+        if _looks_like_hole_selector(arg):
+            log(err)
             return True
-        killed = False
-        for c in peers:
-            if c['pid'] == target_pid:
-                try:
-                    p = c.get('popen')
-                    if p is not None:
-                        p.terminate()
-                        log(f"已 terminate pid={target_pid} ({c['name']})")
-                    else:
-                        import signal as _sig
-                        if IS_WINDOWS:
-                            os.kill(target_pid, _sig.CTRL_C_EVENT)
-                        else:
-                            os.kill(target_pid, _sig.SIGINT)
-                        log(f"已发送 SIGINT pid={target_pid} ({c['name']})")
-                except (ProcessLookupError, OSError):
-                    log(f"进程已不存在: pid={target_pid}")
-                except PermissionError:
-                    log(f"权限不足: pid={target_pid}")
-                try:
-                    peers.remove(c)
-                except ValueError:
-                    pass
-                killed = True
-                break
-        if not killed:
-            log(f"未找到 pid={target_pid} 的子进程")
-        return True
+        target = arg.split()[0]
+        _pending_usage = 'ffmpeg'
+        hole_udp.start(target)
     else:
         log(f"未知命令: {cmd}，输入 help")
     return True
@@ -1137,16 +1898,20 @@ def main():
     parser.add_argument('--pass', dest='pass_', default=None, help='登录密码（需配合 --user 使用，连上服务器后自动登录）')
     parser.add_argument('--remotelog', dest='remotelog', nargs='?', const=True, default=False,
                         help='子进程日志：默认 False（stdout），True 时写入 /tmp/p2pnet/{udp|tcp}-{user}_{peer}_{time}.log）')
-    parser.add_argument('--appmode', dest='appmode', default=None,
-                        help='启动后自动设置的 appmode（fake/tun/tap/auto）')
+    parser.add_argument('--onholefromself', dest='onholefromself', default=None,
+                        help='本端发起打洞、洞打通后自动跑什么（none 默认 / udptest / tun [设备] / '
+                             'tap [设备] / auto / switch / proxy <host:port> / ffmpeg / wg-py / wg-sh）')
+    parser.add_argument('--onholefrompeer', dest='onholefrompeer', default=None,
+                        help='对方打进来、洞打通后自动跑什么（同上）')
     parser.add_argument('--udp', dest='udp_targets', action='append', default=[],
                         help='启动后自动连接的 UDP 用户（可多次指定）')
     parser.add_argument('--tcp', dest='tcp_targets', action='append', default=[],
                         help='启动后自动连接的 TCP 用户（可多次指定）')
-    parser.add_argument('--wg', dest='wg_targets', action='append', default=[],
-                        help='启动后自动连接的 WireGuard 用户（可多次指定）')
-    parser.add_argument('--wghelp', dest='wghelp_targets', action='append', default=[],
-                        help='启动后自动连接的 WireGuard 用户（原生 WG），格式: "user key=xxx mesh_ip=yyy"（可多次指定）')
+    parser.add_argument('--wg-py', dest='wg_targets', action='append', default=[],
+                        help='启动后自动连接的 WireGuard 用户（自己实现版，可多次指定）')
+    parser.add_argument('--wg-sh', dest='wgsh_targets', action='append', default=[],
+                        help='启动后自动连接的 WireGuard 用户（系统 wg 版），格式: '
+                             '"user privkey=xxx myip=yyy pubkey=zzz peerip=www [iface=...]"（可多次指定）')
     parser.add_argument('--ffmpeg', dest='ffmpeg_targets', action='append', default=[],
                         help='启动后自动视频连接的用户（可多次指定）')
     args = parser.parse_args()
@@ -1155,30 +1920,32 @@ def main():
     DEBUG = args.debug
     NEW_WINDOW = args.new_window
     CLOSE_WINDOW = args.close_window
+    _hole_configure()   # 把日志/WS/建洞记录/回调注入 hole/
     global ARGS_USER, ARGS_PASS, REMOTELOG
     ARGS_USER = args.user
     ARGS_PASS = args.pass_
     REMOTELOG = args.remotelog
-    global STARTUP_UDP, STARTUP_TCP, STARTUP_WG, STARTUP_WGHELP, STARTUP_APPMODE, STARTUP_FFMPEG
-    STARTUP_APPMODE = args.appmode
+    global STARTUP_UDP, STARTUP_TCP, STARTUP_WG, STARTUP_WGSH, STARTUP_FFMPEG
+    global STARTUP_ON_SELF, STARTUP_ON_PEER
+    STARTUP_ON_SELF = args.onholefromself
+    STARTUP_ON_PEER = args.onholefrompeer
     STARTUP_UDP = args.udp_targets
     STARTUP_TCP = args.tcp_targets
     STARTUP_WG = args.wg_targets
-    STARTUP_WGHELP = []
-    for wg_arg in (args.wghelp_targets or []):
-        # 格式: "user key=xxx mesh_ip=yyy"
+    STARTUP_WGSH = []
+    for wg_arg in (args.wgsh_targets or []):
+        # 格式: "user privkey=xxx myip=yyy pubkey=zzz peerip=www [iface=...]"
         parts = wg_arg.split()
         if not parts:
             continue
-        user = parts[0]
-        key = ''
-        mesh_ip = ''
+        kv = {}
         for p in parts[1:]:
-            if p.startswith('key='):
-                key = p[4:]
-            elif p.startswith('mesh_ip='):
-                mesh_ip = p[8:]
-        STARTUP_WGHELP.append((user, key, mesh_ip))
+            k, _sep, v = p.partition('=')
+            if k and v:
+                kv[k] = v
+        STARTUP_WGSH.append((parts[0], kv.get('privkey', ''), kv.get('myip', ''),
+                             kv.get('pubkey', ''), kv.get('peerip', ''),
+                             kv.get('iface', 'wghelp0')))
     STARTUP_FFMPEG = args.ffmpeg_targets
 
     # 自动判断 IPv4/IPv6，同时支持域名解析
@@ -1281,6 +2048,9 @@ def main():
                 break
 
     connected = False
+    # 关掉所有洞 / 还在发 hello 的 socket
+    hole_udp.stop_all_hellos()
+    close_all_holes('退出')
     # 清理所有子进程
     for c in list(peers):
         p = c.get('popen')

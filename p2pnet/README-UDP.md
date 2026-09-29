@@ -1,131 +1,197 @@
-# P2P UDP 打洞流程
+# UDP 打洞：6 步 + 候选地址 + app/udptest.py
+
+本文讲 UDP 洞怎么打、怎么交出去：`client/hole/udp.py` 的 6 步、候选地址（peer-reflexive）、
+打完洞由 `client/app/udptest.py` 接管做互发测试。
+
+## 谁干什么
+
+| 文件 | 在哪跑 | 干什么 |
+|---|---|---|
+| [client/hole/udp.py](client/hole/udp.py) | client.py 主进程（第 5/6 步一个线程） | 走第 1~6 步；**socket 也归主进程持有** |
+| [client/hole/core.py](client/hole/core.py) | 同上 | 每一步打一行：`[洞 #1 bob] [3/6] 正在往服务器发 hello  （✓） ...` |
+| [client/app/udptest.py](client/app/udptest.py) | 子进程 | 只做互发 ping/pong 测试，不挂 tun/tap |
+| [server/server.py](server/server.py) | 服务器 | `handle_p2pudp()` + UDP 线程 `udp_server_thread()` |
+
+**不是**收到 `thisisyourpeer_udp` 就 spawn 子进程：打洞第 5、6 步在 client.py 主进程里做完，
+只有把洞交给某个用法（`udptest <洞>` / `onholefrompeer tun` …）时才拉子进程。见下面「移交」。
 
 ## 消息类型
 
-| 方向 | type | 说明 |
-|------|------|------|
-| C→S | `p2pudp` | 发起 P2P UDP 连接请求 |
-| S→C | `send_udp_to_server` | 服务器通知客户端往服务器 UDP 端口发包 |
-| S→C | `thisisyourpeer_udp` | 服务器告知对端公网(IP, 端口) |
-| S→C | `incoming_p2pudp` | 通知有人想和你建立 P2P |
+| 方向 | type | 内容 / 说明 |
+|---|---|---|
+| C→S | `p2pudp` | `{"type":"p2pudp","target":"bob"}`；CLI 命令 `udp <user>` 发的就是它 |
+| S→C | `send_udp_to_server` | `{"udpport":10000}`；**主动方和被动方都收到**，被动方不用敲命令 |
+| C→S(UDP) | `p2pudp_hello` | `{"type":"p2pudp_hello","username":...,"signature":HMAC(session_key,"ping")}` |
+| S→C | `thisisyourpeer_udp` | `name` 对端用户名 / `ip`,`port` 对端公网地址 / `my_ip`,`my_port` 本端被 NAT 看到的地址 |
+| S→C | `error` | 被拒，例如 `user not found`（第 2 步直接打 ✗） |
 
----
+服务端状态：`udp_addrs[username] = {"ip","port","timestamp"}`、`p2p_requests[username] = {"target","timestamp"}`。
+`p2pudp` 会先清掉双方的 `udp_addrs`，保证只用本轮 burst 的地址；双方地址都到齐后立刻删掉
+`p2p_requests`，后面的 burst 包不会再触发一次通知。
 
-## 完整流程
+## 6 步
 
-```
-alice 和 bob 都已登录，服务器已知双方 TCP 地址
+| 步 | 谁做 | 做什么 | 关键常数 |
+|---|---|---|---|
+| 1 | 客户端 | 发 `p2pudp` | — |
+| 2 | 服务器 → 双方 | 各回一条 `send_udp_to_server` | 等不到 `STEP_RESPONSE_TIMEOUT=10s`（✗ 记在第 2 步） |
+| 3 | 客户端 | 建 UDP socket 绑**随机高位端口**（50000~65000 试 20 次，失败让内核挑）→ 往服务器 UDP 端口发 `p2pudp_hello` | 15 包 burst @30ms，之后 1/s 维持 |
+| 4 | 服务器 → 双方 | 两边 hello 都到 → 各发 `thisisyourpeer_udp`；客户端拿回第 3 步那个 socket | 服务器等地址 `P2P_REQUEST_TIMEOUT=30s`；客户端没等到地址 `HELLO_TIMEOUT=10s` |
+| 5 | 客户端（主进程） | 往对端**所有候选地址**发 `{"type":"ping","seq":N,"ts":...}` 抢 NAT 映射 | 起始 15 包 burst @30ms，之后 1/s |
+| 6 | 客户端（主进程） | 收到对方任何 `ping`/`pong` → `status='已打通'`，回填 RTT，调 `core.on_udp_ready(hole)` | `HOLE_CONFIRM_TIMEOUT=30s`（到点还没收到就失败） |
 
-alice:  > p2pudp bob
-bob:    > p2pudp alice
+收到 `ping` **就地**往实际来源地址回 `pong` —— 所以只要有一个方向通就能救回来。
 
-alice:  服务器 → {"type": "send_udp_to_server", "udpport": 9999}
-bob:    服务器 → {"type": "send_udp_to_server", "udpport": 9999}
-
-alice:  往服务器 9999/UDP 发 UDP 包（p2pudp_hello）
-bob:    往服务器 9999/UDP 发 UDP 包（p2pudp_hello）
-        服务器从包头拿到双方公网地址：
-
-        alice: (1.2.3.4, 40001)
-        bob:   (5.6.7.8, 30001)
-
-        服务器发现 alice 和 bob 都请求了对方（双向请求）
-
-alice:  服务器 → {"type": "thisisyourpeer_udp", "name":"bob",   "ip":"5.6.7.8", "port":30001}
-bob:    服务器 → {"type": "thisisyourpeer_udp", "name":"alice","ip":"1.2.3.4", "port":40001}
-
-alice:  收到后启动 udp.py --peeraddr 5.6.7.8 --peerport 30001 --localport <hello_port>
-bob:    收到后启动 udp.py --peeraddr 1.2.3.4 --peerport 40001 --localport <hello_port>
-
-双方:   互发 UDP 包打洞
-        ping/pong 确认双向可达
-        收到 3 个连续 pong 后 tunnel 就绪
-        失败则告知走中继
-```
-
----
-
-## 服务器状态字段
-
-- `udp_addrs[username]` = `{"ip": "x.x.x.x", "port": yyyy, "timestamp": ...}`
-- `p2p_requests[username]` = `{"target": "bob", "timestamp": ...}`
-
----
-
-## udp.py 参数
+### 真实日志（一次成功的打洞）
 
 ```
-python3 udp.py --peeraddr <ip> --peerport <port> --localport <port>
-    [--localaddr <addr>]
-    [--appmode fake|tun|tap|clientsocket|auto]   # 默认 fake
-    [--socketpath PATH]
-    [--cipher none|chacha20-poly1305]   # 加密方式，默认 none
-    [--transport none|kcp]              # 可靠传输方式，默认 none
-    [--obfs none|xor|tls]               # 混淆方式，默认 none
-    [--key <base64>]                    # 对称密钥，client.py 登录后派生
-    [--remotelog <path>]                # 日志文件路径（默认 stdout）
+[17:57:27][client] [洞 #1 bob] [1/6] 正在通知服务器  （✓） p2pudp -> bob
+[17:57:27][client] [洞 #1 bob] [2/6] 正在等服务器要求发给 udp  （✓） 127.0.0.1:10095
+[17:57:27][client] [打洞] 本端 UDP fd=4 端口=62497，往服务器 127.0.0.1:10095 发 hello...
+[17:57:27][client] [洞 #1 bob] [3/6] 正在往服务器发 hello  （✓） UDP hello ×15（服务器已记录本端公网地址）
+[17:57:27][client] [洞 #1 bob] [4/6] 正在等服务器告知双方地址  （✓） 本端 fd=4 127.0.0.1:62497 ↔ 对端 127.0.0.1:54762
+[17:57:27][client] [洞 #1 bob] [5/6] 正在往对方发消息  （✓） 主进程 ping 对端
+[17:57:27][client] [洞 #1 bob] [6/6] 正在等对方消息  （✓） 本端 fd=4 127.0.0.1:62497 ↔ 对端 127.0.0.1:54762
+[17:57:27][client] [洞 #1] onholefromself 未设定（本端发起），不自动拉起；洞保持打通状态，用 udptest fd=4 等自己拉起
 ```
 
-收到 `thisisyourpeer_udp` 后由 client.py 自动 spawn。
-
-**IPv4 / IPv6 自动识别**：`--peeraddr` 支持任意格式 IP 地址，内部通过 `getaddrinfo(AF_UNSPEC)` 自动选择合适协议栈。
-
-`--appmode` 说明：
-- `fake`（默认）：假接口，用于测试；收到数据打印长度和前 32 字节，每 3 秒往 pipe 写一个 32bit 时间戳
-- `auto`：按平台自动选择：Linux → `tun → tap → fake`，macOS → `tun → fake`
-- `tun`：强制 TUN（IP 层），macOS 用 utun，Linux 用 /dev/net/tun；`--socketpath` 指定设备名（如 utun3），不指定则自动选
-- `tap`：强制 TAP（Ethernet 层，Linux 专用）；`--socketpath` 指定设备名（如 tap0），不指定则自动选
-- `clientsocket`：连接 client.py 提供的 Unix socket（client.py 自动传入 `--socketpath`）
-
-## udp.py 架构
+### 失败长什么样
 
 ```
-三个线程：
-  main thread:        每秒向所有候选地址发 ping
-
-  app_listener:      select([app]) → recv → handle_outgoing() → UDP 发出
-                        handle_outgoing: TODO 加密 → 混淆 → UDP 发走
-
-  udp_listener:      select([sock]) → recv → handle_incoming() → app.send() 直接写入
-                        handle_incoming:
-                          - ping  → 回 pong
-                          - pong  → 更新候选，streak 够 3 个则 P2P 就绪
-                          - 数据  → TODO 解密 → 解混淆 → app.send() 写入 app
-
-心跳机制：
-- ping 间隔：1 秒
-- ready 条件：收到 3 个连续 pong（RTT 相近）
-- 超时：confirmed 后 5s 无 pong 断开；未 confirmed 时 10s 放弃
+[16:47:04][client] [洞 #1 nobody] [2/6] 正在等服务器要求发给 udp  （✗） user not found
+[16:48:16][client] [洞 #3 bob] [4/6] 正在等服务器告知双方地址  （✗） 10s 没等到服务器告知地址（fd=5 端口=59293）
+[..][client] [洞 #1 bob] [6/6] 正在等对方消息  （✗） 30s 没收到对方消息，打洞失败
 ```
 
-## 数据流
+前两条是真实日志；第三条是第 6 步 30s 到点时的文案（`_udp_hole_loop`）。
+
+`[DEBUG]` 打开时第 3 步的 hello 内容会打出来：`[DEBUG] UDP hello -> <ip>:<port>: {payload}`。
+
+## 候选地址（peer-reflexive）
+
+`hole['candidates']` 就是"这轮往哪些地址发"。
+
+| 规则 | 细节 |
+|---|---|
+| 第 0 个 | 服务器给的 srflx（`thisisyourpeer_udp` 的 `ip:port`），**永远保底留着** |
+| 怎么追加 | 第 5/6 步每收到一个包，先把 `recvfrom` 的源地址记成候选（还没解析 JSON 就记） |
+| 上限 | `HOLE_MAX_CANDIDATES=4`；满了 `pop(1)`（从第 1 个开始丢，服务器给的那个不动） |
+| 当前对端地址 | 学到新源地址就把它设成 `peer_ip/peer_port` |
+| 每轮怎么发 | 往**所有候选各发一份**：burst 期间 30ms 一轮，之后 1s 一轮（`_hole_candidates()`） |
+| 为什么 | 对称 NAT 给"到不同目的地"的流量分配不同公网端口，服务器给的地址可能不是对方对我们用的那个；`recvfrom` 看到的源地址一定是对的 |
+
+真实日志（两个候选、旧的 srflx 也还在继续发）：
 
 ```
-发送：app 原始数据 → handle_outgoing() → 加密（--cipher）→ 混淆（--obfs）→ KCP（--transport kcp 时）→ UDP
-接收：UDP → KCP（--transport kcp 时）→ 解混淆（--obfs）→ 解密（--cipher）→ handle_incoming() → app.send()
-
-混淆在 KCP 之外做，KCP 把混淆后的数据当 opaque bytes 处理，不解析内容。
-ping/pong 心跳包同样走混淆和 KCP（--transport kcp 时）。
-
---obfs 混淆方式：
-  none：不做混淆
-  xor：XOR 流混淆（可逆，接收方再次 XOR 还原）
-  tls：TLS 指纹混淆，伪装成 HTTPS ClientHello（混淆后流量看起来像 TLS）
+[18:02:51][client] [洞 #1] 对端地址换成 127.0.0.1:38310（新候选，候选共 2 个）
 ```
 
-## Peer-Reflexive 支持
+同一段逻辑的 else 分支（这个源地址已经是当前对端地址、只是候选表里之前没有它）：
+`[洞 #N] 记下对端候选 ip:port（候选共 N 个）`。
 
-收到 `thisisyourpeer_udp` 后：
-- 启动时已知候选 = server 告知的对端地址（srflx candidate）
-- 同时向所有候选地址发 ping
-- 收到来自新地址的包 → 动态发现 peer-reflexive candidate，切换 active_peer
-- pong / 隧道数据 响应到实际收到包的来源地址
-
-## fake 模式
+移交时，除了当前对端地址以外的候选会一起交给使用者程序：
 
 ```
-启动: [HH:MM:SS][fake]  启动 (pipe r=3 w=4)
-收到数据: [HH:MM:SS][fake]  recv 4B hex: 7f 00 00 01
-每3秒: [HH:MM:SS][fake]  send 4B ts=1743742203 hex: 67 1e 5c 3b
-销毁: [HH:MM:SS][fake]  销毁
+[18:02:55][client] [P2P] 额外候选地址: 1.1.1.1:1111
 ```
+
+`list hole` 里候选数 >1 会显示 `候选=N`。
+
+## 移交：关掉自己的 socket，子进程 bind 同一个本地端口
+
+打通用 `core.on_udp_ready(hole)` 回调 client.py，由 `_auto_handover()` 决定拉谁；
+真正动手的是 `_handover_hole(hole, usage, device)`：
+
+1. `hole['stop'].set()`；
+2. 关掉主进程的 socket（`hole['sock'] = None`）；
+3. `join` 那个 ping 线程（最多 2s），把本地端口让出来；
+4. 拉起使用者程序；
+5. `hole['handed_to'] = usage`，`status = '已交给 <usage>'`。
+
+只传地址/端口，**不传 fd**。使用者程序自己 bind 同一个本地端口，NAT 映射才不废。
+
+| 命令行参数 | 值 |
+|---|---|
+| `--peeraddr` / `--peerport` | `hole['peer_ip']` / `hole['peer_port']`（最后学到的那个对端地址） |
+| `--localport` | `hole['my_port']`（打洞时那个本地端口） |
+| `--peercandidates` | 除当前对端外的所有候选，`ip:port,ip:port`（有才传） |
+| `--remotelog` | `--remotelog` 打开时写 `/tmp/p2pnet/<名字>-<用户>_<对端>_<时间戳>.log` |
+
+真实命令行（当前对端 `2.2.2.2:2222`，额外候选 `1.1.1.1:1111`）：
+
+```bash
+python3 app/udptest.py --peeraddr 2.2.2.2 --peerport 2222 --localport 2222 --peercandidates 1.1.1.1:1111
+```
+
+`cwd` 是 `client/` 目录，所以是 `app/udptest.py`。
+
+### 什么时候自动拉、什么时候等你手动
+
+| 情况 | 行为 | 日志 |
+|---|---|---|
+| 设了 `onholefromself`（本端发起的洞）/ `onholefrompeer`（对方发起的洞） | 自动拉起 | `[洞 #1] onholefromself = udptest（本端发起），打洞成功，自动拉起...` |
+| 两个都没设（默认） | 只记录，洞保持"已打通" | `[洞 #1] onholefrompeer 未设定（对方发起），不自动拉起；洞保持打通状态，用 udptest fd=5 等自己拉起` |
+| `udp <user>` 之前敲过 `ffmpeg <user>` / `wg-py <user>` | 一次性用法优先于上面两个 | — |
+
+自己拉的样子：
+
+```
+> list hole
+[13:32:17][client] === 洞 ===
+[13:32:17][client]   #1   udp  已交给 udptest    bob            fd=4      本端 127.0.0.1:61439  对端 127.0.0.1:50956  RTT=1ms
+
+> udptest fd=4          # 洞标识: fd=<fd> / port=<本端端口> / #<编号> / <用户名>
+```
+
+还没交出去时会多一行提示：
+
+```
+[12:45:26][client]   #1   udp  已打通            bob            fd=4      本端 127.0.0.1:52195  对端 127.0.0.1:58774  RTT=1ms
+[12:45:26][client]   已打通，可拉起: udptest fd=4
+```
+
+一个洞只能交一次：`[洞 #1] 已经交给 udptest，不能重复拉起`。
+TCP 洞走不了这条路：`[洞 #1] 是 tcp 洞，不能这样拉起`（见 [readme-tcp.md](readme-tcp.md)）。
+
+## app/udptest.py：洞上的互发测试
+
+它只做三件事：bind 同一个本地端口、每秒发 ping、收 pong 算 RTT。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `--peeraddr` | ✔ | 对方 IP（IPv4/IPv6/域名） |
+| `--peerport` | ✔ | 对方端口 |
+| `--localport` | ✔ | 本地 UDP 端口（沿用打洞时那个） |
+| `--peercandidates` | | `ip:port,ip:port`，打洞阶段学到的额外候选 |
+| `--localaddr` | | 默认 `0.0.0.0` |
+| `--remotelog` | | 日志文件，默认 stdout |
+
+行为：
+
+- bind 时带 `SO_REUSEADDR` + `SO_REUSEPORT`；
+- 主循环每秒发 `{"type":"ping","seq":N,"ts":<time.time()>}`，**往所有候选各发一份**；
+- 收到 `ping` → 回 `{"type":"pong","seq":N,"ts":<原样带回>}`，并把它当新候选（`update_peer`）；
+- 收到 `pong` → 算 RTT、`streak+1`；**连续 3 个 pong**（`READY_PONGS`）打印 `✅ P2P 就绪！`；
+- 5s（`PING_TIMEOUT`）没收到 pong：已就绪 → 断开退出；还没就绪 → 等到 10s 放弃；
+- 收 SIGINT/SIGTERM 关 socket、清线程退出。
+
+真实日志：
+
+```
+[17:57:30][udptest.py main]  本端: 0.0.0.0:62497 (IPv4)
+[17:57:30][udptest.py main]  目标: 127.0.0.1:54762
+[17:57:30][udptest.py main]  send beat: {"type": "ping", "seq": 0, "ts": 1790675850.8744147}
+[17:57:30][udptest.py handle_incoming]  recv beat: {'type': 'pong', 'seq': 0}
+[17:57:30][udptest.py handle_incoming]    RTT=1ms streak=1 ping=1 pong=1
+[17:57:31][udptest.py handle_incoming]  recv beat: {'type': 'ping', 'seq': 17, 'ts': 1790675851.269518}
+[17:57:31][udptest.py handle_incoming]  send beat: {"type": "pong", "seq": 17, "ts": 1790675851.269518}
+[17:57:31][udptest.py handle_incoming]    RTT=1ms streak=2 ping=2 pong=2
+[17:57:32][udptest.py handle_incoming]    RTT=1ms streak=3 ping=3 pong=3
+[17:57:32][udptest.py handle_incoming]  ✅ P2P 就绪！
+[17:57:34][udptest.py main]  收到信号 15，准备退出...
+[17:57:34][udptest.py main]  进程退出
+```
+
+RTT=0ms 有两种可能：seq 不在发送窗口里（重复 pong），或者真的 <1ms（本机回环）。
+
+回 [readme.md](readme.md) ｜ TCP 版见 [readme-tcp.md](readme-tcp.md) ｜ 已知的坑见 [readme-gotcha.md](readme-gotcha.md)

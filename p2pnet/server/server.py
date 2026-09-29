@@ -18,6 +18,7 @@ import socket
 import select
 import argparse
 import threading
+import ipaddress
 
 
 def hkdf_sha256(ikm, salt, info=b''):
@@ -269,9 +270,8 @@ def verify_session_signature(username, signature):
         return False
     expected = hmac.new(sk, b'ping', hashlib.sha256).hexdigest()
     if DEBUG:
-        import binascii
         print(f"[DEBUG] verify_session: user={username}")
-        print(f"[DEBUG]   session_key={binascii.hexlify(sk).decode()}")
+        print(f"[DEBUG]   session_key={sk.hex()}")
         print(f"[DEBUG]   expected_sig={expected}")
         print(f"[DEBUG]   got_sig   ={signature}")
     return hmac.compare_digest(expected, signature)
@@ -294,20 +294,46 @@ def handle_message(ws, raw):
     if DEBUG:
         print(f"[WS] {ws.addr} -> {msg}")
 
-    if msg_type == 'login':
-        handle_login(ws, msg)
-    elif msg_type == 'list':
+    if msg_type == 'list':
         handle_list(ws, msg)
+    elif msg_type == 'login':
+        handle_login(ws, msg)
     elif msg_type == 'logout':
         handle_logout(ws)
+    elif msg_type == 'p2pdirect':
+        handle_p2pdirect(ws, msg)
+    elif msg_type == 'p2pdirect_reply':
+        handle_p2pdirect(ws, msg)     # 应答走同一个中转，只是 type 不同
     elif msg_type == 'p2pudp':
         handle_p2pudp(ws, msg)
     elif msg_type == 'p2ptcp':
         handle_p2ptcp(ws, msg)
-    elif msg_type == 'wghelp':
-        handle_wghelp(ws, msg)
+    # 'wghelp' 已废弃：客户端从来不发这个 type（wghelp 命令走的是 p2pudp 那套打洞）
+    # elif msg_type == 'wghelp':
+    #     handle_wghelp(ws, msg)
     else:
         send_error(ws, f"unknown type: {msg_type}")
+
+
+def handle_list(ws, msg):
+    username = ws.username
+    if not username or username not in online_users:
+        send_error(ws, "not logged in")
+        return
+
+    users = []
+    for u, info in online_users.items():
+        users.append({
+            'username': u,
+            'ip': info['ip'],
+            'port': info['port'],
+            'udp_port': info.get('udp_port'),
+        })
+
+    ws_send(ws, json.dumps({
+        'type': 'list_result',
+        'users': users,
+    }))
 
 
 def handle_login(ws, msg):
@@ -347,10 +373,9 @@ def handle_login(ws, msg):
         del challenges[username]
         send_error(ws, "challenge expired")
         return
-    import binascii
     expected = hmac.new(
-        binascii.unhexlify(pw_hash),
-        binascii.unhexlify(chal['challenge']),
+        bytes.fromhex(pw_hash),
+        bytes.fromhex(chal['challenge']),
         hashlib.sha256
     ).hexdigest()
     if not hmac.compare_digest(expected, response):
@@ -371,11 +396,10 @@ def handle_login(ws, msg):
     # 记录上线
     token = secrets.token_hex(16)
     # session_key = HKDF(pw_hash, info=challenge)，双方各自在本地算出，从不传输
-    import binascii
-    pw_hash_bytes = binascii.unhexlify(pw_hash)
-    chal_bytes = binascii.unhexlify(chal['challenge'])
+    pw_hash_bytes = bytes.fromhex(pw_hash)
+    chal_bytes = bytes.fromhex(chal['challenge'])
     session_key = hkdf_sha256(pw_hash_bytes, pw_hash_bytes, chal_bytes)
-    print(f"[登录] {username} session_key={binascii.hexlify(session_key).decode()}")
+    print(f"[登录] {username} session_key={session_key.hex()}")
     online_users[username] = {
         'username': username,
         'ws': ws,
@@ -399,27 +423,6 @@ def handle_login(ws, msg):
     broadcast({'type': 'user_joined', 'username': username, 'ip': ws.ip}, exclude=username)
 
 
-def handle_list(ws, msg):
-    username = ws.username
-    if not username or username not in online_users:
-        send_error(ws, "not logged in")
-        return
-
-    users = []
-    for u, info in online_users.items():
-        users.append({
-            'username': u,
-            'ip': info['ip'],
-            'port': info['port'],
-            'udp_port': info.get('udp_port'),
-        })
-
-    ws_send(ws, json.dumps({
-        'type': 'list_result',
-        'users': users,
-    }))
-
-
 def handle_logout(ws):
     if ws.username and ws.username in online_users:
         del online_users[ws.username]
@@ -427,6 +430,78 @@ def handle_logout(ws):
         broadcast({'type': 'user_left', 'username': ws.username})
     ws.username = None
     ws_send(ws, json.dumps({'type': 'logout_ok'}))
+
+
+# 直连地址交换：每族最多收这么多条，防止有人塞一堆垃圾把对方打爆
+MAX_DIRECT_ADDRS = 32
+
+
+def _clean_addr_list(lst, family):
+    """只保留合法的、可路由的、去重的、数量有限的 IP 字符串
+
+    顺手挡掉 loopback / link-local / 多播 / 保留地址：否则有人塞个 127.0.0.1 给对端，
+    对端 ping 自己的 loopback 会假报"直连可行"。
+    """
+    out = []
+    for item in (lst or []):
+        if len(out) >= MAX_DIRECT_ADDRS:
+            break
+        s = str(item).strip()
+        if not s or s in out:
+            continue
+        try:
+            socket.inet_pton(family, s)
+            a = ipaddress.ip_address(s)
+        except (OSError, ValueError):
+            continue
+        if a.is_loopback or a.is_link_local or a.is_multicast \
+                or a.is_unspecified or a.is_reserved:
+            continue
+        out.append(s)
+    return out
+
+
+def handle_p2pdirect(ws, msg):
+    """处理 p2pdirect / p2pdirect_reply：把发起方的 v4/v6 地址列表转给 target（只做中转）
+
+    客户端传来的是
+      {"type":"p2pdirect","target":"bob","ipv4":[...],"ipv6":[...]}        ← 请求
+      {"type":"p2pdirect_reply","target":"alice","ipv4":[...],"ipv6":[...]} ← 应答
+    服务器**原样保留 type** 转发，只**自己填 from**（不信客户端填的）。
+    用两个 type 而不是一个 reply 字段，是为了让客户端一眼看出"这是请求还是应答"，
+    避免两边"收到就回"无限来回。服务器不记录这些地址——它们是瞬时的。
+    """
+    username = ws.username
+    if not username or username not in online_users:
+        send_error(ws, "not logged in")
+        return
+
+    target = (msg.get('target') or '').strip()
+    if not target:
+        send_error(ws, "target required")
+        return
+    if target not in online_users:
+        send_error(ws, "user not found")
+        return
+    if target == username:
+        send_error(ws, "cannot connect to yourself")
+        return
+
+    ipv4 = _clean_addr_list(msg.get('ipv4'), socket.AF_INET)
+    ipv6 = _clean_addr_list(msg.get('ipv6'), socket.AF_INET6)
+    if not ipv4 and not ipv6:
+        send_error(ws, "no addresses")
+        return
+
+    is_reply = (msg.get('type') == 'p2pdirect_reply')
+    ws_send(online_users[target]['ws'], json.dumps({
+        'type': 'p2pdirect_reply' if is_reply else 'p2pdirect',
+        'from': username,                 # 服务器自己填，不能用客户端传的
+        'ipv4': ipv4,
+        'ipv6': ipv6,
+    }))
+    print(f"[P2P-DIRECT] {username} -> {target}，转发 {len(ipv4)} 个 v4 + {len(ipv6)} 个 v6"
+          + ("（应答）" if is_reply else "（请求）"))
 
 
 def handle_p2pudp(ws, msg):
@@ -471,8 +546,11 @@ def handle_p2pudp(ws, msg):
 
 
 def handle_wghelp(ws, msg):
-    """处理 wghelp 请求：同 p2pudp，通知双方发 UDP hello 到服务器"""
-    # wghelp 和 p2pudp 使用相同的 UDP hole punching 流程
+    """【已废弃】wghelp 请求：以前是 p2pudp 的别名
+
+    客户端现在从不发 type='wghelp'（wghelp 命令直接走 p2pudp 打洞），
+    handle_message 里的分支也注释掉了，这里保留仅为参考。
+    """
     handle_p2pudp(ws, msg)
 
 
@@ -661,7 +739,7 @@ def handle_tcp_p2p_registration(conn, addr, msg):
 
     ip, client_port = addr
     sk = online_users[username].get('session_key', b'')
-    print(f"[TCP] {username} P2P 注册 session_key={binascii.hexlify(sk).decode()}")
+    print(f"[TCP] {username} P2P 注册 session_key={sk.hex()}")
     print(f"[TCP] {username} P2P 注册来自 {ip}:{client_port} (签名验证通过)")
 
     my_req = p2p_tcp_requests.get(username, {})
@@ -743,6 +821,130 @@ def handle_tcp_p2p_registration(conn, addr, msg):
 
 # ==================== 主循环 ====================
 
+def _close_conn(sock, connections, ws_conns, notify=True):
+    """断开一个连接：通知业务层 + 从两张表里移除 + close
+
+    notify=False 是"HTTP 请求处理完就断"那条路径：原来就没调 on_disconnect
+    （那种连接没登录，on_disconnect 里也是空操作），这里保持一致。
+    """
+    if notify:
+        ws = ws_conns.get(sock)
+        if ws is not None:
+            on_disconnect(ws)
+    connections.remove(sock)
+    del ws_conns[sock]
+    try:
+        sock.close()
+    except:
+        pass
+
+
+def _read_p2p_registration(client, addr):
+    """直接发 JSON 的临时连接：读一行当 TCP 打洞注册处理
+
+    读到的内容坏了（半截 JSON 等）就只丢掉这次注册，不能影响主循环。
+    """
+    try:
+        data = b''
+        while b'\n' not in data:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        if data:
+            try:
+                msg = json.loads(data.decode('utf-8').strip())
+                handle_tcp_p2p_registration(client, addr, msg)
+            except:
+                pass
+    except:
+        pass
+
+
+def _handle_accept(server, connections, ws_conns):
+    """有新连接：peek 第一个字节，是 '{' 就当 TCP 打洞注册，否则当 HTTP/WS 收下"""
+    client, addr = server.accept()
+
+    # ---- Peek：判断是 P2P 注册还是 HTTP ----
+    client.settimeout(3.0)
+    try:
+        first = client.recv(1, socket.MSG_PEEK)
+    except:
+        first = b''
+    client.setblocking(False)
+
+    if first == b'{':
+        # 直接发 JSON → P2P 临时打洞注册，处理完就关
+        _read_p2p_registration(client, addr)
+        client.close()
+        return
+
+    # 否则是正常 HTTP/WS 连接，加入主循环
+    connections.append(client)
+    ws_conns[client] = WSConn(client, addr)
+    print(f"[连接] {addr}")
+
+
+def _do_handshake(ws, sock, connections, ws_conns):
+    """HTTP 请求头收全了就处理：是 WS 升级就握手，否则当 HTTP 请求处理完就断"""
+    if b'\r\n\r\n' not in ws.buffer:
+        return                      # 还没收全，等下一轮
+
+    header_str = ws.buffer.decode('utf-8', errors='ignore')
+    if 'Upgrade: websocket' in header_str:
+        headers = header_str.split('\r\n')
+        if ws_handshake(sock, headers):
+            ws.handshake_done = True
+            ws.buffer = b''
+            print(f"[WS握手完成] {ws.addr}")
+        else:
+            # 注意：握手失败原来就只 close，不从两张表里移除（保持原行为）
+            sock.close()
+        return
+
+    handle_http(sock, ws.buffer)
+    _close_conn(sock, connections, ws_conns, notify=False)
+
+
+def _drain_frames(ws, sock, connections, ws_conns):
+    """把 buffer 里能解的帧都解出来（0x8 关闭帧 / 0x1 文本帧）"""
+    while ws.buffer:
+        frame, ws.buffer = ws_decode(ws.buffer)
+        if frame is None:
+            break
+
+        if frame['opcode'] == 0x8:
+            _close_conn(sock, connections, ws_conns)
+            break
+        elif frame['opcode'] == 0x1:
+            handle_message(ws, frame['payload'].decode('utf-8'))
+
+
+def _handle_readable(sock, connections, ws_conns):
+    """某个客户端 socket 可读：收数据 → 握手 / 解帧"""
+    ws = ws_conns.get(sock)
+    if not ws:
+        return
+
+    try:
+        data = sock.recv(4096)
+    except:
+        data = b''
+
+    if not data:
+        _close_conn(sock, connections, ws_conns)
+        return
+
+    ws.buffer += data
+
+    if not ws.handshake_done:
+        _do_handshake(ws, sock, connections, ws_conns)
+        return
+
+    _drain_frames(ws, sock, connections, ws_conns)
+
+
+
 def main():
     global HOST, PORT, UDP_PORT
 
@@ -772,97 +974,9 @@ def main():
 
         for sock in readable:
             if sock is server:
-                client, addr = server.accept()
-
-                # ---- Peek：判断是 P2P 注册还是 HTTP ----
-                client.settimeout(3.0)
-                try:
-                    first = client.recv(1, socket.MSG_PEEK)
-                except:
-                    first = b''
-                client.setblocking(False)
-
-                if first == b'{':
-                    # 直接发 JSON → P2P 临时打洞注册，处理完就关
-                    try:
-                        data = b''
-                        while b'\n' not in data:
-                            chunk = client.recv(4096)
-                            if not chunk:
-                                break
-                            data += chunk
-                        if data:
-                            try:
-                                msg = json.loads(data.decode('utf-8').strip())
-                                handle_tcp_p2p_registration(client, addr, msg)
-                            except:
-                                pass
-                    except:
-                        pass
-                    finally:
-                        client.close()
-                    continue
-
-                # 否则是正常 HTTP/WS 连接，加入主循环
-                connections.append(client)
-                ws_conns[client] = WSConn(client, addr)
-                print(f"[连接] {addr}")
+                _handle_accept(server, connections, ws_conns)
             else:
-                ws = ws_conns.get(sock)
-                if not ws:
-                    continue
-
-                try:
-                    data = sock.recv(4096)
-                except:
-                    data = b''
-
-                if not data:
-                    on_disconnect(ws)
-                    connections.remove(sock)
-                    del ws_conns[sock]
-                    try:
-                        sock.close()
-                    except:
-                        pass
-                    continue
-
-                ws.buffer += data
-
-                if not ws.handshake_done:
-                    if b'\r\n\r\n' in ws.buffer:
-                        header_str = ws.buffer.decode('utf-8', errors='ignore')
-                        if 'Upgrade: websocket' in header_str:
-                            headers = header_str.split('\r\n')
-                            if ws_handshake(sock, headers):
-                                ws.handshake_done = True
-                                ws.buffer = b''
-                                print(f"[WS握手完成] {ws.addr}")
-                            else:
-                                sock.close()
-                        else:
-                            handle_http(sock, ws.buffer)
-                            connections.remove(sock)
-                            del ws_conns[sock]
-                            sock.close()
-                    continue
-
-                while ws.buffer:
-                    frame, ws.buffer = ws_decode(ws.buffer)
-                    if frame is None:
-                        break
-
-                    if frame['opcode'] == 0x8:
-                        on_disconnect(ws)
-                        connections.remove(sock)
-                        del ws_conns[sock]
-                        try:
-                            sock.close()
-                        except:
-                            pass
-                        break
-                    elif frame['opcode'] == 0x1:
-                        handle_message(ws, frame['payload'].decode('utf-8'))
+                _handle_readable(sock, connections, ws_conns)
 
     server.close()
 

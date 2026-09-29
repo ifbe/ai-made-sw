@@ -1,10 +1,13 @@
 #!/bin/bash
 # wghelp.sh — 用打好的洞配置原生 WireGuard
 # 
-# 用法: wghelp.sh <我的私钥> <我的mesh IP> <对方公钥> <对方mesh IP> <对方公网地址:端口>
+# 用法: wghelp.sh <我的私钥> <我的mesh IP> <对方公钥> <对方mesh IP> <对方公网地址:端口> [接口名] [监听端口] [keepalive]
+#
+# 监听端口（第 7 个参数）很关键：打洞打通的是一个**特定的本地端口**上的 NAT 映射，
+# 内核 WireGuard 必须 listen 在同一个端口上，映射才不废（否则又要重新打洞）。
 #
 # 示例:
-#   ./wghelp.sh YGzbJJ8... 192.168.250.2 BDDBwN2... 192.168.250.3 5.6.7.8:51820
+#   ./wghelp.sh YGzbJJ8... 192.168.250.2 BDDBwN2... 192.168.250.3 5.6.7.8:51820 wghelp0 50001
 #
 # 注意: 需要 root 权限（wg set / ip link 操作）
 #       需要 wireguard-tools 安装（wg 命令）
@@ -20,11 +23,12 @@ PEER_PUBKEY="$3"
 PEER_IP="$4"
 PEER_ENDPOINT="$5"
 IFACE="${6:-wghelp0}"
-KEEPALIVE=25
+LISTEN_PORT="${7:-}"      # 洞的本端端口（空=让内核随便挑）
+KEEPALIVE="${8:-25}"      # persistent-keepalive 秒数
 
 if [ -z "$MY_PRIVKEY" ] || [ -z "$MY_IP" ] || [ -z "$PEER_PUBKEY" ] || [ -z "$PEER_IP" ] || [ -z "$PEER_ENDPOINT" ]; then
-    echo "用法: $0 <我的私钥> <我的mesh IP> <对方公钥> <对方mesh IP> <对方公网地址:端口> [接口名]"
-    echo "示例: $0 YGzbJJ8... 192.168.250.2 BDDBwN2... 192.168.250.3 5.6.7.8:51820"
+    echo "用法: $0 <我的私钥> <我的mesh IP> <对方公钥> <对方mesh IP> <对方公网地址:端口> [接口名] [监听端口] [keepalive]"
+    echo "示例: $0 YGzbJJ8... 192.168.250.2 BDDBwN2... 192.168.250.3 5.6.7.8:51820 wghelp0 50001 25"
     exit 1
 fi
 
@@ -62,6 +66,12 @@ if [ "$CURRENT_KEY" != "$MY_PRIVKEY" ]; then
     ip addr add "$MY_IP/24" dev "$IFACE" 2>/dev/null || true
 fi
 
+# 监听端口 = 洞的本端端口（映射不废）；没给就让内核自己挑
+if [ -n "$LISTEN_PORT" ]; then
+    echo "[*] 监听端口 $LISTEN_PORT（= 打洞时那个本端端口，复用已建立的 NAT 映射）"
+    wg set "$IFACE" listen-port "$LISTEN_PORT"
+fi
+
 # 添加或更新 peer
 echo "[*] 添加 Peer: $PEER_PUBKEY"
 echo "[*] Endpoint: $PEER_ENDPOINT"
@@ -83,7 +93,7 @@ echo ""
 echo "[✓] WireGuard 配置完成!"
 echo "    本端: $MY_IP (公钥: ${MY_PUBKEY:0:16}...)"
 echo "    对端: $PEER_IP @ $PEER_ENDPOINT"
-echo "    接口: $IFACE"
+echo "    接口: $IFACE${LISTEN_PORT:+ (listen-port $LISTEN_PORT)}  keepalive=${KEEPALIVE}s"
 echo ""
 echo "    测试连通性:"
 echo "      ping $PEER_IP"

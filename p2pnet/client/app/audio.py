@@ -247,7 +247,7 @@ def main():
 
     p.terminate()
 
-    # stdin 接收，stdout 发送（与 remote/udp.py 的 stdin/stdout 对接）
+    # stdin 接收，stdout 发送（与 app/udptest.py 的 stdin/stdout 对接）
     def send_cb(data):
         """麦克风数据写入 stdout，发给 remote"""
         sys.stdout.buffer.write(data)
