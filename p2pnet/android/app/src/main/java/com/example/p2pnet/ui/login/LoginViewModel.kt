@@ -75,11 +75,19 @@ class LoginViewModel(
     }
 
     /**
-     * direct：先跟服务器换一遍双方所有地址（v4/v6），再逐个并发探测。
-     * 目前**只显示流程**：不发信令（理由同 onTcp：别把对端拉进我们没实现的流程）。
+     * direct：把自己的 v4/v6 地址列表交给服务器转给对方，拿到对方地址后并发 ICMP 探测。
+     * 协议里只有地址、**没有端口**，所以不建 socket、不建隧道，卡片上只报「哪些地址可达」。
+     * v6 全局地址本身就是端到端可路由的，这种情况报出来的可达地址就是真直连。
      */
     fun onDirect(target: String = _uiState.value.targetUsername) {
-        showFlowPreview("direct", target)
+        if (target.isEmpty()) return
+        val manager = sessionManager
+        if (manager == null) {
+            appendMessage(Direction.SYSTEM, "后台服务未就绪，无法发起 direct")
+            return
+        }
+        val id = manager.startDirect(target)
+        appendMessage(Direction.SYSTEM, "发起 direct（交换 v4/v6 地址并探测可达性）：target=$target 卡片=#$id")
     }
 
     /**
@@ -100,7 +108,7 @@ class LoginViewModel(
         showFlowPreview("tcp", target)
     }
 
-    /** 三种「打洞方式」目前都只做流程预览 */
+    /** tcp / upnp 两种「打洞方式」目前都只做流程预览（direct 已是真实流程） */
     private fun showFlowPreview(kind: String, target: String) {
         if (target.isEmpty()) return
         val manager = sessionManager
@@ -349,7 +357,27 @@ class LoginViewModel(
     /** 服务绑定好之后由 MainActivity 调进来；之后 session 的增删改都跟着它走 */
     fun attachSessionManager(manager: SessionManager) {
         sessionManager = manager
-        manager.onLog = { text -> udpLog(text) }
+        manager.onLog = { text ->
+            udpLog(text)
+            // direct 和 UDP tab 没关系，日志同时镜像一份到「App 内日志」，不然看不到 ping 细节
+            if (text.contains("[direct]")) appendMessage(Direction.SYSTEM, text)
+        }
+        // direct 的发送出口：SessionManager 不直接持有 WsClient，在这里接到 repository 上
+        manager.sendDirect = { target, v4, v6 -> repository.sendP2pDirect(target, v4, v6) }
+        manager.sendDirectReply = { target, v4, v6 -> repository.sendP2pDirectReply(target, v4, v6) }
+        // 收到服务器转来的 direct 地址交换（请求要回一份地址，应答只探测）
+        repository.onP2pDirect = { from, ipv4, ipv6, isReply ->
+            val m = sessionManager
+            if (m == null) {
+                appendMessage(Direction.SYSTEM, "收到 $from 的 direct 地址交换，但后台服务未就绪")
+            } else {
+                appendMessage(
+                    Direction.SYSTEM,
+                    if (isReply) "收到 $from 的 direct 应答" else "收到 $from 的 direct 请求（自动回一份地址）"
+                )
+                m.onDirectFromPeer(from, ipv4, ipv6, isReply)
+            }
+        }
         // 把服务里已有的 session 立刻同步过来（Activity 重建后卡片不会丢）
         _uiState.value = _uiState.value.copy(udpSockets = manager.sessions.value)
         viewModelScope.launch {

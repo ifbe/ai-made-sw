@@ -28,6 +28,9 @@ class P2pRepository(
     var onUdpSocketStep: ((java.net.DatagramSocket, WsClient.UdpStep, String, Int, String, Int) -> Unit)? = null
     var onHelloDone: ((WsClient.PeerInfo?, java.net.DatagramSocket?, String, Int, String) -> Unit)? = null
 
+    /** 收到服务器转来的 direct 地址交换（from, ipv4, ipv6, isReply） */
+    var onP2pDirect: ((String, List<String>, List<String>, Boolean) -> Unit)? = null
+
     fun useClient(client: WsClient?) {
         _client = client ?: WsClient(localPrefs)
     }
@@ -80,6 +83,10 @@ class P2pRepository(
 
                 override fun onHelloDone(info: WsClient.PeerInfo?, sock: java.net.DatagramSocket?, peerIp: String, peerPort: Int, mode: String) {
                     this@P2pRepository.onHelloDone?.invoke(info, sock, peerIp, peerPort, mode)
+                }
+
+                override fun onP2pDirect(from: String, ipv4: List<String>, ipv6: List<String>, isReply: Boolean) {
+                    this@P2pRepository.onP2pDirect?.invoke(from, ipv4, ipv6, isReply)
                 }
 
                 override fun onLoginSuccess(username: String) {
@@ -148,6 +155,10 @@ class P2pRepository(
     fun sendList() = ws.sendList()
     fun sendP2pUdp(target: String) = ws.sendP2pUdp(target)
     fun sendP2pTcp(target: String) = ws.sendP2pTcp(target)
+    fun sendP2pDirect(target: String, ipv4: List<String>, ipv6: List<String>) =
+        ws.sendP2pDirect(target, ipv4, ipv6)
+    fun sendP2pDirectReply(target: String, ipv4: List<String>, ipv6: List<String>) =
+        ws.sendP2pDirectReply(target, ipv4, ipv6)
     fun getServerHost(): String = localPrefs.serverHost
     fun getServerPort(): Int = localPrefs.serverPort
     fun isLoggedIn(): Boolean = localPrefs.loggedIn

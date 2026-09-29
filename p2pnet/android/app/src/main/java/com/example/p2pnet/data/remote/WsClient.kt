@@ -6,6 +6,7 @@ import com.example.p2pnet.data.local.LocalPrefs
 import com.example.p2pnet.net.formatHostPort
 import com.example.p2pnet.net.hostForUrl
 import okhttp3.*
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -49,6 +50,18 @@ class WsClient(
             peerIp: String = "",
             peerPort: Int = 0
         ) {}
+
+        /**
+         * 收到服务器转来的 direct 地址交换（p2pdirect / p2pdirect_reply）。
+         *
+         * isReply = false → 对方来要地址（`p2pdirect` 请求里就带着他的地址表，
+         *                    我们这边没发过地址就得回一份 `p2pdirect_reply`）
+         * isReply = true  → 对方对我方请求的应答，只探测、不再回
+         *
+         * 协议里**只有 IP 列表、没有端口**，所以 direct 只能判断「可达」，
+         * 不建 socket、不建隧道。
+         */
+        fun onP2pDirect(from: String, ipv4: List<String>, ipv6: List<String>, isReply: Boolean) {}
     }
 
     /** UDP socket 卡片的五个步骤 */
@@ -161,6 +174,16 @@ class WsClient(
                         )
                     }
                     stopFlag.set(true)
+                }
+                "p2pdirect", "p2pdirect_reply" -> {
+                    // direct 地址交换：服务器只做中转，from 由服务器填。
+                    // 请求（p2pdirect）→ 该回一份地址；应答（p2pdirect_reply）→ 只探测，不再回。
+                    listener?.onP2pDirect(
+                        from = obj.optString("from", ""),
+                        ipv4 = obj.optStringList("ipv4"),
+                        ipv6 = obj.optStringList("ipv6"),
+                        isReply = type == "p2pdirect_reply"
+                    )
                 }
                 "challenge" -> {
                     val challenge = obj.optString("challenge", "")
@@ -357,6 +380,30 @@ class WsClient(
         sendJson(JSONObject().put("type", "p2ptcp").put("target", target))
     }
 
+    /**
+     * direct：把自己的 v4/v6 地址列表交给服务器转给对方。
+     * 服务器只做中转（校验 target 在线、填 from、每族最多 32 条并过滤非法地址），
+     * **协议里没有端口**——direct 只回答「哪些地址 ICMP 可达」。
+     */
+    fun sendP2pDirect(target: String, ipv4: List<String>, ipv6: List<String>) {
+        sendJson(JSONObject().apply {
+            put("type", "p2pdirect")
+            put("target", target)
+            put("ipv4", JSONArray(ipv4))
+            put("ipv6", JSONArray(ipv6))
+        })
+    }
+
+    /** direct 应答：对方来要地址时回一份（type 不同，免得两边「收到就回」无限来回） */
+    fun sendP2pDirectReply(target: String, ipv4: List<String>, ipv6: List<String>) {
+        sendJson(JSONObject().apply {
+            put("type", "p2pdirect_reply")
+            put("target", target)
+            put("ipv4", JSONArray(ipv4))
+            put("ipv6", JSONArray(ipv6))
+        })
+    }
+
     fun sendList() {
         sendJson(JSONObject().put("type", "list"))
     }
@@ -399,6 +446,17 @@ class WsClient(
     private fun sendJson(obj: JSONObject) {
         listener?.onSend(obj.toString())
         ws?.send(obj.toString())
+    }
+
+    /** 读形如 {"ipv4":["1.2.3.4", ...]} 的字符串数组，顺便丢掉空串 */
+    private fun JSONObject.optStringList(key: String): List<String> {
+        val arr = optJSONArray(key) ?: return emptyList()
+        val out = ArrayList<String>(arr.length())
+        for (i in 0 until arr.length()) {
+            val s = arr.optString(i, "").trim()
+            if (s.isNotEmpty()) out.add(s)
+        }
+        return out
     }
 
     // ---- Python-compatible crypto utils ----

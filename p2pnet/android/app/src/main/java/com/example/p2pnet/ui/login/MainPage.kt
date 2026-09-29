@@ -85,6 +85,9 @@ private val UdpSocketCardWidth = 190.dp
 private val UdpSocketCardHeight = 48.dp
 private val UdpSocketGap = 24.dp
 
+/** direct 卡片结果行（可达地址列表）的最大宽度：卡片宽度是内容自适应，不封顶会被长列表撑爆 */
+private val DirectNoteMaxWidth = 240.dp
+
 /** “我”卡片里输入框的最小宽度（避免纯内容自适应时输入区太窄） */
 private val CompactFieldMinWidth = 140.dp
 
@@ -870,7 +873,7 @@ private fun FreeLayer(
     }
 }
 
-/** socket 卡片：UDP 显示本机绑定 + 五步进度；TCP 目前只显示流程步骤。整卡可拖动，右上角 ✕ 关闭 */
+/** socket 卡片：UDP 显示本机绑定 + 五步进度；direct 显示三步探测 + 可达地址；tcp / upnp 只显示流程。整卡可拖动，右上角 ✕ 关闭 */
 @Composable
 private fun UdpSocketCardView(
     card: UdpSessionInfo,
@@ -879,7 +882,9 @@ private fun UdpSocketCardView(
     onUse: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isPreview = card.kind != "udp"
+    // 三种卡片：只画计划（tcp / upnp）／真有 socket（udp）／没有 socket 的真实流程（direct）
+    val isPreview = card.isPreview
+    val hasSocket = card.kind == "udp"
     Card(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
@@ -895,10 +900,15 @@ private fun UdpSocketCardView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (isPreview) "${card.kind} 流程预览" else "UDP socket",
+                    text = when {
+                        isPreview -> "${card.kind} 流程预览"
+                        hasSocket -> "UDP socket"
+                        else -> "${card.kind} 直连探测 · ${card.target}"
+                    },
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .weight(1f)
                         .padding(start = 8.dp)
@@ -916,13 +926,40 @@ private fun UdpSocketCardView(
                 }
             }
             if (isPreview) {
-                // tcp / direct / upnp：只显示计划步骤（真实逻辑还没实现，所以全是 ○）
+                // tcp / upnp：只显示计划步骤（真实逻辑还没实现，所以全是 ○）
                 card.plan.forEach { step ->
                     UdpStepRow(step.text, step.done)
                     if (step.detail.isNotEmpty()) UdpInfoRow(step.detail)
                 }
                 Text(
                     text = "（仅流程预览，尚未实现真实握手）",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 4.dp)
+                )
+            } else if (!hasSocket) {
+                // direct：没有 socket，三步进度是实时打勾的，末行是结果
+                card.plan.forEach { step ->
+                    UdpStepRow(step.text, step.done)
+                    if (step.detail.isNotEmpty()) UdpInfoRow(step.detail)
+                }
+                if (card.note.isNotEmpty()) {
+                    Text(
+                        text = card.note,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (card.note.startsWith("可达")) LinkGreen
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .widthIn(max = DirectNoteMaxWidth)
+                            .padding(start = 22.dp, end = 8.dp, top = 2.dp)
+                    )
+                }
+                Text(
+                    text = "（direct 只证明地址可达，不建隧道）",
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
