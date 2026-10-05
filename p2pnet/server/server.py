@@ -294,7 +294,10 @@ def handle_message(ws, raw):
     if DEBUG:
         print(f"[WS] {ws.addr} -> {msg}")
 
-    if msg_type == 'list':
+    if msg_type == 'ping':
+        # 应用层心跳（方案 B）：最简 ping/pong，带 seq。**不要求登录** —— 它只探测"链路是否还活着"
+        handle_ping(ws, msg)
+    elif msg_type == 'list':
         handle_list(ws, msg)
     elif msg_type == 'login':
         handle_login(ws, msg)
@@ -313,6 +316,19 @@ def handle_message(ws, raw):
     #     handle_wghelp(ws, msg)
     else:
         send_error(ws, f"unknown type: {msg_type}")
+
+
+def handle_ping(ws, msg):
+    """应用层心跳（方案 B）：收到 `{"type":"ping","seq":N}` → 回 `{"type":"pong","seq":N}`
+
+    - **不校验登录**：它只回答"这条 WS 链路是否还活着"，任意连接都能用；
+    - `seq` 原样带回，方便客户端把一问一答在日志/统计里对上；
+    - 与 WS 协议级的 ping/pong（方案 A，在 `_drain_frames` 里处理）**互不依赖**，两者都在。
+    """
+    seq = msg.get('seq', 0)
+    if DEBUG:
+        print(f"[PING] {ws.addr} seq={seq}")
+    ws_send(ws, json.dumps({'type': 'pong', 'seq': seq}))
 
 
 def handle_list(ws, msg):
@@ -907,7 +923,7 @@ def _do_handshake(ws, sock, connections, ws_conns):
 
 
 def _drain_frames(ws, sock, connections, ws_conns):
-    """把 buffer 里能解的帧都解出来（0x8 关闭帧 / 0x1 文本帧）"""
+    """把 buffer 里能解的帧都解出来（0x1 文本 / 0x8 关闭 / 0x9 ping / 0xA pong）"""
     while ws.buffer:
         frame, ws.buffer = ws_decode(ws.buffer)
         if frame is None:
@@ -916,6 +932,19 @@ def _drain_frames(ws, sock, connections, ws_conns):
         if frame['opcode'] == 0x8:
             _close_conn(sock, connections, ws_conns)
             break
+        elif frame['opcode'] == 0x9:
+            # WS 协议级 ping（RFC 6455）：**原样回一个 pong**（payload 必须一致）。
+            # 客户端的定时心跳靠它判活：不回 pong，客户端会把"服务器不回话"误判成连接已死。
+            try:
+                ws.sock.send(ws_encode(frame['payload'], opcode=0xA))
+                if DEBUG:
+                    print(f"[WS] {ws.addr} <- pong（原样回 {len(frame['payload'])} 字节 payload）")
+            except Exception as e:
+                print(f"[WS] 回 pong 失败 {ws.addr}: {e}")
+        elif frame['opcode'] == 0xA:
+            # 收到客户端回的 pong（说明客户端也活着）：目前只记日志，不做额外处理
+            if DEBUG:
+                print(f"[WS] {ws.addr} -> pong（{len(frame['payload'])} 字节）")
         elif frame['opcode'] == 0x1:
             handle_message(ws, frame['payload'].decode('utf-8'))
 

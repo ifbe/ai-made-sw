@@ -8,10 +8,10 @@
 
 | 文件 | 在哪跑 | 干什么 |
 |---|---|---|
-| [client/hole/tcp.py](client/hole/tcp.py) | client.py 主进程 | 第 1~5 步；第 5 步的 listen/connect 抢连接也在这里做 |
-| [client/hole/core.py](client/hole/core.py) | 同上 | 每一步打一行：`[洞 #1 bob] [3/5] 正在向服务器注册  （✓） ...` |
-| [client/app/tcptest.py](client/app/tcptest.py) | 子进程（继承 fd） | 拿着那条已连接的 socket 做互发 ping/pong |
-| [server/server.py](server/server.py) | 服务器 | `handle_p2ptcp()` + 主端口上的注册处理 `handle_tcp_p2p_registration()` |
+| [client/hole/tcp.py](../client/hole/tcp.py) | client.py 主进程 | 第 1~5 步；第 5 步的 listen/connect 抢连接也在这里做 |
+| [client/hole/core.py](../client/hole/core.py) | 同上 | 每一步打一行：`[洞 #1 bob] [3/5] 正在向服务器注册  （✓） ...` |
+| [client/app/tcptest.py](../client/app/tcptest.py) | 子进程（继承 fd） | 拿着那条已连接的 socket 做互发 ping/pong |
+| [server/server.py](../server/server.py) | 服务器 | `handle_p2ptcp()` + 主端口上的注册处理 `handle_tcp_p2p_registration()` |
 
 ## 消息类型
 
@@ -223,4 +223,4 @@ python3 app/tcptest.py --hole-fd <N> [--peername <名字>] [--remotelog <文件>
 | 打通后去哪 | `udptest` / `vpn`(tun/tap) / `proxy` / `switch` / `ffmpeg` / `wg-py` / `wg-sh` | `switch` 或 `tcptest.py`，二选一 |
 | 关键超时 | `HELLO_TIMEOUT=10s`、`HOLE_CONFIRM_TIMEOUT=30s` | `TCP_ADDR_TIMEOUT=30s`、`PUNCH_TIMEOUT=15s` |
 
-回 [readme.md](readme.md) ｜ UDP 版见 [readme-udp.md](readme-udp.md) ｜ 已知的坑见 [readme-gotcha.md](readme-gotcha.md)
+回 [readme.md](../readme.md) ｜ UDP 版见 [readme-udp.md](readme-udp.md) ｜ 已知的坑见 [readme-gotcha.md](readme-gotcha.md)

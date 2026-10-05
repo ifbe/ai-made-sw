@@ -74,61 +74,17 @@ struct UdpTestPage: View {
     }
 
     private var messageHistoryCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("消息历史")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-
-                Spacer()
-
-                if !viewModel.udpSockMessages.isEmpty {
-                    Button("清空") {
-                        viewModel.clearUdpSockMessages()
-                    }
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                }
-
-                Button(action: {
-                    let text = viewModel.udpSockMessages.joined(separator: "\n")
-                    UIPasteboard.general.string = text
-                    showingCopied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        showingCopied = false
-                    }
-                }) {
-                    Text("📋复制")
-                        .font(.system(size: 10))
-                }
-                .foregroundColor(.secondary)
-
-                if showingCopied {
-                    Text("已复制")
-                        .font(.system(size: 10))
-                        .foregroundColor(.blue)
-                }
-            }
-
-            Divider()
-
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(viewModel.udpSockMessages.enumerated()), id: \.offset) { _, msg in
-                            Text(msg)
-                                .font(.system(size: 7, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(12)
+        // 消息区左右间距 0，紧贴卡片边缘（标题行和分割线由 LogCard 内部留 12）
+        LogCard(
+            title: "消息历史",
+            lines: LogLine.plain(viewModel.udpSockMessages),
+            listHorizontalPadding: 0,
+            fontSize: 7,
+            onClear: { viewModel.clearUdpSockMessages() }
+        )
+        .padding(.vertical, 12)
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
     }
-
-    @State private var showingCopied = false
 }

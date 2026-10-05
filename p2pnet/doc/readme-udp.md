@@ -7,10 +7,10 @@
 
 | 文件 | 在哪跑 | 干什么 |
 |---|---|---|
-| [client/hole/udp.py](client/hole/udp.py) | client.py 主进程（第 5/6 步一个线程） | 走第 1~6 步；**socket 也归主进程持有** |
-| [client/hole/core.py](client/hole/core.py) | 同上 | 每一步打一行：`[洞 #1 bob] [3/6] 正在往服务器发 hello  （✓） ...` |
-| [client/app/udptest.py](client/app/udptest.py) | 子进程 | 只做互发 ping/pong 测试，不挂 tun/tap |
-| [server/server.py](server/server.py) | 服务器 | `handle_p2pudp()` + UDP 线程 `udp_server_thread()` |
+| [client/hole/udp.py](../client/hole/udp.py) | client.py 主进程（第 5/6 步一个线程） | 走第 1~6 步；**socket 也归主进程持有** |
+| [client/hole/core.py](../client/hole/core.py) | 同上 | 每一步打一行：`[洞 #1 bob] [3/6] 正在往服务器发 hello  （✓） ...` |
+| [client/app/udptest.py](../client/app/udptest.py) | 子进程 | 只做互发 ping/pong 测试，不挂 tun/tap |
+| [server/server.py](../server/server.py) | 服务器 | `handle_p2pudp()` + UDP 线程 `udp_server_thread()` |
 
 **不是**收到 `thisisyourpeer_udp` 就 spawn 子进程：打洞第 5、6 步在 client.py 主进程里做完，
 只有把洞交给某个用法（`udptest <洞>` / `onholefrompeer tun` …）时才拉子进程。见下面「移交」。
@@ -194,4 +194,4 @@ TCP 洞走不了这条路：`[洞 #1] 是 tcp 洞，不能这样拉起`（见 [r
 
 RTT=0ms 有两种可能：seq 不在发送窗口里（重复 pong），或者真的 <1ms（本机回环）。
 
-回 [readme.md](readme.md) ｜ TCP 版见 [readme-tcp.md](readme-tcp.md) ｜ 已知的坑见 [readme-gotcha.md](readme-gotcha.md)
+回 [readme.md](../readme.md) ｜ TCP 版见 [readme-tcp.md](readme-tcp.md) ｜ 已知的坑见 [readme-gotcha.md](readme-gotcha.md)

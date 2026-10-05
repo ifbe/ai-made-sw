@@ -31,6 +31,30 @@ class LocalPrefs(context: Context) {
         get() = prefs.getBoolean(Constants.KEY_BATTERY_OPT_ASKED, false)
         set(value) = prefs.edit().putBoolean(Constants.KEY_BATTERY_OPT_ASKED, value).apply()
 
+    /**
+     * 两个配置页的配置就存 JSON 原文（解析和默认值在 ui/PageConfig.kt 里）。
+     * 这样以后再添配置项不用动 SharedPreferences 的 key。
+     */
+    var wgConfigJson: String?
+        get() = prefs.getString(Constants.KEY_WG_CONFIG, null)
+        set(value) = prefs.edit().putString(Constants.KEY_WG_CONFIG, value).apply()
+
+    var switchConfigJson: String?
+        get() = prefs.getString(Constants.KEY_SWITCH_CONFIG, null)
+        set(value) = prefs.edit().putString(Constants.KEY_SWITCH_CONFIG, value).apply()
+
+    var proxyConfigJson: String?
+        get() = prefs.getString(Constants.KEY_PROXY_CONFIG, null)
+        set(value) = prefs.edit().putString(Constants.KEY_PROXY_CONFIG, value).apply()
+
+    var vpnConfigJson: String?
+        get() = prefs.getString(Constants.KEY_VPN_CONFIG, null)
+        set(value) = prefs.edit().putString(Constants.KEY_VPN_CONFIG, value).apply()
+
+    var mediaConfigJson: String?
+        get() = prefs.getString(Constants.KEY_MEDIA_CONFIG, null)
+        set(value) = prefs.edit().putString(Constants.KEY_MEDIA_CONFIG, value).apply()
+
     fun clearSession() {
         prefs.edit()
             .remove(Constants.KEY_USERNAME)

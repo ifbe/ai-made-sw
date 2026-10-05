@@ -153,6 +153,8 @@ class P2pRepository(
     }
 
     fun sendList() = ws.sendList()
+    /** 应用层 ping：`{"type":"ping","seq":N}` → 服务器回 `{"type":"pong","seq":N}`（不需要登录） */
+    fun sendAppPing(seq: Int) = ws.sendAppPing(seq)
     fun sendP2pUdp(target: String) = ws.sendP2pUdp(target)
     fun sendP2pTcp(target: String) = ws.sendP2pTcp(target)
     fun sendP2pDirect(target: String, ipv4: List<String>, ipv6: List<String>) =
@@ -163,4 +165,16 @@ class P2pRepository(
     fun getServerPort(): Int = localPrefs.serverPort
     fun isLoggedIn(): Boolean = localPrefs.loggedIn
     fun getSavedUsername(): String? = localPrefs.username
+
+    // 两个配置页的配置（JSON 原文）—— ViewModel 不直接持有 LocalPrefs，这里透传
+    fun getWgConfigJson(): String? = localPrefs.wgConfigJson
+    fun setWgConfigJson(json: String?) { localPrefs.wgConfigJson = json }
+    fun getSwitchConfigJson(): String? = localPrefs.switchConfigJson
+    fun setSwitchConfigJson(json: String?) { localPrefs.switchConfigJson = json }
+    fun getProxyConfigJson(): String? = localPrefs.proxyConfigJson
+    fun setProxyConfigJson(json: String?) { localPrefs.proxyConfigJson = json }
+    fun getVpnConfigJson(): String? = localPrefs.vpnConfigJson
+    fun setVpnConfigJson(json: String?) { localPrefs.vpnConfigJson = json }
+    fun getMediaConfigJson(): String? = localPrefs.mediaConfigJson
+    fun setMediaConfigJson(json: String?) { localPrefs.mediaConfigJson = json }
 }

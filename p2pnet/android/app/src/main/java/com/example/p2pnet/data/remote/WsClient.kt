@@ -13,6 +13,7 @@ import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.SocketTimeoutException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,6 +21,18 @@ import java.util.concurrent.atomic.AtomicBoolean
 class WsClient(
     private val localPrefs: LocalPrefs? = null
 ) {
+    companion object {
+        /**
+         * WS 协议级心跳间隔（秒）—— OkHttp 按它自动发 0x9 ping 帧（服务器原样回 0xA pong）。
+         *
+         * ⚠️ OkHttp **没有**任何"ping 已发出 / 收到 pong"的回调（ping 是库内部按 interval 发的），
+         * 所以"WS 心跳：发出协议级 ping（第 N 次…）"那行日志由**应用侧同节奏计时器**打出
+         * （见 `LoginViewModel.startWsPingLog`），节奏相同但**不是严格同一瞬间**，
+         * 与真实发帧可能相差不到 1 个周期。
+         */
+        const val PING_INTERVAL_SECONDS = 20
+    }
+
     interface Listener {
         fun onConnected()
         fun onDisconnected()
@@ -78,6 +91,9 @@ class WsClient(
 
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
+        // WS 协议级心跳：每 PING_INTERVAL_SECONDS 秒自动发一个 0x9 ping 帧（服务器原样回 0xA pong）。
+        // 连续收不到 pong 时 OkHttp 会把这条连接判死并回调 onFailure（见下面的处理）。
+        .pingInterval(PING_INTERVAL_SECONDS.toLong(), TimeUnit.SECONDS)
         .build()
 
     private var ws: WebSocket? = null
@@ -122,7 +138,15 @@ class WsClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 wsOpen = false
-                listener?.onError(t.message ?: "connection failed")
+                // 心跳（pingInterval 20s）收不到 pong 时，OkHttp 就是用 SocketTimeoutException 把连接判死的；
+                // 连接已经死了，状态必须一起收回「未连接」，否则界面还显示"已连接"（旧 bug）。
+                val reason = if (t is SocketTimeoutException) {
+                    "WS 心跳失败（20s 没收到 pong），连接已断开"
+                } else {
+                    "WS 连接失败：${t.message ?: "connection failed"}"
+                }
+                listener?.onError(reason)
+                listener?.onDisconnected()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -406,6 +430,15 @@ class WsClient(
 
     fun sendList() {
         sendJson(JSONObject().put("type", "list"))
+    }
+
+    /**
+     * 应用层 ping（和协议级 0x9 ping 帧是两回事）：
+     * 发 `{"type":"ping","seq":N}`，服务器回 `{"type":"pong","seq":N}`（**不需要登录**）。
+     * 走 [sendJson] 所以发出时会先经 `onSend` 进 App 内日志（渲染成 `client: {...}`）。
+     */
+    fun sendAppPing(seq: Int) {
+        sendJson(JSONObject().put("type", "ping").put("seq", seq))
     }
 
     /** 退出登录：只通知服务器结束登录会话，不断开 WebSocket */

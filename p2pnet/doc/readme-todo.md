@@ -1,15 +1,15 @@
 # TODO / 待研究
 
 > **本文是什么：** 设计想法 + 还没做的 + 想过的方案的合集，**不是使用说明**。
-> **和 [readme.md](readme.md) 的区别：** [readme.md](readme.md) 讲"现在怎么用、怎么实现"；
+> **和 [readme.md](../readme.md) 的区别：** [readme.md](../readme.md) 讲"现在怎么用、怎么实现"；
 > 本文讲"下一步做什么、为什么这么设计、哪些想过了还没做"。已经实现的只留一行 ✅ + 链接，不再展开。
 >
-> - ✅ = 已实现，指向代码或 [readme.md](readme.md) / [readme-udp.md](readme-udp.md) /
+> - ✅ = 已实现，指向代码或 [readme.md](../readme.md) / [readme-udp.md](readme-udp.md) /
 >   [readme-tcp.md](readme-tcp.md) / [readme-wg.md](readme-wg.md) /
 >   [readme-direct.md](readme-direct.md) / [readme-upnp.md](readme-upnp.md)。
 > - 没做的保留（这是本文的价值）；拿不准的标 `?`。
 > - 已知的坑统一放 [readme-gotcha.md](readme-gotcha.md)，本文不重复。
-> - 命令以 [readme.md](readme.md) 和 `client.py` 的 `help` 为准；本文里的命令多为**设想**。
+> - 命令以 [readme.md](../readme.md) 和 `client.py` 的 `help` 为准；本文里的命令多为**设想**。
 
 ---
 
@@ -35,6 +35,32 @@
 | app | `client/app/audio.py` | `?` 有独立 main / 代码，但 **client.py 里没有 audio 入口**（`onholefrom*` 里也没有），没人拉起 |
 | app | `client/app/media.py` / `file.py` | ❌ 只有文档字符串，未实现 |
 | util | `tun.py` / `tap.py` / `tun_windows.py` / `tap_windows.py` / `crypto.py` / `kcp.py` | ✅ |
+
+### 0.1 图形客户端（安卓 / iOS）
+
+两端**协议一致、页面形态一致、配置 JSON 键名一致**（细节见 [readme-android.md](readme-android.md)；iOS 端页面形态与它一致，暂无独立文档）。
+
+| 能力 | 安卓 | iOS | 说明 |
+|---|---|---|---|
+| 登录 / 登出 / list / 我卡(ip:port) / 其他人卡片 | ✅ | ✅ | 登出**不断连接**；两端"登出"的行为略有差异，见各自 README |
+| UDP 打洞 + 五步进度 + 1s 探测（ping/pong + RTT） | ✅ | ✅ | session 归 `SessionManager`（iOS 里由 ViewModel 持有） |
+| direct（地址交换 + 可达性探测 + 三步进度 + 被动 auto 应答） | ✅ | ✅ | 安卓调系统 `ping` 判 `ttl=`；iOS 用非特权 ICMP datagram socket |
+| 卡片层（服务器卡 / 我卡 / 其他人卡 / 三种连线 / 屏幕几何中线 / socket 卡挂 peer 卡下方） | ✅ | ✅ | 安卓 Compose 自由层；iOS 手算坐标 |
+| 6 个固定页：主页 / media / proxy / wireguard / vpn / switch | ✅ 界面+配置+路由 | ✅ 同 | 都**不可关闭** |
+| App 内日志浮层（悬浮在所有页面之上） | ✅ | ✅ | WG 页不再有独立"消息历史" |
+| `udptest` 用法 | ✅ 真 | ✅ 真 | |
+| `tcp` / `upnp` 打洞 | 🟡 只有流程预览卡 | 🟡 同 | 不发信令 |
+| `tun`(vpn) / `switch` / `wg` / `proxy` / `media` 的真数据面 | ❌ 只有界面+配置+路由 | ❌ 同 | 落点见各自 README 的 TODO |
+| switch 的进程内转发 hub + DHCP server | ❌ | ❌ | DHCP 只有开关 + 置灰字段 |
+| WG 三档的协议栈（自己实现 / 官方库 / 调系统程序） | ❌ 只有路由；`system` 真发 Intent | ❌ 只有路由；`system` 真开 URL | |
+| media 的媒体收发 | ❌ 交给外部程序 | ❌ 同 | 我们只负责打洞 |
+
+**图形客户端待做：**
+- [ ] 五个用法（tun/switch/wg/proxy/media）的真数据面 —— 安卓 `tun` 要 `VpnService` + `BIND_VPN_SERVICE`，iOS 要 `NEPacketTunnelProvider` + entitlement
+- [ ] switch 的多路转发 hub（进程内）+ 真 DHCP server
+- [ ] `tcp`（三 socket 同端口竞速）与 `upnp`（SSDP + AddPortMapping）的真打洞
+- [ ] 把 media / proxy 那两处"交给外部程序"的契约整理成给第三方应用开发者看的公开文档
+- [ ] **服务端双栈**：客户端已经能双栈收发，但 `server.py` 还是 `HOST='0.0.0.0'` 纯 v4 —— 服务端跟上 v6 才能真正用起来
 
 **过时的名字（文档里不能再出现）：**
 
@@ -158,7 +184,7 @@ switch.py --ctlpath <path>               # client.py 用 SCM_RIGHTS 把已建立
 |---|---|---|
 | 1. WireGuard 管理员 | ✅ | 连 `app/wg-python.py` 的 admin socket 增删 peer（`add_peer` / `list_peers` / `get_pubkey`）→ [readme-wg.md](readme-wg.md) |
 | 2. Switch 管理员 | ✅ | 通过 pipe 用**文本命令**管 `app/switch.py`（`plug` / `routes` / `route add` / `quit` …） |
-| 3. 服务器用户 | ✅ | WebSocket 登录 → `udp` / `tcp` / `direct` → [readme.md](readme.md) |
+| 3. 服务器用户 | ✅ | WebSocket 登录 → `udp` / `tcp` / `direct` → [readme.md](../readme.md) |
 
 ```
 client.py（server 连接，可选）  ├─ login / logout / list / del
@@ -292,7 +318,7 @@ alice 发现了 bob 和 karl
 
 ## 8. 安全加密层
 
-### 登录与 session_key（已实现 ✅ [readme.md](readme.md)）
+### 登录与 session_key（已实现 ✅ [readme.md](../readme.md)）
 
 | 步骤 | 算法 | 输入 |
 |------|------|------|
@@ -420,7 +446,7 @@ Tailscale = WireGuard P2P + DERP relay。
 
 ---
 
-> 当前实现与用法回 [readme.md](readme.md)；
+> 当前实现与用法回 [readme.md](../readme.md)；
 > 打洞细节见 [readme-udp.md](readme-udp.md) / [readme-tcp.md](readme-tcp.md) /
 > [readme-direct.md](readme-direct.md) / [readme-upnp.md](readme-upnp.md)；
 > WireGuard 见 [readme-wg.md](readme-wg.md)；已知的坑见 [readme-gotcha.md](readme-gotcha.md)。

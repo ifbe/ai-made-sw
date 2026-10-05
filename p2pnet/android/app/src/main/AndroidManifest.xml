@@ -19,6 +19,17 @@
     <!-- Doze 白名单：设备静止/息屏进入 Doze 后系统会挂起网络，前台服务也救不回来 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!--
+      WireGuard 页「调系统程序」那档要拉起的外部 VPN 服务：
+      Android 11+ 不在 <queries> 里声明就查不到别的 app（PackageManager 会被包可见性挡住）。
+      契约：对方 app 注册这个 action 的 Service，参数走 extras（见 ui/PageConfig.kt）。
+    -->
+    <queries>
+        <intent>
+            <action android:name="com.p2pnet.action.START_VPN" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

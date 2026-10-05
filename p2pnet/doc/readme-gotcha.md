@@ -61,7 +61,7 @@ switch 先把包 `_inject_card` 注入本机 tun，再由自己转发。
 （老化有，校验没有 —— 这是明确决定先不做的。）
 
 ### 12. `switch.py` 绑定地址历史遗留
-`--type bindtcpsocket` 的老监听路径写死 `127.0.0.1`（[client/app/switch.py](client/app/switch.py) 里 `tcp_port_listener`），
+`--type bindtcpsocket` 的老监听路径写死 `127.0.0.1`（[client/app/switch.py](../client/app/switch.py) 里 `tcp_port_listener`），
 远程连不上。要对外监听用 console 的 `listenstart addr=0.0.0.0 port=...`。
 
 ### 13. 一台机器上的 tun 地址必须自己配，而且 `/24` 不能漏
@@ -94,7 +94,9 @@ switch 先把包 `_inject_card` 注入本机 tun，再由自己转发。
 | `launch_in_new_terminal` 的 Windows 句柄继承分支（`set_handle_inheritable` + `close_fds=False`） | 没环境，没验证 |
 | 开发机上的 tun / tap | **打不开**（没 `/dev/net/tun` 权限、非 root），所以所有 `ip addr add` / `ip link set mtu` 只验证到"命令拼装正确 + 打不开时报错正确" |
 | `switch.py --card tap` | 设备选择已修（`Tap()`），但真机没验证过 |
-| 安卓端 | 见 [readme-android.md](readme-android.md) |
+| 安卓端 | 见 [readme-android.md](readme-android.md)（当前状态 + 协议 + 踩过的坑） |
+| iOS 端 | 代码在 `ios/p2pnet/`（SwiftUI 复刻，形态与安卓一致，暂无独立文档） |
+| 两端的图形客户端 | **只在编译层面验证过**（安卓 `compileDebugKotlin`、iOS `xcodebuild ... iphonesimulator`），**没有在真机/模拟器上跑过**：卡片拖动、连线落点、屏幕中线、ICMP 实测可达性、外部程序拉起都还没有运行时证据 |
 
 ---
 
@@ -138,7 +140,7 @@ switch 先把包 `_inject_card` 注入本机 tun，再由自己转发。
 ### 24. `wg-py`（自己实现的 WireGuard）数据面不可用
 读代码就能确定，不是"没验证"：
 
-- `send_ip()` 用了 `self._peer_index`，而**全文只有一处使用（[client/app/wg-python.py](client/app/wg-python.py) 第 325 行）、零处赋值** → 一旦有 IP 包要从隧道发出去就 `AttributeError`。
+- `send_ip()` 用了 `self._peer_index`，而**全文只有一处使用（[client/app/wg-python.py](../client/app/wg-python.py) 第 325 行）、零处赋值** → 一旦有 IP 包要从隧道发出去就 `AttributeError`。
 - 代码自己写着"简化处理，实际需要 proper crypto"、"简化：Type(4) || Receiver Index(4) || Unpadded Data"。
 - 没有 MAC1/MAC2、没有 cookie 这些 WireGuard 必需的防 DoS 字段。
 - 本机 `cryptography` 2.1.4 太老，`RawEncoding` 缺失，启动时也直接抛异常。
@@ -170,4 +172,4 @@ switch 先把包 `_inject_card` 注入本机 tun，再由自己转发。
 
 ---
 
-回 [readme.md](readme.md) ｜ 设计想法见 [readme-todo.md](readme-todo.md)
+回 [readme.md](../readme.md) ｜ 设计想法见 [readme-todo.md](readme-todo.md)

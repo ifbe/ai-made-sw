@@ -77,6 +77,22 @@ class MainActivity : ComponentActivity() {
         viewModel.onStartService = { startP2pService() }
         viewModel.onStopService = { stopP2pService() }
 
+        // WireGuard 页「调系统程序」那档：把参数交给外部那个真正的 VPN 服务 app。
+        // 参数契约见 ui/PageConfig.kt（action 在 AndroidManifest 的 <queries> 里声明）。
+        viewModel.onStartExternalVpn = { action, pkg, listenPort, peerIp, peerPort ->
+            startExternalVpnService(action, pkg, listenPort, peerIp, peerPort)
+        }
+
+        // media 页「拉起应用」：多媒体聊天我们只负责打洞，打好了把参数交给外部聊天程序
+        viewModel.onLaunchMediaApp = {
+                action, pkg, localAddr, localPort, peerAddr, peerPort,
+                recvProto, sendProto, capture ->
+            launchMediaApp(
+                action, pkg, localAddr, localPort, peerAddr, peerPort,
+                recvProto, sendProto, capture
+            )
+        }
+
         // Bind to existing service if running
         bindService(
             Intent(this, P2pService::class.java),
@@ -97,6 +113,117 @@ class MainActivity : ComponentActivity() {
 
         // 后台保活相关的一次性引导：先要通知权限，再问电池优化白名单
         requestNotificationPermissionIfNeeded()
+    }
+
+    /**
+     * WireGuard 页「调系统程序」那档：把这条洞的参数交给外部那个真正的 VPN 服务 app。
+     *
+     * 契约（我们自己定的，见 ui/PageConfig.kt）：
+     *   action  = action（默认 com.p2pnet.action.START_VPN，已在 manifest 的 <queries> 里声明）
+     *   package = pkg（留空 = 按 action 在可见范围内找）
+     *   extras  = listen_port / peer_ip / peer_port
+     * listen_port 就是打洞时那个本地端口，对方必须 listen 在同一个端口上，NAT 映射才不废。
+     *
+     * @return 是否真把服务拉起来了（没找到 / 被拒都返回 false，调用方会写进 App 内日志）
+     */
+    private fun startExternalVpnService(
+        action: String,
+        pkg: String,
+        listenPort: Int,
+        peerIp: String,
+        peerPort: Int
+    ): Boolean {
+        val intent = Intent(action).apply {
+            if (pkg.isNotEmpty()) setPackage(pkg)
+            putExtra("listen_port", listenPort)
+            putExtra("peer_ip", peerIp)
+            putExtra("peer_port", peerPort)
+        }
+        val target = packageManager.queryIntentServices(intent, 0).firstOrNull()?.serviceInfo
+        if (target == null) {
+            Log.w(TAG, "没有应用能处理 $action（包可见性或对方未安装）")
+            return false
+        }
+        intent.component = ComponentName(target.packageName, target.name)
+        return try {
+            startService(intent)
+            Log.i(TAG, "已拉起外部 VPN 服务 ${target.packageName}/${target.name} listen_port=$listenPort")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "拉起外部 VPN 服务失败: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * media 页「拉起应用」：把打洞参数交给外部聊天程序（多媒体聊天我们只负责打洞）。
+     *
+     * 契约（见 ui/PageConfig.kt）：
+     *   action  = action（默认 com.p2pnet.action.MEDIA_CHAT）
+     *   package = pkg（留空 = 只按 action 找）
+     *   extras  = localaddr / localport（本机这一侧，洞的本机地址端口）
+     *             peeraddr  / peerport （**对方路由器公网的地址端口**，对方内网地址不管）
+     *             recv_proto / send_proto / capture（人选的编解码方式）
+     *
+     * 优先用包名找它的启动 Activity（最省事，对方 app 不用声明任何 action）；
+     * 没填包名时退化成按 action 找 Activity。
+     *
+     * @return 是否真的拉起来了
+     */
+    private fun launchMediaApp(
+        action: String,
+        pkg: String,
+        localAddr: String,
+        localPort: Int,
+        peerAddr: String,
+        peerPort: Int,
+        recvProto: String,
+        sendProto: String,
+        capture: String
+    ): Boolean {
+        val extras = Bundle().apply {
+            putString("localaddr", localAddr)
+            putInt("localport", localPort)
+            putString("peeraddr", peerAddr)
+            putInt("peerport", peerPort)
+            putString("recv_proto", recvProto)
+            putString("send_proto", sendProto)
+            putString("capture", capture)
+        }
+
+        // 1) 给了包名：直接找它的启动 Activity（对方 app 不需要声明任何 action）
+        if (pkg.isNotEmpty()) {
+            val launch = packageManager.getLaunchIntentForPackage(pkg)
+            if (launch != null) {
+                launch.putExtras(extras)
+                return try {
+                    startActivity(launch)
+                    Log.i(TAG, "已拉起聊天程序 $pkg（local=$localAddr:$localPort peer=$peerAddr:$peerPort）")
+                    true
+                } catch (e: Exception) {
+                    Log.w(TAG, "拉起聊天程序失败: ${e.message}")
+                    false
+                }
+            }
+            Log.w(TAG, "包名为 $pkg 的应用没装，或它没有启动 Activity")
+        }
+
+        // 2) 没包名 / 没找到：按 action 在可见范围内找 Activity
+        val implicit = Intent(action).apply { putExtras(extras) }
+        val target = packageManager.queryIntentActivities(implicit, 0).firstOrNull()?.activityInfo
+        if (target == null) {
+            Log.w(TAG, "没有应用能处理 $action")
+            return false
+        }
+        implicit.component = ComponentName(target.packageName, target.name)
+        return try {
+            startActivity(implicit)
+            Log.i(TAG, "已拉起聊天程序 ${target.packageName}/${target.name}")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "拉起聊天程序失败: ${e.message}")
+            false
+        }
     }
 
     fun startP2pService() {

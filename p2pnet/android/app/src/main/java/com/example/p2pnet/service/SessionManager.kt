@@ -9,6 +9,8 @@ import com.example.p2pnet.net.dedupeAddrs
 import com.example.p2pnet.net.formatHostPort
 import com.example.p2pnet.net.localAddresses
 import com.example.p2pnet.net.pingAll
+import com.example.p2pnet.usage.Media
+import com.example.p2pnet.usage.Proxy
 import com.example.p2pnet.usage.Tun
 import com.example.p2pnet.usage.UdpTest
 import com.example.p2pnet.usage.Usage
@@ -48,6 +50,14 @@ private const val DIRECT_RESPONSE_TIMEOUT_MS = 10_000L
  */
 class SessionManager(private val scope: CoroutineScope) {
 
+    companion object {
+        /** direct 卡片的"可达地址"最多显示几条；超出的用一行「…还有 N 条」收尾 */
+        const val DIRECT_NOTE_MAX_ADDRS = 10
+
+        /** 上面那行收尾的前缀（界面靠它把这一行渲染成次要色，而不是绿色地址色） */
+        const val DIRECT_NOTE_MORE_PREFIX = "…还有"
+    }
+
     private val _sessions = MutableStateFlow<List<UdpSessionInfo>>(emptyList())
     val sessions: StateFlow<List<UdpSessionInfo>> = _sessions
 
@@ -60,10 +70,10 @@ class SessionManager(private val scope: CoroutineScope) {
     private var seq = 0L
 
     private val usages: Map<String, Usage> =
-        listOf(UdpTest(), Tun(), Vswitch(), WireGuard()).associateBy { it.id }
+        listOf(UdpTest(), Tun(), Vswitch(), WireGuard(), Proxy(), Media()).associateBy { it.id }
 
     /** 卡片第 5 行按这个顺序出按钮 */
-    val usageIds: List<String> = listOf("udptest", "tun", "switch", "wg")
+    val usageIds: List<String> = listOf("udptest", "tun", "switch", "wg", "proxy", "media")
 
     private val env = UsageEnv(scope) { text -> log(text) }
 
@@ -546,7 +556,18 @@ class SessionManager(private val scope: CoroutineScope) {
             when {
                 reach.isNotEmpty() -> {
                     markDirectStep(id, 2, true, "${reach.size}/${addrs.size} 个地址可达")
-                    setDirectNote(id, "可达：${reach.joinToString(", ")}")
+                    // 展示成"一行一个地址"（不折行）：v4 一组在前、v6 一组在后，
+                    // 最多 DIRECT_NOTE_MAX_ADDRS 条，超出的用一行「…还有 N 条」收尾。
+                    // 只影响显示，探测仍然是 ping 全部地址（见上面的 pingAll(addrs)）。
+                    val ordered = reach.filter { !it.contains(':') } + reach.filter { it.contains(':') }
+                    val shown = ordered.take(DIRECT_NOTE_MAX_ADDRS)
+                    val rest = ordered.size - shown.size
+                    val noteLines = shown + if (rest > 0) {
+                        listOf("$DIRECT_NOTE_MORE_PREFIX $rest 条")
+                    } else {
+                        emptyList()
+                    }
+                    setDirectNote(id, noteLines.joinToString("\n"))
                     logReachable("$from 可达地址（${reach.size}/${addrs.size} 个）：", reach)
                 }
                 unavailable == results.size && results.isNotEmpty() -> {

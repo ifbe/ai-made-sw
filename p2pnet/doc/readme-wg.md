@@ -15,8 +15,8 @@
 
 | usage | 拉起的文件 | 做法 | root | 内核模块 | wireguard-tools |
 |---|---|---|---|---|---|
-| `wg-py` | [client/app/wg-python.py](client/app/wg-python.py) | 自己实现 WireGuard（Noise IK + ChaCha20-Poly1305） | 不要 | 不要 | 不要 |
-| `wg-sh` | [client/app/wg-calltool.py](client/app/wg-calltool.py) → [client/app/wghelp.sh](client/app/wghelp.sh) | 调系统 `wg` / `ip`，用内核 WireGuard | **要** | **要** | **要** |
+| `wg-py` | [client/app/wg-python.py](../client/app/wg-python.py) | 自己实现 WireGuard（Noise IK + ChaCha20-Poly1305） | 不要 | 不要 | 不要 |
+| `wg-sh` | [client/app/wg-calltool.py](../client/app/wg-calltool.py) → [client/app/wghelp.sh](../client/app/wghelp.sh) | 调系统 `wg` / `ip`，用内核 WireGuard | **要** | **要** | **要** |
 
 | 客户端命令 |
 |---|
@@ -32,7 +32,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文件 | [client/app/wg-python.py](client/app/wg-python.py) |
+| 文件 | [client/app/wg-python.py](../client/app/wg-python.py) |
 | 加密 | Noise IK 握手 + ChaCha20-Poly1305，都在文件里自己写（唯一依赖 `cryptography` 库） |
 | 数据面 | **连 `app/switch.py` 的 Unix socket 当"网线"**：从 switch 收 raw IP → 发给各 peer；从 peer 收密文 → 解密后写回 switch |
 | 进程模型 | 一个进程管多个 peer（单实例；client.py 全局只有一个 `WG_ADMIN_PATH`） |
@@ -272,15 +272,33 @@ wg-sh bob YGzbJJ8... 192.168.250.2 BDDBwN2... 192.168.250.3 wghelp0
 
 ---
 
+## 6.1 两端的"WireGuard 页"（和上面两条路的关系）
+
+安卓与 iOS 的 **wireguard 页**把上面这两条路做成了**三档可选**（`自己实现 / 官方库 / 调系统程序`）：
+
+| 档 | 对应这里 | 两端现状 |
+|---|---|---|
+| 自己实现 | `wg-py`（纯用户态） | 只有界面 + 路由 + TODO 日志（协议栈未接） |
+| 官方库 | —（Python 那边没有这条） | 同上；iOS 侧**没有**引入 `wireguard-apple` 依赖（要 SPM 联网 + NetworkExtension） |
+| 调系统程序 | `wg-sh`（调系统 wg） | 安卓：真发 `Intent`（`extras` 带 `listen_port` / `peer_ip` / `peer_port` / `my_public_*`），对方 app 需在 manifest `<queries>` 里可被查到；iOS：真开自定义 URL `p2pnetvpn://start?listen_port=…`（`UIApplication.open`，不改 Info.plist） |
+
+三档共同点、也是这里反复强调的那条：**UDP 出口必须是打洞时那个本地端口**（`listen_port` = 洞的本端端口），
+否则 NAT 映射就废了。细节见 [readme-android.md](readme-android.md)（iOS 端页面形态与它一致）。
+
+> 注意：客户端**从不发** `wghelp` 这个 WS 消息 type（服务端分支也早已注释掉）。
+> 上面说的 `wghelp.sh` 是 Python 端 `wg-calltool.py` 调的**本地脚本**，和那个废弃的消息 type 不是一回事。
+
+---
+
 ## 7. 代码位置
 
 | 文件 | 角色 |
 |---|---|
-| [client/app/wg-python.py](client/app/wg-python.py) | 纯用户态 WireGuard + admin socket |
-| [client/app/wg-calltool.py](client/app/wg-calltool.py) | 拼 `wghelp.sh` 命令、守护接口 |
-| [client/app/wghelp.sh](client/app/wghelp.sh) | 真正执行 `ip` / `wg` |
-| [client/client.py](client/client.py) | `_launch_wg_python()` / `_launch_wg_calltool()` / `_wg_admin_add_peer()` / `wg-py` / `wg-sh` 命令 |
+| [client/app/wg-python.py](../client/app/wg-python.py) | 纯用户态 WireGuard + admin socket |
+| [client/app/wg-calltool.py](../client/app/wg-calltool.py) | 拼 `wghelp.sh` 命令、守护接口 |
+| [client/app/wghelp.sh](../client/app/wghelp.sh) | 真正执行 `ip` / `wg` |
+| [client/client.py](../client/client.py) | `_launch_wg_python()` / `_launch_wg_calltool()` / `_wg_admin_add_peer()` / `wg-py` / `wg-sh` 命令 |
 
 ---
 
-回到总览：[readme.md](readme.md)
+回到总览：[readme.md](../readme.md)

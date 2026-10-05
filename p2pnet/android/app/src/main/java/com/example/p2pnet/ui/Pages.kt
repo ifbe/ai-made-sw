@@ -23,16 +23,42 @@ sealed class Page {
         val peerIp: String = "",
         val peerPort: Int = 0
     ) : Page()
+
+    /** 虚拟交换机（配置页，对应 python 端 client/app/switch.py）。参数不走 page，配置在 [SwitchPageConfig] */
+    object Switch : Page()
+
+    /** 端口转发（配置页，对应 python 端 client/app/proxy.py）。配置在 [ProxyPageConfig] */
+    object Proxy : Page()
+
+    /**
+     * 一对一 VPN（配置页，对应 python 端 client/app/vpn.py：一个洞 ↔ 一块 tun/tap）。
+     * 和 [Switch] 的区别：vpn 是**一对一**（没有网口那排），switch 是 **m 对 n**。
+     * 配置在 [VpnPageConfig]。
+     */
+    object Vpn : Page()
+
+    /**
+     * 多媒体聊天（配置页，对应 python 端 client/app/media.py + app/ffmpeg.sh）。
+     * 我们只负责打洞，打好了把洞的参数交给聊天程序去收发流。
+     * 配置在 [MediaPageConfig]。
+     */
+    object Media : Page()
 }
 
 /** Tab 项 */
 data class TabItem(
     val page: Page,
-    val title: String
+    val title: String,
+    /** false = 固定配置页（主页 / media / proxy / wireguard / vpn / switch），底部 tab 不给 × */
+    val closable: Boolean = true
 ) {
     companion object {
-        fun main() = TabItem(Page.Main, "主页")
-        fun wireGuard() = TabItem(Page.WireGuard(), "WireGuard")
+        fun main() = TabItem(Page.Main, "主页", closable = false)
+        fun mediaTab() = TabItem(Page.Media, "media", closable = false)
+        fun proxyTab() = TabItem(Page.Proxy, "proxy", closable = false)
+        fun wireGuard() = TabItem(Page.WireGuard(), "wireguard", closable = false)
+        fun vpnTab() = TabItem(Page.Vpn, "vpn", closable = false)
+        fun switchTab() = TabItem(Page.Switch, "switch", closable = false)
     }
 }
 

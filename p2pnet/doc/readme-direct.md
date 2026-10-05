@@ -215,11 +215,15 @@ fd00::1     -> ['ping', '-6', '-c', '1', '-n', '-W', '1', 'fd00::1']
 
 | 文件 | 角色 |
 |---|---|
-| [client/hole/direct.py](client/hole/direct.py) | 枚举地址、ping、`run()` / `on_peer()` |
-| [client/hole/core.py](client/hole/core.py) | 3 步的显示（`DIRECT_STEPS` / `DIRECT_STEP_DESC`）、`get_onpeerwant('direct')` |
-| [server/server.py](server/server.py) | `handle_p2pdirect()` + `_clean_addr_list()` + `MAX_DIRECT_ADDRS` |
-| [client/client.py](client/client.py) | `direct` 命令 dispatch、`p2pdirect*` 消息分发、`_print_holes()` 里的 `可达=K/M` |
+| [client/hole/direct.py](../client/hole/direct.py) | 枚举地址、ping、`run()` / `on_peer()` |
+| [client/hole/core.py](../client/hole/core.py) | 3 步的显示（`DIRECT_STEPS` / `DIRECT_STEP_DESC`）、`get_onpeerwant('direct')` |
+| [server/server.py](../server/server.py) | `handle_p2pdirect()` + `_clean_addr_list()` + `MAX_DIRECT_ADDRS` |
+| [client/client.py](../client/client.py) | `direct` 命令 dispatch、`p2pdirect*` 消息分发、`_print_holes()` 里的 `可达=K/M` |
+| [readme-android.md](readme-android.md) + `android/app/.../net/LocalAddrs.kt` / `net/IcmpPing.kt` | 安卓端实现：`getifaddrs` 枚举 + **子进程调 `/system/bin/ping`**（以输出里有没有 `ttl=` 判定）、卡片三步进度、每个地址一行日志、被动 auto 应答 |
+| `ios/p2pnet/Util/LocalAddrs.swift` / `Util/IcmpPing.swift` | iOS 端实现：同样枚举与三步，但**没有 ping 命令**，用非特权 ICMP datagram socket（`SOCK_DGRAM` + `IPPROTO_ICMP` / `IPPROTO_ICMPV6`），结果分 可达/不可达/本机无法执行 三档 |
+
+> 两端都**只发/收服务端已有的 `p2pdirect` / `p2pdirect_reply`**，字段就是上面第 4 节那套（`target` / `from` / `ipv4` / `ipv6`），没有新增 type、也没有签名（`direct` 的包不带 HMAC，和 `p2pudp_hello` 不同）。
 
 ---
 
-回到总览：[readme.md](readme.md)
+回到总览：[readme.md](../readme.md)

@@ -42,8 +42,13 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -57,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.p2pnet.net.UdpSessionInfo
 import com.example.p2pnet.net.formatHostPort
+import com.example.p2pnet.service.SessionManager
 import com.example.p2pnet.ui.Page
 import android.os.Build
 import android.graphics.Rect
@@ -85,8 +91,7 @@ private val UdpSocketCardWidth = 190.dp
 private val UdpSocketCardHeight = 48.dp
 private val UdpSocketGap = 24.dp
 
-/** direct 卡片结果行（可达地址列表）的最大宽度：卡片宽度是内容自适应，不封顶会被长列表撑爆 */
-private val DirectNoteMaxWidth = 240.dp
+/** direct 卡片结果行显示成「一行一个地址」：卡片宽度按内容自适应，所以这里**不再设宽度上限**（否则长 v6 会折行） */
 
 /** “我”卡片里输入框的最小宽度（避免纯内容自适应时输入区太窄） */
 private val CompactFieldMinWidth = 140.dp
@@ -103,21 +108,39 @@ private val CompactFieldHeight = 28.dp
 /** 输入框标签放在框外时占的固定宽度，保证多行标签左侧对齐 */
 private val FieldLabelWidth = 40.dp
 
+// ── 服务器卡片（三行）的列宽定义 ──
+// 第一行是提示小字（协议 / 服务器 / 端口），第二行是控件，两行**必须用同一组列宽**，
+// 否则标签与控件一定会错位（所以共用下面这几个常量 + 同一个 spacedBy）。
+/** 协议按钮（ws/wss 切换）宽度 */
+private val ConnProtoWidth = 62.dp
+/** 端口框宽度（要能完整显示 10000） */
+private val ConnPortWidth = 118.dp
+/** 地址框宽度上限；窄屏时它靠 weight(1f) 自动收窄 */
+private val ConnAddrMaxWidth = 300.dp
+/** 两行之间的横向间距（与 iOS / 桌面端统一为 6dp） */
+private val ConnRowSpacing = 6.dp
+/** 标签行 + 控件行允许占的最大宽度 = 62 + 300 + 118 + 2×6 */
+private val ConnBlockMaxWidth = ConnProtoWidth + ConnAddrMaxWidth + ConnPortWidth + ConnRowSpacing * 2
+
+/** 服务器卡片第一行的提示小字（字号比输入框正文 14sp 明显小一号，只起提示作用） */
+private val ConnHintFontSize = 11.sp
+
 /** 节点标题：有 ip/port 时显示成 “我(1.2.3.4:5678)” 这种形式 */
 private fun nodeLabel(name: String, ip: String, port: Int): String =
     if (ip.isNotEmpty() || port != 0) "$name($ip:$port)" else name
+
+/**
+ * 一行是不是"一个裸地址"（direct 卡片可达列表里的行）。
+ * 用来判断这串 note 到底是地址列表（该用绿色）还是单行说明（超时 / 本机不能发 ICMP / 0 个可达 → 用次要色）。
+ * 判据：不含空格，且带 `:`（v6）或 `.`（v4）。
+ */
+private fun isAddrToken(line: String): Boolean =
+    line.isNotEmpty() && !line.contains(' ') && (line.contains(':') || line.contains('.'))
 
 @Composable
 fun MainPage(viewModel: LoginViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     val focusManager = LocalFocusManager.current
-
-    // 日志浮层：false = 折叠（只剩右下角按钮），true = 展开（90% 屏幕）
-    var logExpanded by remember { mutableStateOf(false) }
-    val logProgress by animateFloatAsState(
-        targetValue = if (logExpanded) 1f else 0f,
-        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
-    )
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -128,7 +151,8 @@ fun MainPage(viewModel: LoginViewModel) {
                 focusManager = focusManager,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 4.dp, end = 4.dp, top = 8.dp)
+                    // 顶部不留额外外边距：避让状态栏由 Scaffold 的 inset 负责，卡片紧贴状态栏下沿
+                    .padding(start = 4.dp, end = 4.dp)
             )
 
             // ── 自由层：连接线 + “我”卡片 + 随机分布的其他人节点（都可拖动）──
@@ -203,64 +227,6 @@ fun MainPage(viewModel: LoginViewModel) {
             }
             */
         }
-
-        // ── 日志浮层（浮于最上层）──
-        // 折叠 / 展开共用 progress：1 = 展开到 90%，0 = 缩回右下角按钮
-        if (logProgress > 0.001f) {
-            // 背景遮罩，随折叠一起淡出；同时吞掉所有触摸，
-            // 避免日志展开时误点到/拖到下面的卡片（日志面板本身在遮罩之上，不受影响）
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.55f * logProgress))
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                awaitPointerEvent().changes.forEach { it.consume() }
-                            }
-                        }
-                    }
-            )
-
-            AppLogPanel(
-                messages = uiState.messages,
-                onClear = viewModel::clearMessages,
-                onClose = { logExpanded = false },
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .fillMaxSize(0.9f)
-                    .graphicsLayer {
-                        val p = logProgress
-                        alpha = p
-                        // 以面板右下角（≈ 屏幕右下角按钮）为原点缩放，形成从按钮放大 / 缩回按钮的动画
-                        transformOrigin = TransformOrigin(1f, 1f)
-                        scaleX = 0.08f + 0.92f * p
-                        scaleY = 0.08f + 0.92f * p
-                    }
-            )
-        }
-
-        // ── 右下角“日志”按钮：折叠或展开时始终显示 ──
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp)
-                .shadow(8.dp, RoundedCornerShape(24.dp))
-                .clip(RoundedCornerShape(24.dp))
-                .background(
-                    if (logExpanded) MaterialTheme.colorScheme.tertiaryContainer
-                    else MaterialTheme.colorScheme.primaryContainer
-                )
-                .clickable { logExpanded = !logExpanded }
-                .padding(horizontal = 20.dp, vertical = 12.dp)
-        ) {
-            Text(
-                text = "日志",
-                style = MaterialTheme.typography.labelLarge,
-                color = if (logExpanded) MaterialTheme.colorScheme.onTertiaryContainer
-                else MaterialTheme.colorScheme.onPrimaryContainer
-            )
-        }
     }
 }
 
@@ -278,54 +244,81 @@ private fun ConnectionCard(
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // ── 前三行：标签行 + 控件行，两行共用同一组列宽（左边缘对齐）──
+            // 整块宽度上限 ConnBlockMaxWidth：宽屏时地址框正好 = ConnAddrMaxWidth(300dp)，
+            // 窄屏（手机）时整块 = 卡片可用宽度，地址框用 weight(1f) 自动收窄。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = ConnBlockMaxWidth)
             ) {
+                // 第一行：提示小字（仅提示，不参与输入）
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(ConnRowSpacing),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("ws", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
-                        checked = uiState.useWss,
-                        onCheckedChange = viewModel::onUseWssChange,
-                        modifier = Modifier.height(24.dp)
-                    )
-                    Text("wss", style = MaterialTheme.typography.bodyMedium)
+                    ConnHint("协议", Modifier.width(ConnProtoWidth))
+                    ConnHint("服务器", Modifier.weight(1f))
+                    ConnHint("端口", Modifier.width(ConnPortWidth))
                 }
-                CompactField(
-                    value = uiState.serverHost,
-                    onValueChange = viewModel::onServerHostChange,
-                    label = "服务器",
-                    enabled = !uiState.loading,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Uri,
-                        imeAction = ImeAction.Next
-                    ),
-                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Right) }),
-                    modifier = Modifier.weight(1f)
-                )
-                CompactField(
-                    value = uiState.serverPort,
-                    onValueChange = viewModel::onServerPortChange,
-                    label = "端口",
-                    enabled = !uiState.loading,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Number,
-                        imeAction = ImeAction.Done
-                    ),
-                    keyboardActions = KeyboardActions(onDone = {
-                        focusManager.clearFocus()
-                        if (!uiState.isConnected) viewModel.onConnect()
-                    }),
-                    modifier = Modifier.width(92.dp)
-                )
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                // 第二行：一个协议切换按钮（文字 = 当前协议）+ 地址框 + 端口框
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(ConnRowSpacing),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 一个按钮，文字就是当前协议；点一下 ws ↔ wss
+                    val proto = if (uiState.useWss) "wss" else "ws"
+                    OutlinedButton(
+                        onClick = { viewModel.onUseWssChange(!uiState.useWss) },
+                        enabled = !uiState.loading,
+                        contentPadding = PaddingValues(0.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier
+                            .width(ConnProtoWidth)
+                            .height(CompactFieldHeight)
+                            .semantics { contentDescription = "协议 $proto，点击切换 ws / wss" }
+                    ) {
+                        Text(proto, fontSize = 13.sp, maxLines = 1)
+                    }
+                    CompactField(
+                        value = uiState.serverHost,
+                        onValueChange = viewModel::onServerHostChange,
+                        // 标签已在第一行，框内不再重复
+                        label = "",
+                        enabled = !uiState.loading,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            imeAction = ImeAction.Next
+                        ),
+                        keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Right) }),
+                        modifier = Modifier.weight(1f)
+                    )
+                    CompactField(
+                        value = uiState.serverPort,
+                        onValueChange = viewModel::onServerPortChange,
+                        label = "",
+                        enabled = !uiState.loading,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(onDone = {
+                            focusManager.clearFocus()
+                            if (!uiState.isConnected) viewModel.onConnect()
+                        }),
+                        modifier = Modifier.width(ConnPortWidth)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // 第三行：连接 / 断开（原样保留）
             Button(
                 onClick = {
                     if (uiState.isConnected) {
@@ -456,8 +449,27 @@ private fun MeCard(
                     }
                 }
 
+                // ping：发应用层 {"type":"ping","seq":N}，报文往返在 App 内日志里能看到
+                OutlinedButton(
+                    onClick = { viewModel.onPing() },
+                    // 没连上时发不出去（sendJson 里 ws 为空），所以跟着连接状态灰
+                    enabled = uiState.isConnected,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(30.dp)
+                ) {
+                    Text(
+                        text = "ping",
+                        fontSize = 11.sp,
+                        maxLines = 1
+                    )
+                }
+
                 OutlinedButton(
                     onClick = { viewModel.onList() },
+                    // list 会发 WS（sendJson 里先 onSend、后 ws?.send），没连上时发不出去 → 跟连接状态灰
+                    enabled = uiState.isConnected,
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                     modifier = Modifier
                         .weight(1f)
@@ -476,11 +488,26 @@ private fun MeCard(
 
 // MARK: - 紧凑输入框（高度减半，文字上下边距为 0）
 
+/**
+ * 服务器卡片第一行的提示小字。
+ * 宽度由调用方按**与下面控件完全相同**的规则给（固定宽 / weight(1f)），文本左对齐 —— 这样左边缘才能对齐控件。
+ */
+@Composable
+private fun ConnHint(text: String, modifier: Modifier) {
+    Text(
+        text = text,
+        fontSize = ConnHintFontSize,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        modifier = modifier
+    )
+}
+
 @Composable
 private fun CompactField(
     value: String,
     onValueChange: (String) -> Unit,
-    label: String,
+    label: String = "",
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     isPassword: Boolean = false,
@@ -514,13 +541,13 @@ private fun CompactField(
             )
         }
     } else {
-        // 标签作为灰色前缀放在框内左侧（服务器卡片）
+        // label 为空 = 框内不显示灰色前缀（服务器卡片的标签已经在第一行，避免重复）
         CompactFieldBox(
             value = value,
             onValueChange = onValueChange,
             enabled = enabled,
             isPassword = isPassword,
-            inlineLabel = label,
+            inlineLabel = label.ifBlank { null },
             keyboardOptions = keyboardOptions,
             keyboardActions = keyboardActions,
             modifier = modifier
@@ -818,6 +845,8 @@ private fun FreeLayer(
         uiState.peers.forEach { peer ->
             PeerNode(
                 peer = peer,
+                // 只有"会发 WS 消息"的按钮才跟连接状态（见 PeerNode 里 direct / udp 的门槛）
+                isConnected = uiState.isConnected,
                 viewModel = viewModel,
                 onDrag = { delta ->
                     val base = peerBase(peer.username)
@@ -945,26 +974,29 @@ private fun UdpSocketCardView(
                     if (step.detail.isNotEmpty()) UdpInfoRow(step.detail)
                 }
                 if (card.note.isNotEmpty()) {
+                    // direct 的 note 可能是「一行一个可达地址」（第一行就是地址，见 SessionManager.setDirectNote）
+                    // + 可能的一行「…还有 N 条」尾行。地址行用绿色，尾行和其它单行说明用次要色。
+                    // 不设宽度上限（卡片本身 width(IntrinsicSize.Max) 按内容自适应）→ 每行都不折行。
+                    val noteLines = card.note.split("\n")
+                    val addrList = noteLines.firstOrNull()?.let { isAddrToken(it) } == true
                     Text(
-                        text = card.note,
+                        text = buildAnnotatedString {
+                            noteLines.forEachIndexed { index, line ->
+                                if (index > 0) append('\n')
+                                val isMore = line.startsWith(SessionManager.DIRECT_NOTE_MORE_PREFIX)
+                                val color = if (addrList && !isMore) LinkGreen
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                                withStyle(SpanStyle(color = color)) { append(line) }
+                            }
+                        },
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
-                        color = if (card.note.startsWith("可达")) LinkGreen
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .widthIn(max = DirectNoteMaxWidth)
-                            .padding(start = 22.dp, end = 8.dp, top = 2.dp)
+                        // 最多 DIRECT_NOTE_MAX_ADDRS 行地址 + 1 行「…还有 N 条」
+                        maxLines = SessionManager.DIRECT_NOTE_MAX_ADDRS + 1,
+                        // note 现在是这张卡的最后一行，底部的 4dp 内边距挪到这里（原来由下面那行 footer 提供）
+                        modifier = Modifier.padding(start = 22.dp, end = 8.dp, top = 2.dp, bottom = 4.dp)
                     )
                 }
-                Text(
-                    text = "（direct 只证明地址可达，不建隧道）",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 4.dp)
-                )
             } else {
                 Text(
                     text = "本机绑定 ${formatHostPort(card.localIp, card.localPort)}",
@@ -997,6 +1029,8 @@ private fun UdpSocketCardView(
                     UsageButton("tun", card.peerReplied, card.handedTo == "tun") { onUse("tun") }
                     UsageButton("switch", card.peerReplied, card.handedTo == "switch") { onUse("switch") }
                     UsageButton("wg", card.peerReplied, card.handedTo == "wg") { onUse("wg") }
+                    UsageButton("proxy", card.peerReplied, card.handedTo == "proxy") { onUse("proxy") }
+                    UsageButton("media", card.peerReplied, card.handedTo == "media") { onUse("media") }
                 }
             }
         }
@@ -1076,6 +1110,7 @@ private fun UdpInfoRow(text: String) {
 @Composable
 private fun PeerNode(
     peer: PeerEntry,
+    isConnected: Boolean,
     viewModel: LoginViewModel,
     onDrag: (Offset) -> Unit,
     modifier: Modifier = Modifier
@@ -1111,9 +1146,12 @@ private fun PeerNode(
                 // 这里只有「打洞」行为（direct / upnp / udp / tcp）；
                 // 任何「应用」行为（udptest / tun / switch / wg / 聊天…）都在打洞成功后
                 // 出现在 socket 卡片第 5 行上选，不放在这里。
-                PeerAction("direct") { viewModel.onDirect(peer.username) }
+                // enabled 只按"点了会不会发 WS 消息"给：direct 发 p2pdirect、udp 发 p2pudp，
+                // 没连上时发不出去（sendJson 里 ws 为空）→ 跟连接状态灰；
+                // upnp / tcp 目前只画本地流程预览卡、不发 WS，所以不受连接状态限制。
+                PeerAction("direct", enabled = isConnected) { viewModel.onDirect(peer.username) }
                 PeerAction("upnp") { viewModel.onUpnp(peer.username) }
-                PeerAction("udp") { viewModel.onUdp(peer.username) }
+                PeerAction("udp", enabled = isConnected) { viewModel.onUdp(peer.username) }
                 PeerAction("tcp") { viewModel.onTcp(peer.username) }
             }
         }
@@ -1124,9 +1162,10 @@ private fun PeerNode(
 private val PeerActionWidth = 44.dp
 
 @Composable
-private fun RowScope.PeerAction(text: String, onClick: () -> Unit) {
+private fun RowScope.PeerAction(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         shape = RoundedCornerShape(6.dp),
         contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
         modifier = Modifier
@@ -1151,155 +1190,5 @@ private fun Modifier.dragHandle(onDrag: (Offset) -> Unit): Modifier {
             change.consume()
             current(dragAmount)
         }
-    }
-}
-
-// MARK: - App 内日志面板
-
-@Composable
-private fun AppLogPanel(
-    messages: List<MessageItem>,
-    onClear: () -> Unit,
-    onClose: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val clipboardManager = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
-
-    // 新日志到达时自动滚到底部
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
-        }
-    }
-
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(1500)
-            copied = false
-        }
-    }
-
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 16.dp
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "App 内日志",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (messages.isNotEmpty()) {
-                        TextButton(
-                            onClick = onClear,
-                            modifier = Modifier.height(28.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                        ) {
-                            Text("清空", fontSize = 10.sp)
-                        }
-                    }
-                    TextButton(
-                        onClick = {
-                            val text = messages.joinToString("\n") { "${it.direction.name}: ${it.content}" }
-                            clipboardManager.setText(AnnotatedString(text))
-                            copied = true
-                        },
-                        enabled = messages.isNotEmpty(),
-                        modifier = Modifier.height(28.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                    ) {
-                        Text("📋复制", fontSize = 10.sp)
-                    }
-                    if (copied) {
-                        Text(
-                            text = "已复制",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(start = 4.dp)
-                        )
-                    }
-                    TextButton(
-                        onClick = onClose,
-                        modifier = Modifier.height(28.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                    ) {
-                        Text("✕", fontSize = 12.sp)
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(6.dp))
-
-            if (messages.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "暂无日志",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                SelectionContainer {
-                    LazyColumn(
-                        state = listState,
-                        // 底部留白，避免日志被右下角“日志”按钮挡住
-                        contentPadding = PaddingValues(bottom = 56.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        itemsIndexed(messages, key = { index, _ -> index }) { _, item ->
-                            AppLogRow(item)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AppLogRow(item: MessageItem) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Start
-    ) {
-        Text(
-            text = when (item.direction) {
-                Direction.CLIENT -> "client:"
-                Direction.SERVER -> "server:"
-                Direction.SYSTEM -> "android:"
-                Direction.UDP_SEND -> "→ "
-                Direction.UDP_RECV -> "← "
-            },
-            fontSize = 10.sp,
-            lineHeight = 13.sp,
-            fontFamily = FontFamily.Monospace,
-            color = when (item.direction) {
-                Direction.CLIENT -> MaterialTheme.colorScheme.primary
-                Direction.SERVER -> MaterialTheme.colorScheme.tertiary
-                Direction.SYSTEM -> MaterialTheme.colorScheme.error
-                Direction.UDP_SEND -> MaterialTheme.colorScheme.primary
-                Direction.UDP_RECV -> MaterialTheme.colorScheme.tertiary
-            },
-            modifier = Modifier.width(52.dp)
-        )
-        Text(
-            text = item.content,
-            fontSize = 10.sp,
-            lineHeight = 13.sp,
-            fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }

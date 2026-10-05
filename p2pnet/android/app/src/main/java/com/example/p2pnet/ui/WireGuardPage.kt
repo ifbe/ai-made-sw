@@ -1,10 +1,8 @@
 package com.example.p2pnet.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -13,14 +11,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.p2pnet.net.formatHostPort
 import com.example.p2pnet.ui.login.LoginViewModel
 import java.util.UUID
 
@@ -63,10 +60,117 @@ private val labelWidth = 72.dp
 private val fieldHeight = 32.dp
 private val rowSpacer = 4.dp
 
+/**
+ * WireGuard 页顶部的「实现」配置：三档 + （选「调系统程序」时的）外部 VPN 应用。
+ *
+ * 三档只决定"谁来跑协议栈"：
+ *  自己实现 / 官方库 → 我们自建 VpnService，UDP 出口用已打洞的本地端口；
+ *  调系统程序        → 把参数（listen_port 等）交给外部那个 VPN 服务 app。
+ * 共同点：**UDP 出口必须是打洞时那个本地端口**，否则 NAT 映射就废了。
+ */
+@Composable
+private fun WgImplCard(
+    cfg: WgPageConfig,
+    page: Page.WireGuard,
+    onImplChange: (String) -> Unit,
+    onExtPackageChange: (String) -> Unit,
+    onExtActionChange: (String) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+        Column(
+            modifier = Modifier.padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text("实现", style = MaterialTheme.typography.labelMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                WgPageConfig.IMPL_IDS.forEach { id ->
+                    val on = id == cfg.impl
+                    OutlinedButton(
+                        onClick = { onImplChange(id) },
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (on) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                        ),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = if (on) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        modifier = Modifier.height(26.dp)
+                    ) { Text(WgPageConfig.label(id), fontSize = 10.sp) }
+                }
+            }
+            Text(
+                text = WgPageConfig.describe(cfg.impl),
+                fontSize = 9.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (cfg.impl == WgPageConfig.IMPL_SYSTEM) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+                Text("外部 VPN 应用", style = MaterialTheme.typography.labelMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("包名", fontSize = 11.sp, modifier = Modifier.width(labelWidth))
+                    OutlinedTextField(
+                        value = cfg.extPackage,
+                        onValueChange = onExtPackageChange,
+                        singleLine = true,
+                        placeholder = { Text("留空 = 只按 action 找", fontSize = 10.sp) },
+                        modifier = Modifier.weight(1f).height(fieldHeight),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("Action", fontSize = 11.sp, modifier = Modifier.width(labelWidth))
+                    OutlinedTextField(
+                        value = cfg.extAction,
+                        onValueChange = onExtActionChange,
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).height(fieldHeight),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                    )
+                }
+                Text(
+                    text = "将传给对方：listen_port=" +
+                        (if (page.myPort > 0) page.myPort.toString() else "(还没通路)") +
+                        "  peer=" +
+                        (if (page.peerIp.isNotEmpty()) formatHostPort(page.peerIp, page.peerPort)
+                        else "(还没通路)"),
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "listen_port 必须是打洞时那个本地端口，否则已建立的 NAT 映射会废",
+                    fontSize = 9.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    text = "UDP 出口固定用已打洞的那个本地端口" +
+                        (if (page.myPort > 0) "（本页当前 ${page.myPort}）" else ""),
+                    fontSize = 9.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun WireGuardPage(page: Page.WireGuard, viewModel: LoginViewModel) {
-    val wgLogs by viewModel.wgLogMessages.collectAsState()
-    val logListState = rememberLazyListState()
+    val uiState by viewModel.uiState.collectAsState()
+    val wgConfig = uiState.wgConfig
     var tunnelStatus by remember { mutableStateOf(TunnelStatus.DISCONNECTED) }
     val wgInterface = remember {
         mutableStateOf(
@@ -83,14 +187,6 @@ fun WireGuardPage(page: Page.WireGuard, viewModel: LoginViewModel) {
 
     val isAutoMode = page.peerIp.isNotEmpty()
 
-    // 自动滚动日志
-    LaunchedEffect(wgLogs.size) {
-        if (wgLogs.isEmpty()) return@LaunchedEffect
-        val lastVisible = logListState.layoutInfo.visibleItemsInfo.lastOrNull()
-        val atBottom = lastVisible != null && lastVisible.index >= wgLogs.size - 1
-        if (atBottom) logListState.animateScrollToItem(wgLogs.size - 1)
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -98,6 +194,15 @@ fun WireGuardPage(page: Page.WireGuard, viewModel: LoginViewModel) {
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        // ── 实现方式：决定 socket 卡片上点 wg 之后走哪条路 ──
+        WgImplCard(
+            cfg = wgConfig,
+            page = page,
+            onImplChange = { viewModel.onWgImplChange(it) },
+            onExtPackageChange = { viewModel.onWgExtPackageChange(it) },
+            onExtActionChange = { viewModel.onWgExtActionChange(it) }
+        )
+
         // ── 连接按钮 ──
         Box(modifier = Modifier.fillMaxWidth()) {
             Button(
@@ -249,68 +354,6 @@ fun WireGuardPage(page: Page.WireGuard, viewModel: LoginViewModel) {
             Text("+ 添加 Peer", fontSize = 11.sp)
         }
 
-        // ── 消息历史 ──
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(8.dp)
-        ) {
-            Column(modifier = Modifier.padding(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("消息历史", style = MaterialTheme.typography.labelMedium)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (wgLogs.isNotEmpty()) {
-                            TextButton(
-                                onClick = { viewModel.clearWgLog() },
-                                modifier = Modifier.height(24.dp),
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                            ) {
-                                Text("清空", fontSize = 10.sp)
-                            }
-                        }
-                        val clipboardManager = LocalClipboardManager.current
-                        var copiedVisible by remember { mutableStateOf(false) }
-                        TextButton(
-                            onClick = {
-                                clipboardManager.setText(AnnotatedString(wgLogs.joinToString("\n")))
-                                copiedVisible = true
-                            },
-                            modifier = Modifier.height(24.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                        ) {
-                            Text("📋复制", fontSize = 10.sp)
-                        }
-                        if (copiedVisible) {
-                            LaunchedEffect(Unit) {
-                                kotlinx.coroutines.delay(1500)
-                                copiedVisible = false
-                            }
-                            Text("已复制", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                LazyColumn(
-                    state = logListState,
-                    modifier = Modifier.height(120.dp)
-                ) {
-                    itemsIndexed(wgLogs, key = { index, _ -> index }) { _, msg ->
-                        Text(
-                            text = msg,
-                            fontSize = 7.sp,
-                            lineHeight = 8.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 

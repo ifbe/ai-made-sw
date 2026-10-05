@@ -296,6 +296,33 @@ pending_challenge = None
 pending_pw_hash = None
 session_key = None  # login_ok 后派生，HKDF(pw_hash, info=challenge)
 
+# ====== WS 协议级心跳（保活）======
+# 服务端支持 RFC 6455 ping/pong：客户端发 0x9 ping 帧（**必须掩码**）→ 服务器原样回 0xA pong。
+# 设计要点（GUI 是 in-process 驱动 client.py、自己跑收循环，所以心跳**不能**写在 main() 的
+# select 循环里 —— 那样只有命令行跑才生效）：
+#   · 随连接起：ws_handshake() 成功后自动 start_ws_heartbeat()（两种模式都自动生效）；
+#   · 判活信号只能来自**读方**：谁在读 socket（main() 或 GUI 的引擎循环）谁负责在收到**任何字节**时
+#     调一次 note_ws_rx()；心跳线程只发不读，绝不和读方抢 socket；
+#   · 成功的心跳不打日志，失败只打一行。
+WS_HEARTBEAT_INTERVAL = 20.0   # 每 20s 发一个 ping 帧（三端统一）
+WS_HEARTBEAT_TIMEOUT = 10.0    # 发过 ping 之后这么久没收到任何字节 → 判定连接已死
+WS_HEARTBEAT_PAYLOAD = b'p2pnet'
+
+_hb_lock = threading.Lock()
+_hb_thread = None
+_hb_stop = threading.Event()
+_hb_last_rx = 0.0        # 最后一次"收到任何字节"的时刻（由读方 note_ws_rx() 更新）
+_hb_last_tx = 0.0        # 最后一次"往这条 WS 上发东西"的时刻（含普通消息）
+_hb_ping_sent_at = 0.0   # 最后一次发 ping 帧的时刻
+_hb_count = 0            # 本次连接已经发过几次协议级 ping（日志里的"第 N 次"，随连接重置）
+
+# ====== 应用层 ping（服务端：{"type":"ping","seq":N} → {"type":"pong","seq":N}，不需要登录）======
+# ⚠️ 和这两处是**不同**的东西，别混：
+#   · hole/udp.py 的 UDP ping/pong（洞打通之后在洞上互发，用来探活 + 算 RTT）
+#   · sign_with_session_key(b'ping') 那个 HMAC 签名（p2pudp_hello 的签名用的字面量）
+_app_ping_seq = 0
+_app_ping_sent = {}      # seq → 发出时刻，收到 pong 时算 RTT
+
 
 def hkdf_sha256(ikm, salt, info=b''):
     """HKDF-SHA256(IKM, salt, info) -> 32-byte key"""
@@ -406,7 +433,12 @@ def ws_handshake(sock, host, port):
         if not d:
             return False
         resp += d
-    return b"101 Switching Protocols" in resp
+    ok = b"101 Switching Protocols" in resp
+    if ok:
+        # 连接建立 → 自动起 WS 心跳（main() 和 GUI 都走这里，所以两种模式都生效；
+        # 不需要各调用方自己记着起）
+        start_ws_heartbeat()
+    return ok
 
 
 def ws_encode(payload_bytes):
@@ -459,6 +491,20 @@ def ws_recv():
         payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
     recv_buf = recv_buf[offset+length:]
     if opcode == 0x8:
+        # 对端要关连接：停掉心跳（返回值仍然是 None，不改调用方看到的行为）
+        stop_ws_heartbeat()
+        return None
+    if opcode == 0x9:
+        # 服务端主动 ping：按 RFC 6455 回一个 pong（payload 原样带回）。
+        # ⚠️ 只是"顺手回一下"，**返回值仍然是 None**（调用方只认 0x1 文本帧）。
+        try:
+            if ws_sock is not None:
+                ws_sock.send(ws_pong_frame(payload))
+        except Exception:
+            pass
+        return None
+    if opcode == 0xA:
+        # pong 帧：判活靠 note_ws_rx()（读方的事），这里同样返回 None
         return None
     if opcode == 0x1:
         return payload.decode('utf-8', errors='replace')
@@ -469,7 +515,175 @@ def ws_send(sock, obj):
     data = json.dumps(obj).encode('utf-8')
     framed = ws_encode(data)
     sock.send(framed)
+    _hb_note_tx()
     dbg(f"[SEND] {json.dumps(obj)}")
+
+
+def send_app_ping():
+    """应用层 ping：`{"type":"ping","seq":N}` —— 先 log 出来（App 内日志面板能看到）再发。
+
+    `N` 每次调用 +1，从 1 开始。命令入口：`process_input_line("ping")`。
+    """
+    global _app_ping_seq
+    _app_ping_seq += 1
+    payload = {"type": "ping", "seq": _app_ping_seq}
+    log(f"发出应用层 ping：{json.dumps(payload, ensure_ascii=False)}")
+    _app_ping_sent[_app_ping_seq] = time.time()
+    if ws_sock is None:
+        log("还没连上，发不出去")
+        return
+    try:
+        ws_send(ws_sock, payload)
+    except Exception as e:
+        log(f"发送应用层 ping 失败：{e!r}")
+
+
+# ====== WS 心跳：帧构造 + 判活 + 线程 ======
+
+def ws_ping_frame(payload=WS_HEARTBEAT_PAYLOAD, mask=None):
+    """构一个**带掩码**的 WebSocket ping 帧（RFC 6455：客户端 → 服务器必须掩码）
+
+        byte0 = 0x89        FIN=1 + opcode=0x9
+        byte1 = 0x80 | len  MASK 位 + 长度（payload ≤125 时一字节）
+        然后 4 字节 mask key + 掩码后的 payload
+
+    ⚠️ 不能用 ws_encode()：那只发 0x1 文本帧。
+    `mask` 可注入，方便测试断言确定的字节序列。
+    """
+    if mask is None:
+        mask = secrets.token_bytes(4)
+    if len(mask) != 4:
+        raise ValueError('mask 必须是 4 字节')
+    n = len(payload)
+    if n > 125:
+        raise ValueError('心跳 payload 不该超过 125 字节（不实现扩展长度）')
+    masked = bytes(payload[i] ^ mask[i % 4] for i in range(n))
+    return bytes([0x89, 0x80 | n]) + mask + masked
+
+
+def ws_pong_frame(payload=b'', mask=None):
+    """回一个 pong 帧（0x8A），payload 原样带回 —— 服务端若主动 ping，按规范要回这个"""
+    if mask is None:
+        mask = secrets.token_bytes(4)
+    if len(mask) != 4:
+        raise ValueError('mask 必须是 4 字节')
+    n = len(payload)
+    if n > 125:
+        raise ValueError('pong payload 不该超过 125 字节（不实现扩展长度）')
+    masked = bytes(payload[i] ^ mask[i % 4] for i in range(n))
+    return bytes([0x8A, 0x80 | n]) + mask + masked
+
+
+def ws_heartbeat_log_text(n):
+    """协议级心跳的日志正文（三端必须逐字一致）。
+
+    前缀 `[时间][client]` 由 log() 自己加，这里只给正文：
+        WS 心跳：发出协议级 ping（第 N 次，间隔 20s）
+    """
+    return f'WS 心跳：发出协议级 ping（第 {n} 次，间隔 {int(WS_HEARTBEAT_INTERVAL)}s）'
+
+
+def note_ws_rx():
+    """**读方**每收到任何字节就喊一声（pong 帧也算"有字节"）。
+
+    GUI 的引擎循环、main() 的 select 循环都要调；心跳线程据此判活。
+    """
+    global _hb_last_rx
+    with _hb_lock:
+        _hb_last_rx = time.time()
+
+
+def _hb_note_tx():
+    """往这条 WS 上发过东西了（普通消息也算）—— 免得刚发完就补一个心跳"""
+    global _hb_last_tx
+    with _hb_lock:
+        _hb_last_tx = time.time()
+
+
+def start_ws_heartbeat():
+    """连接建立后自动调用（见 ws_handshake）。幂等：重复调不会起第二个线程。"""
+    global _hb_thread, _hb_last_rx, _hb_last_tx, _hb_ping_sent_at, _hb_count
+    stop_ws_heartbeat()
+    now = time.time()
+    with _hb_lock:
+        _hb_last_rx = now
+        _hb_last_tx = now
+        _hb_ping_sent_at = 0.0
+    _hb_count = 0        # 计数跟连接同生命周期：每次 start（= 每次握手成功）都从 1 重新数
+    _hb_stop.clear()
+    _hb_thread = threading.Thread(target=_ws_heartbeat_loop, name='ws-heartbeat', daemon=True)
+    _hb_thread.start()
+
+
+def stop_ws_heartbeat():
+    """停掉心跳线程（断开/被踢/退出/收到 0x8 都要调）。可从心跳线程自己里调，不会自 join。"""
+    global _hb_thread, _hb_ping_sent_at
+    _hb_stop.set()
+    t = _hb_thread
+    if t is not None and t is not threading.current_thread() and t.is_alive():
+        t.join(timeout=1.0)
+    _hb_thread = None
+    with _hb_lock:
+        _hb_ping_sent_at = 0.0
+
+
+def _ws_heartbeat_loop():
+    """心跳线程：只发不读。判死 → 打一行日志 + connected=False + 自己停掉。
+
+    ⚠️ 这里对 `_hb_last_tx/_hb_ping_sent_at` 有**赋值**，所以必须 global 声明 ——
+    少了它 Python 会把它们当局部变量，线程一起来就 `UnboundLocalError` 静默死掉
+    （这个 bug 是端到端真连服务器时才暴露的：self-test 不会真起线程）。
+    """
+    global connected, _hb_last_tx, _hb_ping_sent_at
+    try:
+        _ws_heartbeat_loop_inner()
+    except Exception as e:
+        # 兜底：心跳线程无论如何不该静默死掉，至少留一行
+        log(f'WS 心跳线程异常退出：{e!r}')
+
+
+def _ws_heartbeat_loop_inner():
+    while not _hb_stop.wait(0.5):
+        if _ws_heartbeat_tick(time.time()) == 'dead':
+            return
+
+
+def _ws_heartbeat_tick(now):
+    """心跳的一轮（抽出来是为了 self-test 能不起真线程就测）：
+
+        返回 'dead'（判死，已停线程）/ 'sent'（这一轮真发了帧）/ 'idle'（只检查，没到时机）
+
+    **只有 'sent' 那一轮会打日志**（"检查但没发"或"跳过"都不打）—— 用户要求。
+    日志打在 `sock.send()` **之前**（"发出协议级 ping 之前打一行"）。
+    """
+    global connected, _hb_last_tx, _hb_ping_sent_at, _hb_count
+    with _hb_lock:
+        last_rx, last_tx, ping_at = _hb_last_rx, _hb_last_tx, _hb_ping_sent_at
+    # 发过 ping 之后，超时窗口内一个字节都没收到 → 判定连接已死
+    if ping_at and (now - last_rx) >= WS_HEARTBEAT_TIMEOUT:
+        log('pong 超时：连接已断开（WS 心跳失败）')
+        connected = False
+        stop_ws_heartbeat()
+        return 'dead'
+    if (now - last_tx) < WS_HEARTBEAT_INTERVAL:
+        return 'idle'          # 没到发送时机：不打日志
+    sock = ws_sock
+    if sock is None:
+        stop_ws_heartbeat()
+        return 'idle'          # 没 socket 可发：也不打
+    _hb_count += 1
+    log(ws_heartbeat_log_text(_hb_count))    # ← 发之前打一行（三端逐字一致）
+    try:
+        sock.send(ws_ping_frame())
+    except Exception as e:
+        log(f'发送 WS 心跳失败：{e!r}')
+        connected = False
+        stop_ws_heartbeat()
+        return 'dead'
+    with _hb_lock:
+        _hb_last_tx = now
+        _hb_ping_sent_at = now
+    return 'sent'
 
 
 # ====== 输入线程（Windows 专用） ======
@@ -967,6 +1181,7 @@ def _wg_admin_add_peer(hole, pubkey_b64):
 
 def close_all_holes(reason=''):
     """关掉所有洞的 socket（退出/被踢/登出）"""
+    stop_ws_heartbeat()   # 走到"清洞"就是连接要结束了，心跳一起停
     with _holes_lock:
         hs = list(holes)
     for h in hs:
@@ -1233,6 +1448,7 @@ def print_help():
     # ---------- 第一段：基础 ----------
     log("── 基础 ──")
     log("  help              - 显示帮助")
+    log("  ping              - 发一条应用层 ping（服务端回 pong，日志里能看到报文和 RTT）")
     log("  quit              - 退出")
     log("  login [<username>] - 登录（不写用户名就交互式问；随后提示输入密码）")
     log("  logout            - 登出（连接不断，可以再 login）")
@@ -1517,6 +1733,14 @@ def handle_server_message(obj):
     global pending_auth, logged_in_user, session_key, ARGS_USER, ARGS_PASS
     global _list_what
 
+    if obj.get('type') == 'pong':
+        # 应用层 ping 的回包（不是 UDP 那套 ping/pong）
+        seq = obj.get('seq')
+        sent = _app_ping_sent.pop(seq, None)
+        rtt = f"（RTT {(time.time() - sent) * 1000:.1f}ms）" if sent else ""
+        log(f"收到应用层 pong：{json.dumps(obj, ensure_ascii=False)}{rtt}")
+        return
+
     if obj.get('type') == 'challenge':
         if pending_auth is None:
             log("收到 challenge，但没有待完成的登录，请先输入 login <username>")
@@ -1595,6 +1819,7 @@ def handle_server_message(obj):
         session_key = None
         log("已登出（连接还在，可以再 login）")
     elif obj.get('type') == 'kicked':
+        stop_ws_heartbeat()
         logged_in_user = None
         session_key = None
         hole_udp.stop_all_hellos()
@@ -1713,6 +1938,9 @@ def process_input_line(line):
         return False
     elif cmd == 'help':
         print_help()
+    elif cmd == 'ping':
+        # 应用层 ping（服务端会回 {"type":"pong","seq":N}，见 handle_server_message）
+        send_app_ping()
     elif cmd == 'login':
         if not arg:
             username = input("用户名: ").strip()
@@ -1983,6 +2211,9 @@ def main():
 
     running = True
     while running:
+        # 心跳线程判定连接已死（connected=False）→ 退出循环，走下面的收尾
+        if not connected:
+            break
         # ---- 接收网络数据 ----
         try:
             data = ws_sock.recv(4096)
@@ -2002,6 +2233,7 @@ def main():
         if not data:
             import time; time.sleep(0.05)
         else:
+            note_ws_rx()      # 读方通知心跳线程："还有字节进来"（pong 帧也算）
             recv_buf += data
 
         # 解码完整帧
@@ -2074,6 +2306,7 @@ def main():
         except ValueError:
             pass
     peers.clear()
+    stop_ws_heartbeat()
     try:
         ws_sock.close()
     except:

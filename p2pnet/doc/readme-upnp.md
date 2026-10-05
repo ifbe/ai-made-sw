@@ -13,7 +13,7 @@
 | 项 | 状态 |
 |---|---|
 | `upnp` 命令 | 存在（`client.py` 里有 dispatch），但只**打印三行说明** |
-| [client/hole/upnp.py](client/hole/upnp.py) | 14 行占位文件：一个 `run()`，三条 `core.log()`；没有发现、没有映射、没有端口 |
+| [client/hole/upnp.py](../client/hole/upnp.py) | 14 行占位文件：一个 `run()`，三条 `core.log()`；没有发现、没有映射、没有端口 |
 | `onpeerwantupnp [auto\|none]` | 状态位 `ON_PEER_WANT['upnp']` 能读能写，但**没有任何消费者** |
 | 服务端 | 没有 upnp 相关消息类型（`handle_message` 里没有分支） |
 | 参数 | `upnp` 不带参数；`run()` 也不接参数（后面给什么都忽略） |
@@ -115,10 +115,10 @@ onpeerwantupnp = auto
 
 | 文件 | 角色 |
 |---|---|
-| [client/hole/upnp.py](client/hole/upnp.py) | 14 行占位（`run()` 三条日志） |
-| [client/client.py](client/client.py) | `upnp` 命令 dispatch（第 1777 行）、`ON_PEER_WANT['upnp']`、`onpeerwantupnp` 的设置与提示 |
-| [client/hole/core.py](client/hole/core.py) | `get_onpeerwant` 钩子（注释里列了 `upnp`，但没人调） |
+| [client/hole/upnp.py](../client/hole/upnp.py) | 14 行占位（`run()` 三条日志） |
+| [client/client.py](../client/client.py) | `upnp` 命令 dispatch（第 1777 行）、`ON_PEER_WANT['upnp']`、`onpeerwantupnp` 的设置与提示 |
+| [client/hole/core.py](../client/hole/core.py) | `get_onpeerwant` 钩子（注释里列了 `upnp`，但没人调） |
 
 ---
 
-回到总览：[readme.md](readme.md)
+回到总览：[readme.md](../readme.md)

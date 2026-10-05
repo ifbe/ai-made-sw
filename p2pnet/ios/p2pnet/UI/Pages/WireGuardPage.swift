@@ -1,5 +1,117 @@
 import SwiftUI
 
+// MARK: - 「实现」配置卡
+
+/// WireGuard 页顶部的「实现」配置（对齐 Android `MainPage.kt`/`WireGuardPage.kt` 的 `WgImplCard`）。
+///
+/// 三档只决定「谁来跑协议栈」：
+///  自己实现 / 官方库 → 我们自建 VpnService（iOS 上是 NEPacketTunnelProvider，本轮只留 TODO）；
+///  调系统程序        → 把参数交给外部那个真正的 VPN 服务 app（iOS 用自定义 URL scheme）。
+/// 共同点：**UDP 出口必须是打洞时那个本地端口**，否则 NAT 映射就废了。
+private struct WgImplCard: View {
+    let page: Page
+    @ObservedObject var viewModel: LoginViewModel
+
+    private let labelWidth: CGFloat = 64
+    private let fieldHeight: CGFloat = 28
+
+    private var cfg: WgPageConfig { viewModel.uiState.wgConfig }
+
+    private var pagePeer: String {
+        if case .wireGuard(_, _, _, let peerIp, let peerPort) = page, !peerIp.isEmpty {
+            return formatHostPort(peerIp, peerPort)
+        }
+        return "(还没通路)"
+    }
+
+    private var pageMyPort: Int {
+        if case .wireGuard(_, _, let port, _, _) = page { return port }
+        return 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("实现")
+                .font(.footnote)
+
+            HStack(spacing: 4) {
+                ForEach(WgPageConfig.implIds, id: \.self) { id in
+                    let selected = cfg.impl == id
+                    Button(action: { viewModel.onWgImplChange(id) }) {
+                        Text(WgPageConfig.label(id))
+                            .font(.system(size: 10))
+                            .foregroundColor(selected ? Color(hex: 0x6650A4) : .secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6).stroke(
+                                    selected ? Color(hex: 0x6650A4) : Color.secondary.opacity(0.5),
+                                    lineWidth: 1
+                                )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text(WgPageConfig.describe(cfg.impl))
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+
+            if cfg.impl == WgPageConfig.implSystem {
+                Divider().padding(.vertical, 2)
+                Text("外部 VPN 应用")
+                    .font(.footnote)
+
+                // iOS 侧 extPackage 当 URL scheme 用（Android 那边是包名，JSON 键保持一致便于对照）
+                HStack(spacing: 6) {
+                    Text("scheme")
+                        .font(.system(size: 11))
+                        .frame(width: labelWidth, alignment: .leading)
+                    TextField("留空 = p2pnetvpn", text: Binding(
+                        get: { cfg.extPackage },
+                        set: { viewModel.onWgExtPackageChange($0) }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .frame(height: fieldHeight)
+                }
+
+                // extAction 在 iOS 上只保留作对照，拼 URL 时 host 固定用 "start"
+                HStack(spacing: 6) {
+                    Text("action")
+                        .font(.system(size: 11))
+                        .frame(width: labelWidth, alignment: .leading)
+                    TextField("仅在 Android 用", text: Binding(
+                        get: { cfg.extAction },
+                        set: { viewModel.onWgExtActionChange($0) }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .frame(height: fieldHeight)
+                }
+
+                Text("将传给对方：listen_port=\(pageMyPort > 0 ? String(pageMyPort) : "(还没通路)")  peer=\(pagePeer)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+
+                Text("listen_port 必须是打洞时那个本地端口，否则已建立的 NAT 映射会废")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            } else {
+                Text("UDP 出口固定用已打洞的那个本地端口" + (pageMyPort > 0 ? "（本页当前 \(pageMyPort)）" : ""))
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color(.systemBackground))
+        .cornerRadius(8)
+        .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
+    }
+}
+
 struct WireGuardPage: View {
     let page: Page
     @ObservedObject var viewModel: LoginViewModel
@@ -27,6 +139,9 @@ struct WireGuardPage: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 6) {
+                // 「实现」三档（决定 socket 卡片上点 wg 之后走哪条路）
+                WgImplCard(page: page, viewModel: viewModel)
+
                 // Connection button
                 connectionButton
 
@@ -65,17 +180,14 @@ struct WireGuardPage: View {
                     .buttonStyle(.bordered)
                 }
 
-                // Message history
-                messageHistoryCard
+                // 消息历史卡已删除：wg 的日志现在统一进「App 内日志」
+                // （右下角「日志」按钮，应用级浮层，见 UI/Components/AppLogOverlay.swift）
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 6)
         }
         .onAppear {
             initInterface()
-        }
-        .onChange(of: viewModel.wgLogMessages.count) { _ in
-            // auto-scroll handled by LazyVStack
         }
     }
 
@@ -195,65 +307,6 @@ struct WireGuardPage: View {
         .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
     }
 
-    // MARK: - Message History Card
-
-    private var messageHistoryCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("消息历史")
-                    .font(.footnote)
-                    .fontWeight(.medium)
-
-                Spacer()
-
-                if !viewModel.wgLogMessages.isEmpty {
-                    Button("清空") {
-                        viewModel.clearWgLog()
-                    }
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                }
-
-                Button(action: {
-                    UIPasteboard.general.string = viewModel.wgLogMessages.joined(separator: "\n")
-                    showingCopied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        showingCopied = false
-                    }
-                }) {
-                    Text("📋复制")
-                        .font(.system(size: 10))
-                }
-                .foregroundColor(.secondary)
-
-                if showingCopied {
-                    Text("已复制")
-                        .font(.system(size: 10))
-                        .foregroundColor(.blue)
-                }
-            }
-
-            Divider()
-                .padding(.vertical, 4)
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(viewModel.wgLogMessages.enumerated()), id: \.offset) { _, msg in
-                        Text(msg)
-                            .font(.system(size: 7, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .frame(height: 120)
-        }
-        .padding(8)
-        .background(Color(.systemBackground))
-        .cornerRadius(8)
-        .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
-    }
-
-    @State private var showingCopied = false
 }
 
 // MARK: - PeerCard
