@@ -56,10 +56,6 @@ struct MediaPage: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("收流（对端 → 本机）")
                 .font(.footnote)
-            Text("对端推过来的流在这里落地并播放（对应 media.py 的 RTMP 输入）")
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-
             MdChoiceRow(
                 label: "协议",
                 ids: MediaPageConfig.protoIds,
@@ -97,10 +93,6 @@ struct MediaPage: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("推流（本机 → 对端）")
                 .font(.footnote)
-            Text("本机采集 → 编码封装 → 推给对端（对应 media.py 的 RTMP 输出）")
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-
             MdChoiceRow(
                 label: "协议",
                 ids: MediaPageConfig.protoIds,
@@ -133,10 +125,6 @@ struct MediaPage: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("拉起应用")
                 .font(.footnote)
-            Text("我们只负责打洞：洞打通后，把这条洞的参数交给聊天程序，由它收发流")
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-
             // iOS 侧 appPackage 当 URL scheme 用（Android 那边是包名，JSON 键保持一致便于对照）
             MdFieldRow(
                 label: "scheme",
@@ -151,18 +139,21 @@ struct MediaPage: View {
                 onChange: { viewModel.onMediaAppActionChange($0) }
             )
 
-            Text("将传给聊天程序（全部由打洞结果带出）：")
+            Text("将传给聊天程序：")
                 .font(.system(size: 9))
                 .foregroundColor(.secondary)
             Text(previewText)
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundColor(.secondary)
 
-            Text(channelText)
-                .font(.system(size: 9))
-                .foregroundColor(channels.count > 1 ? .red : .secondary)
-                .lineLimit(2)
-                .truncationMode(.tail)
+            // 空态不渲染这一行（没有通道时不再挂一句说明；只读地址框会显示"打洞后自动带出"）
+            if !channels.isEmpty {
+                Text(channelText)
+                    .font(.system(size: 9))
+                    .foregroundColor(channels.count > 1 ? .red : .secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
 
             Button(action: { viewModel.onMediaLaunchApp() }) {
                 Text(ch != nil ? "拉起应用" : "打洞后才能拉起")
@@ -187,10 +178,8 @@ struct MediaPage: View {
             + "   recv=\(cfg.recvProto)  send=\(cfg.sendProto)  capture=\(cfg.capture)"
     }
 
+    /// 只在**有通道**时用（空态整行不渲染，见调用处）
     private var channelText: String {
-        if channels.isEmpty {
-            return "还没打洞：去主页 socket 卡片第 5 行点 media，打通后这里自动填上"
-        }
         let list = channels.map { "\($0.target)(洞\($0.localPort))" }.joined(separator: "、")
         return "通道：\(list)" + (channels.count > 1 ? "  ⚠️ 多媒体聊天一般只要一条" : "")
     }

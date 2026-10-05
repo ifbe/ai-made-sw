@@ -75,6 +75,15 @@ class WsClient(
          * 不建 socket、不建隧道。
          */
         fun onP2pDirect(from: String, ipv4: List<String>, ipv6: List<String>, isReply: Boolean) {}
+
+        /**
+         * 服务器把人踢下线（`{"type":"kicked","message":...}`，例如同账号又在别处登录）。
+         *
+         * ⚠️ **这不是"断开"**：服务器只取消登录状态，**socket 不关、连接仍活着、仍可收发**
+         * （再发消息会回 `not logged in`）。所以上层收到它**不要**关连接、**不要**停心跳，
+         * 只需：① 取消登录状态；② 禁止自动重新登录（四端统一规则②）。
+         */
+        fun onKicked(message: String) {}
     }
 
     /** UDP socket 卡片的五个步骤 */
@@ -95,6 +104,13 @@ class WsClient(
         // 连续收不到 pong 时 OkHttp 会把这条连接判死并回调 onFailure（见下面的处理）。
         .pingInterval(PING_INTERVAL_SECONDS.toLong(), TimeUnit.SECONDS)
         .build()
+
+    /**
+     * 连接是否仍然存活。
+     * 只有 `onOpen` 之后到失败/关闭/主动断开之前为 true ——
+     * 安卓端"上一轮心跳的 pong 已到"这条**推断**就靠它当依据（见 `WsHeartbeatLog`）。
+     */
+    fun isOpen(): Boolean = wsOpen
 
     private var ws: WebSocket? = null
     private var wsOpen = false
@@ -230,6 +246,17 @@ class WsClient(
                     sessionKey = hkdfSha256(skIkm, skIkm, hexDecode(pendingChallenge))
                     android.util.Log.e("UDP", "session_key derived: ${sessionKey?.let { binasciiHexlify(it) }}")
                     listener?.onLoginSuccess(confirmedUsername)
+                }
+                "kicked" -> {
+                    // 服务器把人踢下线（同账号在别处登录）：**只取消登录状态，连接不断**。
+                    // 所以这里只清"登录会话"（session_key 与登录过程的临时值），
+                    // **不关连接、不动 wsOpen**（连接还活着、心跳继续、心跳日志也继续）。
+                    val message = obj.optString("message", "")
+                    sessionKey = null
+                    pendingSalt = ""
+                    pendingChallenge = ""
+                    pendingPwHash = ""
+                    listener?.onKicked(message)
                 }
             }
         } catch (e: Exception) {

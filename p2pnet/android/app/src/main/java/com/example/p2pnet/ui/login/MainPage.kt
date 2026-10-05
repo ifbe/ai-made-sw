@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -80,8 +81,14 @@ private val PeerActionHeight = 32.dp
 /** 节点里“名字(ip:port)”那一行（拖动把手）的中心，距卡片顶部的距离，连线连到这里 */
 private val PeerTitleCenterY = 10.dp
 
-/** “我”卡片贴底时的空隙（按要求边距为 0） */
-private val MeCardBottomMargin = 0.dp
+/** “我”卡片四周留的空隙（上下限都用它；值按要求为 0 = 贴住自由层边缘） */
+private val MeCardMargin = 0.dp
+
+/** 卡片与服务器卡片之间留的空隙（避让用） */
+private val FreeLayerGap = 6.dp
+
+/** 服务器卡片两侧的水平内边距（竖屏保持原来那 4dp） */
+private val ConnectionCardHPadding = 4.dp
 
 /** 其他人卡片默认位置的 y 取值范围（相对可用高度），只落在上半区域 */
 private const val PeerYRange = 0.5f
@@ -142,31 +149,17 @@ fun MainPage(viewModel: LoginViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     val focusManager = LocalFocusManager.current
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // ── Block 1: connection（内容不变，只调整了外边距）──
-            ConnectionCard(
-                uiState = uiState,
-                viewModel = viewModel,
-                focusManager = focusManager,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // 顶部不留额外外边距：避让状态栏由 Scaffold 的 inset 负责，卡片紧贴状态栏下沿
-                    .padding(start = 4.dp, end = 4.dp)
-            )
+    // ── 自由层 = **整个内容区**：服务器卡片也画在它里面（顶部对齐、不可拖动），
+    //    于是"自由层正中"就是整个内容区的正中（= 用户要的"屏幕中心"）──
+    FreeLayer(
+        uiState = uiState,
+        viewModel = viewModel,
+        focusManager = focusManager,
+        showLink = uiState.isConnected,
+        modifier = Modifier.fillMaxSize()
+    )
 
-            // ── 自由层：连接线 + “我”卡片 + 随机分布的其他人节点（都可拖动）──
-            FreeLayer(
-                uiState = uiState,
-                viewModel = viewModel,
-                focusManager = focusManager,
-                showLink = uiState.isConnected,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            )
-
-            /* ── Block 3: peer（按要求注释掉）
+    /* ── Block 3: peer（按要求注释掉）
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
@@ -226,8 +219,6 @@ fun MainPage(viewModel: LoginViewModel) {
                 }
             }
             */
-        }
-    }
 }
 
 // MARK: - Block 1: 服务器卡片（内容不变）
@@ -684,12 +675,20 @@ private fun FreeLayer(
         val density = LocalDensity.current
         val areaWpx = with(density) { areaW.toPx() }
         val areaHpx = with(density) { areaH.toPx() }
+        val gapPx = with(density) { FreeLayerGap.toPx() }
+
+        // 服务器卡片的实测左沿/右沿/下沿（相对自由层左上角，px）：其它卡片的避让都用它
+        var serverLeftPx by remember { mutableStateOf(0f) }
+        var serverRightPx by remember { mutableStateOf(0f) }
+        var serverBottomPx by remember { mutableStateOf(0f) }
+        // 宽度占自由层的比例：**每次尺寸变化都重算**（BoxWithConstraints 会在窗口尺寸变化时重组）
+        val serverWidthFraction = serverCardWidthFraction(areaWpx, areaHpx)
         val peerWpx = with(density) { PeerNodeWidth.toPx() }
         val peerHpx = with(density) { PeerNodeHeight.toPx() }
         val udpSocketWpx = with(density) { UdpSocketCardWidth.toPx() }
         val udpSocketHpx = with(density) { UdpSocketCardHeight.toPx() }
         val udpSocketGapPx = with(density) { UdpSocketGap.toPx() }
-        val meMarginPx = with(density) { MeCardBottomMargin.toPx() }
+        val meMarginPx = with(density) { MeCardMargin.toPx() }
         val peerTitleCenterPx = with(density) { PeerTitleCenterY.toPx() }
 
         /** 实测不到的宽度先用常量估算 */
@@ -697,12 +696,26 @@ private fun FreeLayer(
         fun udpSocketWidthPx(id: Long): Float = udpSocketSizes[id]?.width?.toFloat() ?: udpSocketWpx
         fun udpSocketHeightPx(id: Long): Float = udpSocketSizes[id]?.height?.toFloat() ?: udpSocketHpx
 
-        /** 其他人节点没被拖动时的随机位置 */
+        /** 其他人节点没被拖动时的随机位置（随机值不变，只是再"推离"服务器卡片） */
         fun peerBase(name: String): Offset {
             val rel = positions[name] ?: return Offset.Zero
             val maxX = (areaWpx - peerWidthPx(name)).coerceAtLeast(0f)
             val maxY = (areaHpx - peerHpx).coerceAtLeast(0f)
-            return Offset(maxX * rel.first, maxY * rel.second)
+            // 随机落点仍按"上半区"取，但要保证不盖住服务器卡片：
+            // 竖屏 → 被压到服务器卡片下方；横屏 → 落在左右空白带里的可以保持在上半区
+            val (bx, by) = avoidServerRectPx(
+                x = maxX * rel.first,
+                y = maxY * rel.second,
+                cardWidthPx = peerWidthPx(name),
+                cardHeightPx = peerHpx,
+                areaWidthPx = areaWpx,
+                areaHeightPx = areaHpx,
+                serverLeftPx = serverLeftPx,
+                serverRightPx = serverRightPx,
+                serverBottomPx = serverBottomPx,
+                gapPx = gapPx
+            )
+            return Offset(bx, by)
         }
 
         /** 其他人节点当前左上角（随机位置 + 拖动位移） */
@@ -743,15 +756,58 @@ private fun FreeLayer(
         fun udpSocketTopLeft(card: UdpSessionInfo): Offset =
             udpSocketBase(card) + (udpSocketDrags[card.id] ?: Offset.Zero)
 
-        /** “我”卡片默认贴底居中，这里算它拖动后中心点（给连线用） */
-        fun meCenter(): Offset = Offset(
-            areaWpx / 2f + meDrag.x,
-            areaHpx - meMarginPx - meCardHeight / 2f + meDrag.y
+        // ──「我」卡片：默认 = 自由层正中（offset 0 = 正中）──
+        // 可拖动范围先取"自由层内的对称范围"，再按 A3 避开服务器卡片（顶边不得进到它下面之上）。
+        // 冲突优先级：**限位为准** —— 横屏窗口很矮、"正中"会压住服务器卡片时，卡片被推到它下方。
+        val meCenteredTopPx = (areaHpx - meCardHeight) / 2f
+        val meMaxDx = ((areaWpx - meCardWidth) / 2f).coerceAtLeast(0f)
+        val meLeftPx = meMaxDx   // 卡片水平居中 ⇒ 左边界就是 maxDx
+        val meMinTopPx = if (isBesideServerCardPx(meLeftPx, meCardWidth, serverLeftPx, serverRightPx, gapPx)) {
+            gapPx
+        } else {
+            serverBottomPx + gapPx
+        }
+        val meDragRange = clampRangeOverServerPx(
+            base = meCardDragRangePx(areaHpx, meCardHeight, meMarginPx),
+            centeredTopPx = meCenteredTopPx,
+            minTopPx = meMinTopPx
         )
+
+        /** 实际生效的偏移：把拖动值夹进合法范围（窗口比例/服务器卡片高度变了也自动回到合法位置） */
+        fun meEffectiveDrag(): Offset = Offset(
+            meDrag.x.coerceIn(-meMaxDx, meMaxDx),
+            meDrag.y.coerceIn(meDragRange.start, meDragRange.endInclusive)
+        )
+
+        /** 「我」卡片当前的中心点（给连线用）：默认在自由层正中，拖动/被限位后跟着走 */
+        fun meCenter(): Offset {
+            val d = meEffectiveDrag()
+            return Offset(areaWpx / 2f + d.x, meCenteredTopPx + meCardHeight / 2f + d.y)
+        }
 
         val branchColor = LinkGreen   // 其他人的连线：绿色实线
         // 中间横向分界线的颜色（上面 = 服务器 / 别人的机器，下面 = 自己的端口和工具）
         val dividerColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+
+        // ── 服务器卡片：自由层里**顶部对齐、水平居中、不可拖动**；宽度随窗口比例实时变化 ──
+        //    竖屏（高 > 宽）= 满宽；横屏（宽 > 高）= 居中占一半（左右各 1/4 空白带留给卡片）
+        ConnectionCard(
+            uiState = uiState,
+            viewModel = viewModel,
+            focusManager = focusManager,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth(serverWidthFraction)
+                // 顶部不留额外外边距：避让状态栏由 Scaffold 的 inset 负责
+                .padding(horizontal = ConnectionCardHPadding)
+                .onGloballyPositioned { coords ->
+                    // 实测矩形（相对自由层左上角；padding 已算进去）：给"不许盖住服务器卡片"的避让用
+                    val pos = coords.positionInParent()
+                    serverLeftPx = pos.x
+                    serverRightPx = pos.x + coords.size.width
+                    serverBottomPx = pos.y + coords.size.height
+                }
+        )
 
         Canvas(modifier = Modifier.fillMaxSize()) {
             val strokePx = LinkStrokeWidth.toPx()
@@ -759,7 +815,8 @@ private fun FreeLayer(
                 floatArrayOf(LinkDashOn.toPx(), LinkDashOff.toPx()),
                 0f
             )
-            val topY = 0f   // 服务器卡片底边 = 自由层顶边
+            val topY = serverBottomPx   // 连线从服务器卡片下沿开始（卡片现在画在自由层里）
+            val linksReady = serverBottomPx > 0f   // 服务器卡片还没量到时不画连线（避免第一帧从 y=0 开始）
 
             // 屏幕正中间的横向分界线，从左到右贯通
             // y 用「窗口顶 + 窗口高一半」换算到自由层坐标系，保证落在屏幕几何中心
@@ -776,7 +833,7 @@ private fun FreeLayer(
 
             // 服务器 ↔ 我：起点 x = “我”卡片中心 x，垂直线
             // 已连接未登录 → 白色虚线；登录后 → 绿色实线（不加粗）
-            if (showLink && meCardHeight > 0f) {
+            if (showLink && meCardHeight > 0f && linksReady) {
                 val center = meCenter()
                 drawLine(
                     color = if (uiState.isLoggedIn) LinkGreen else Color.White,
@@ -789,7 +846,7 @@ private fun FreeLayer(
             }
 
             // 服务器 ↔ 其他每个人：起点 x = 该卡片中心 x，绿色实线
-            uiState.peers.forEach { peer ->
+            if (linksReady) uiState.peers.forEach { peer ->
                 val topLeft = peerTopLeft(peer.username)
                 val centerX = topLeft.x + peerWidthPx(peer.username) / 2f
                 drawLine(
@@ -816,25 +873,24 @@ private fun FreeLayer(
             }
         }
 
-        // ── “我”卡片：默认贴底居中（x 占 25%~75%），拖标题行可移动 ──
+        // ── “我”卡片：默认在自由层（= 整个内容区）**正中**，拖标题行可移动 ──
         MeCard(
             uiState = uiState,
             viewModel = viewModel,
             focusManager = focusManager,
             onDrag = { delta ->
-                val maxDx = ((areaWpx - meCardWidth) / 2f).coerceAtLeast(0f)
-                // 纵向上下限：上到自由层顶部（贴住服务器卡片下沿），下到贴底
-                val hiY = meMarginPx
-                val loY = (-(areaHpx - meCardHeight - meMarginPx)).coerceAtMost(hiY)
                 meDrag = Offset(
-                    (meDrag.x + delta.x).coerceIn(-maxDx, maxDx),
-                    (meDrag.y + delta.y).coerceIn(loY, hiY)
+                    (meDrag.x + delta.x).coerceIn(-meMaxDx, meMaxDx),
+                    (meDrag.y + delta.y).coerceIn(meDragRange.start, meDragRange.endInclusive)
                 )
             },
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = MeCardBottomMargin)
-                .offset { IntOffset(meDrag.x.roundToInt(), meDrag.y.roundToInt()) }
+                .align(Alignment.Center)
+                .offset {
+                    // 渲染也走"实际生效的偏移"：默认正中，被服务器卡片限位时自动落到合法位置
+                    val d = meEffectiveDrag()
+                    IntOffset(d.x.roundToInt(), d.y.roundToInt())
+                }
                 .onSizeChanged {
                     meCardHeight = it.height.toFloat()
                     meCardWidth = it.width.toFloat()
@@ -850,13 +906,21 @@ private fun FreeLayer(
                 viewModel = viewModel,
                 onDrag = { delta ->
                     val base = peerBase(peer.username)
-                    val maxX = (areaWpx - peerWidthPx(peer.username)).coerceAtLeast(0f)
-                    val maxY = (areaHpx - peerHpx).coerceAtLeast(0f)
                     val cur = peerDrags[peer.username] ?: Offset.Zero
-                    peerDrags[peer.username] = Offset(
-                        (cur.x + delta.x).coerceIn(-base.x, maxX - base.x),
-                        (cur.y + delta.y).coerceIn(-base.y, maxY - base.y)
+                    // 先把目标左上角按"自由层 + 不许盖住服务器卡片"夹好，再换算回相对位移
+                    val (ax, ay) = avoidServerRectPx(
+                        x = base.x + cur.x + delta.x,
+                        y = base.y + cur.y + delta.y,
+                        cardWidthPx = peerWidthPx(peer.username),
+                        cardHeightPx = peerHpx,
+                        areaWidthPx = areaWpx,
+                        areaHeightPx = areaHpx,
+                        serverLeftPx = serverLeftPx,
+                        serverRightPx = serverRightPx,
+                        serverBottomPx = serverBottomPx,
+                        gapPx = gapPx
                     )
+                    peerDrags[peer.username] = Offset(ax - base.x, ay - base.y)
                 },
                 modifier = Modifier
                     .offset {
@@ -882,13 +946,20 @@ private fun FreeLayer(
                 },
                 onDrag = { delta ->
                     val base = udpSocketBase(card)
-                    val maxX = (areaWpx - udpSocketWidthPx(card.id)).coerceAtLeast(0f)
-                    val maxY = (areaHpx - udpSocketHeightPx(card.id)).coerceAtLeast(0f)
                     val cur = udpSocketDrags[card.id] ?: Offset.Zero
-                    udpSocketDrags[card.id] = Offset(
-                        (cur.x + delta.x).coerceIn(-base.x, maxX - base.x),
-                        (cur.y + delta.y).coerceIn(-base.y, maxY - base.y)
+                    val (ax, ay) = avoidServerRectPx(
+                        x = base.x + cur.x + delta.x,
+                        y = base.y + cur.y + delta.y,
+                        cardWidthPx = udpSocketWidthPx(card.id),
+                        cardHeightPx = udpSocketHeightPx(card.id),
+                        areaWidthPx = areaWpx,
+                        areaHeightPx = areaHpx,
+                        serverLeftPx = serverLeftPx,
+                        serverRightPx = serverRightPx,
+                        serverBottomPx = serverBottomPx,
+                        gapPx = gapPx
                     )
+                    udpSocketDrags[card.id] = Offset(ax - base.x, ay - base.y)
                 },
                 onUse = { usageId -> viewModel.useUdpSocket(card.id, usageId) },
                 modifier = Modifier
@@ -955,18 +1026,12 @@ private fun UdpSocketCardView(
                 }
             }
             if (isPreview) {
-                // tcp / upnp：只显示计划步骤（真实逻辑还没实现，所以全是 ○）
+                // tcp / upnp：只显示计划步骤（真实逻辑还没实现，所以全是 ○）；
+                // "这是流程预览"由卡片标题的 "${card.kind} 流程预览" 表达，这里不再重复一行说明
                 card.plan.forEach { step ->
                     UdpStepRow(step.text, step.done)
                     if (step.detail.isNotEmpty()) UdpInfoRow(step.detail)
                 }
-                Text(
-                    text = "（仅流程预览，尚未实现真实握手）",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 4.dp)
-                )
             } else if (!hasSocket) {
                 // direct：没有 socket，三步进度是实时打勾的，末行是结果
                 card.plan.forEach { step ->

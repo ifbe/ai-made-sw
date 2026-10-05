@@ -14,6 +14,10 @@ class P2pRepository {
     // MARK: - Stored callbacks (renamed to avoid conflict with protocol methods)
     var onLogMessage: ((String) -> Void)?
     var onConnectedHandler: (() -> Void)?
+    /// 自动重连成功（连接重新打开）——上层据此决定要不要用原凭据重新登录
+    var onAutoReconnectedHandler: (() -> Void)?
+    /// 被服务器明确踢下线（收到 `kicked`）
+    var onKickedHandler: ((String) -> Void)?
     var onDisconnectedHandler: (() -> Void)?
     var onError: ((String) -> Void)?
 
@@ -68,7 +72,9 @@ class P2pRepository {
             onLoginFailed: { [weak self] in self?.loginFailedHandler?($0) },
             onError: { _ in },
             onDisconnected: { [weak self] in self?.onDisconnectedHandler?() },
-            onConnected: { [weak self] in self?.onConnectedHandler?() }
+            onConnected: { [weak self] in self?.onConnectedHandler?() },
+            onAutoReconnected: { [weak self] in self?.onAutoReconnectedHandler?() },
+            onKicked: { [weak self] in self?.onKickedHandler?($0) }
         )
         print("[P2pRepo] setupConnectionCallbacks: wrapper created, stored callbacks registered")
         _connectionListener = wrapper
@@ -174,6 +180,8 @@ class WsClientListenerWrapper: WsClientListener {
     let onError: (String) -> Void
     let onDisconnectedHandler: () -> Void
     let onConnectedHandler: (() -> Void)?   // 新增
+    let onAutoReconnectedHandler: () -> Void
+    let onKickedHandler: ((String) -> Void)?
 
     init(
         onMessage: @escaping (String) -> Void,
@@ -190,7 +198,9 @@ class WsClientListenerWrapper: WsClientListener {
         onLoginFailed: @escaping (String) -> Void,
         onError: @escaping (String) -> Void,
         onDisconnected: @escaping () -> Void,
-        onConnected: (() -> Void)? = nil    // 新增参数，默认为 nil
+        onConnected: (() -> Void)? = nil,    // 新增参数，默认为 nil
+        onAutoReconnected: @escaping () -> Void = {},
+        onKicked: ((String) -> Void)? = nil
     ) {
         self.onMessage = onMessage
         self.onRecv = onRecv
@@ -207,8 +217,14 @@ class WsClientListenerWrapper: WsClientListener {
         self.onError = onError
         self.onDisconnectedHandler = onDisconnected
         self.onConnectedHandler = onConnected  // 保存回调
+        self.onAutoReconnectedHandler = onAutoReconnected
+        self.onKickedHandler = onKicked
     }
     func onMessage(_ text: String) { onMessage(text) }
+
+    func onAutoReconnected() { onAutoReconnectedHandler() }
+
+    func onKicked(_ message: String) { onKickedHandler?(message) }
     func onConnected() { onConnectedHandler?() }
     func onDisconnected() { onDisconnectedHandler() }
     func onRecv(_ text: String) { onRecv(text) }

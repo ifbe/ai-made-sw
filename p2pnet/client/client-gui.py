@@ -95,6 +95,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QAbstractButton,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -110,6 +111,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 # ==========================================================================================
@@ -177,6 +179,7 @@ C_TEXT_DIM = "#8a8a8a"        # 次要文字 / 说明
 C_PLACEHOLDER = "#6a6a6a"     # 输入框占位符
 C_WARN = "#e0b341"            # 提示/注意（暗黄，白底上的红字在暗色下不可读）
 C_DISABLED_TEXT = "#5a5a5a"   # 禁用态文字
+C_DISABLED_BG = "#3a3a3a"      # 禁用态的开关轨道（比 C_BORDER 更暗、比正常蓝更灰）
 C_PRESSED = "#161616"         # 按钮按下时的填充
 C_HOVER_BG = "#141414"        # 悬停时的填充（很淡，主要靠描边变亮）
 
@@ -311,17 +314,68 @@ def card(parent: QWidget, title: str) -> tuple[QFrame, QVBoxLayout]:
     frame.setObjectName("card")
     outer = QVBoxLayout(frame)
     outer.setContentsMargins(12, 10, 12, 12)
-    outer.setSpacing(8)
+    outer.setSpacing(6)
 
-    lab = QLabel(title, frame)
-    lab.setObjectName("cardTitle")
-    outer.addWidget(lab)
+    if title:                      # 空标题 = 不渲染标题行（标题文字由卡片首行承担）
+        lab = QLabel(title, frame)
+        lab.setObjectName("cardTitle")
+        outer.addWidget(lab)
 
     body = QVBoxLayout()
     body.setContentsMargins(0, 0, 0, 0)
-    body.setSpacing(6)
+    body.setSpacing(2)          # 行与行几乎贴住（用户要求"没有间距或很小"）
     outer.addLayout(body)
     return frame, body
+
+
+def row_fixed(row: QWidget) -> QWidget:
+    """
+    行容器一律**不许纵向长高**。
+
+    为什么：行容器是裸 QWidget，默认纵向策略是 Preferred —— 父布局（卡片的 body）**没有尾部弹簧**时
+    Qt 会把"卡片多余的高度"平均摊给每一行：窗口 1080×720 时每行被拉到 107px、1400 高时 243px，
+    视觉上就是"每一行间隔特别大"（用户实机报的 bug）。设成 Fixed 后行高永远 = `sizeHint().height()`。
+    （和 `card_head_row` 里固定 CARD_HEAD_H 是同一类问题的两处防线。）
+    """
+    row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    return row
+
+
+class ToggleSwitch(QAbstractButton):
+    """
+    小开关（自绘：圆角轨道 + 圆钮），纯 PyQt6 绘制、**不引新依赖**。
+
+    为什么不用 `QCheckBox`：勾选框在深色卡片上只是一个小方块，看不出"开 / 关"；
+    用户要求"这一行文字右边要有个开关"，用来显隐「嵌入 DHCP 服务器」整张卡。
+    """
+
+    TRACK_H = 20      # 轨道只有 20px 高；控件本身跟字段控件同高（28），轨道垂直居中
+
+    def __init__(self, parent: QWidget | None = None, *, w: int = 38, h: int = 28):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFixedSize(w, h)          # 与 field_row 里 QLineEdit 的 setFixedHeight(28) 对齐 → 行高一致
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def paintEvent(self, event) -> None:      # noqa: N802 (Qt 命名)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        on = self.isChecked()
+        enabled = self.isEnabled()                           # 禁用态要看得出来（否则"看着正常却点不动"）
+        th = min(self.TRACK_H, self.height())
+        y0 = (self.height() - th) // 2       # 轨道在控件里垂直居中（整数：drawRoundedRect 没有 int+float 重载）
+        r = th / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        if not enabled:
+            track = C_DISABLED_BG if on else C_BORDER
+        else:
+            track = C_ACCENT if on else C_BORDER              # 开 = 高亮蓝，关 = 暗描边色
+        p.setBrush(QColor(track))
+        p.drawRoundedRect(0, y0, self.width(), th, r, r)
+        d = th - 4
+        p.setBrush(QColor(C_DISABLED_TEXT if not enabled else "#ffffff"))   # 圆钮
+        p.drawEllipse(self.width() - d - 2 if on else 2, y0 + 2, d, d)
 
 
 def field_row(
@@ -337,7 +391,7 @@ def field_row(
     一行「标签 + 控件」。widget=None 时自动给一个占位 QLineEdit（Phase 1 全是示意，默认 disabled）。
     返回 (行容器, 控件, 若控件是 QLineEdit 则一并返回)。
     """
-    row = QWidget(parent)
+    row = row_fixed(QWidget(parent))
     h = QHBoxLayout(row)
     h.setContentsMargins(0, 0, 0, 0)
     h.setSpacing(6)
@@ -358,7 +412,7 @@ def field_row(
 
 def choice_buttons(parent: QWidget, ids: list[str], current: str | None = None) -> tuple[QWidget, QButtonGroup]:
     """一排二选一/多选一的按钮（对应手机端的 ChoiceRow）。Phase 1 只是示意，点了只记日志。"""
-    box = QWidget(parent)
+    box = row_fixed(QWidget(parent))
     h = QHBoxLayout(box)
     h.setContentsMargins(0, 0, 0, 0)
     h.setSpacing(4)
@@ -374,6 +428,63 @@ def choice_buttons(parent: QWidget, ids: list[str], current: str | None = None) 
         grp.addButton(b, i)
     h.addStretch(1)
     return box, grp
+
+
+CARD_HEAD_H = 26      # 卡片首行的标准高度（= 启停按钮高度），两行必须等高
+
+
+def ports_state_text(n: int) -> str:
+    """switch 页首行状态的统一文案（与同页「拓扑」卡用词一致）：0 = `未插线`，非空 = `已插 N 个`。
+
+    口径（三端统一）：**vpn/proxy 看通道数**（`channels_state_text`），**switch 看网口数**（本函数）。
+    """
+    return "未插线" if not n else f"已插 {n} 个"
+
+
+def channels_state_text(n: int) -> str:
+    """通道状态的统一文案（三端一致）：空 = `未接线`，非空 = `已接 N 条`。
+
+    vpn / proxy 页的首行状态都用它（switch 页的状态是"已插 N 个"，是另一个指标）。
+    """
+    return "未接线" if not n else f"已接 {n} 条"
+
+
+def card_head_row(parent: QWidget, text: str,
+                  state_widget: QWidget | None = None,
+                  control: QWidget | None = None,
+                  label_object: str = "cardTitle",
+                  label_fixed_w: int = 0) -> QWidget:
+    """
+    卡片首行的**唯一**构造入口（卡片标题也走这里，所以卡片不再画标题行）。
+
+    左边文字 + 弹簧 + 可选状态 + 可选控件，右侧全部顶到同一个右边界。
+    `setContentsMargins(0,0,0,0)`：任何一侧都不许多出 margin/indent ——
+    这是"配置卡首行和 DHCP 卡首行必须等宽"那条要求的落点（self-test 里真量像素断言）。
+    """
+    row = row_fixed(QWidget(parent))
+    h = QHBoxLayout(row)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(6)
+    lab = QLabel(text, row)
+    # 默认按"卡片标题"样式（首行承担标题时用）；开关行那种"跟字段标签一样"的行传 label_object="fieldLabel"
+    lab.setObjectName(label_object)
+    if label_fixed_w:
+        lab.setFixedWidth(label_fixed_w)
+    h.addWidget(lab)
+    h.addStretch(1)
+    if state_widget is not None:
+        h.addWidget(state_widget)
+    if control is not None:
+        h.addWidget(control)
+
+    # 高度统一固定成 CARD_HEAD_H（= 启停按钮高度）：
+    #   · 不固定的话，**父布局会把"卡片多余的高度"摊给这一行** —— DHCP 卡内容少、卡片被纵向拉伸时
+    #     首行涨到 38/69px，而配置卡首行只有 26px（用户报的"嵌入 dhcp 服务器那一行高度特别高"）；
+    #   · 也**不能**用 `sizeHint()` 现算：构造这一刻 QSS/字体还没生效（offscreen 下是 fallback 字体），
+    #     带按钮的那行会算出 27、只有文字的那行算出 26 —— 两行又不等高了（这个坑我真踩了一次）。
+    # 两行都用同一个常量，必然等高；下面 self-test 还会断言"文字塞得下"（防大字号被裁）。
+    row.setFixedHeight(CARD_HEAD_H)
+    return row
 
 
 def section_note(parent: QWidget, text: str) -> QLabel:
@@ -578,7 +689,10 @@ PEER_NODE_H = 58.0           # 其他人卡片高度固定
 PEER_ACTION_H = 32.0         # 那一排 direct/upnp/udp/tcp 按钮的高度
 PEER_ACTION_W = 44.0         # 单个按钮宽度（比均分窄）
 PEER_TITLE_CENTER_Y = 10.0   # 「名字(ip:port)」那一行中心距卡顶（连线连到这里）
-ME_CARD_BOTTOM_MARGIN = 0.0  # 「我」卡片贴底边距（按要求为 0）
+ME_CARD_MARGIN = 0.0         # 「我」卡片：默认**竖直居中**；这个 margin 同时是拖动时与自由层上下边的留白
+SERVER_CARD_MARGIN_X = 4.0   # 服务器卡片左右留白（竖屏满宽时左右各 4）
+SERVER_CARD_MARGIN_TOP = 8.0 # 服务器卡片距自由层顶边（沿用原来 wrap_row 的 8px 上边距）
+SERVER_CARD_GAP = 12.0       # 其它卡片与服务器卡片之间的避让间距
 PEER_Y_RANGE = 0.5           # 其他人卡片只落在上半区（相对可用高度）
 SOCKET_CARD_W = 190.0        # socket 卡片估算宽（真实宽度实测）
 SOCKET_CARD_H = 48.0         # socket 卡片估算高
@@ -645,16 +759,23 @@ def random_peer_positions(
 
 
 def peer_base(rel: tuple[float, float], area_w: float, area_h: float,
-              peer_w: float, peer_h: float) -> tuple[float, float]:
-    """其他人卡片的基准左上角（未拖动时）= 相对坐标 × (可活动范围)"""
+              peer_w: float, peer_h: float,
+              top_limit: float = 0.0) -> tuple[float, float]:
+    """
+    其他人卡片的基准左上角（未拖动时）= 相对坐标 × (可活动范围)。
+
+    `top_limit` = 这一列**允许的最小 top**（服务器卡片进了自由层之后，
+    不在它左右两侧空白带里的卡片就得从它下面开始）；相对分布的形状不变，只是可用区被抬高了。
+    """
     max_x = max(0.0, area_w - peer_w)
-    max_y = max(0.0, area_h - peer_h)
-    return (max_x * rel[0], max_y * rel[1])
+    lo = max(0.0, float(top_limit))
+    hi = max(lo, max(0.0, area_h - peer_h))
+    return (max_x * rel[0], lo + (hi - lo) * rel[1])
 
 
 def socket_base(area_w: float, area_h: float, sock_w: float, sock_h: float,
                 peer_tl: tuple[float, float] | None, peer_w: float, peer_h: float,
-                gap: float = SOCKET_GAP) -> tuple[float, float]:
+                gap: float = SOCKET_GAP, top_limit: float = 0.0) -> tuple[float, float]:
     """
     socket 卡片的基准位置（安卓 udpSocketBase）：挂在对应 peer 卡片正下方、**至少在下半屏**；
     x 与 peer 卡水平中心对齐。只在卡片刚出现时算一次，之后冻结。
@@ -664,7 +785,7 @@ def socket_base(area_w: float, area_h: float, sock_w: float, sock_h: float,
     if peer_tl is None:
         return (max(0.0, (area_w - sock_w) / 2.0), max(0.0, area_h / 2.0))
     base_x = peer_tl[0] + (peer_w - sock_w) / 2.0
-    base_y = max(area_h / 2.0, peer_tl[1] + peer_h + gap)
+    base_y = max(area_h / 2.0, peer_tl[1] + peer_h + gap, float(top_limit))
     return (min(max(base_x, 0.0), max_x), min(max(base_y, 0.0), max_y))
 
 
@@ -692,6 +813,7 @@ def link_segments(
     me_center: tuple[float, float] | None,
     peers: list[tuple[str, float, float, float, float]],
     sockets: list[tuple[int, str, float, float, float, float]],
+    server_bottom: float = 0.0,
 ) -> list[Segment]:
     """
     算出自由层要画的全部线段（纯函数，安卓 FreeLayer 的 Canvas 那段）：
@@ -710,14 +832,14 @@ def link_segments(
 
     if show_link and me_center is not None:
         segs.append(Segment(
-            "server_me", me_center[0], 0.0, me_center[0], me_center[1],
+            "server_me", me_center[0], server_bottom, me_center[0], me_center[1],
             LINK_GREEN if logged_in else "#FFFFFF",
             LINK_STROKE_W,
             None if logged_in else (LINK_DASH_ON, LINK_DASH_OFF),
         ))
 
     for name, x, y, w, h in peers:
-        segs.append(Segment("server_peer", x + w / 2.0, 0.0,
+        segs.append(Segment("server_peer", x + w / 2.0, server_bottom,
                             x + w / 2.0, y + PEER_TITLE_CENTER_Y,
                             LINK_GREEN, LINK_STROKE_W, None))
 
@@ -1194,6 +1316,8 @@ class FreeLayer(QWidget):
         self._grab: dict[tuple[str, str], tuple[float, float]] = {}
         self._me_drag = (0.0, 0.0)
         self._me_size = (0.0, 0.0)
+        # 服务器卡片**在自由层里**（由 HomePage 建好后交进来）：顶部对齐、不可拖动
+        self.server_card: "ServerCard | None" = None
 
         # 自由层自己也要画黑底（QWidget 子类必须开 WA_StyledBackground，否则会透）
         self.setObjectName("freeLayer")
@@ -1314,8 +1438,9 @@ class FreeLayer(QWidget):
             }
         # tcp / upnp：安卓那边是"流程预览"。tcp 在 Python 端有真实现（5 步），
         # 所以尾注据实改写（报告里说明这处措辞差异）。
-        tail = ("（仅流程预览，尚未实现真实握手）" if proto == "upnp"
-                else "（仅流程预览；Python 端 tcp 打洞已实现，Phase 3 接真实进度）")
+        # tcp 尾注不再显示（原来是"Python 端 tcp 打洞已实现…"这种实现现状说明，按"不占屏幕"去掉）；
+        # upnp 那句是安卓原文、三端一致，保留。
+        tail = "（仅流程预览，尚未实现真实握手）" if proto == "upnp" else ""
         return {
             "id": hole.get("id"), "kind": proto, "target": target,
             "plan": [{"text": t, "done": False} for t in
@@ -1358,6 +1483,60 @@ class FreeLayer(QWidget):
         self._relayout()
         self.update()
 
+    # ── 服务器卡片：几何（随尺寸实时算）+ 其它卡片的避让 ──
+    def set_server_card(self, card: "ServerCard") -> None:
+        """HomePage 建好服务器卡片后交进来：它成为自由层内的元素（顶部对齐、不参与拖动）。"""
+        self.server_card = card
+        card.lower()                 # 压到最底层：其它卡片永远在它上面（限位也保证不重叠）
+        self._relayout()
+
+    def server_rect(self) -> tuple[float, float, float, float]:
+        """
+        服务器卡片在自由层里的矩形 (x, y, w, h) —— **每次按当前尺寸算**（resize/最大化都会跟着变）：
+
+          · 竖屏（自由层高 > 宽）→ **满宽**（左右各留 SERVER_CARD_MARGIN_X）
+          · 横屏（宽 > 高）→ **占一半宽、水平居中**（左右各留出 1/4 宽的空白带）
+
+        注意：判据用的是**自由层**（= 整个内容区）的宽高比，等价于窗口的宽高比（只差标题栏那点高）。
+        """
+        card = self.server_card
+        if card is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        area_w, area_h = float(self.width()), float(self.height())
+        m = SERVER_CARD_MARGIN_X
+        full = max(0.0, area_w - 2.0 * m)
+        w = full if area_h > area_w else full / 2.0
+        x = (area_w - w) / 2.0            # 横屏"居中占一半"；竖屏满宽时 x = m
+        h = float(card.sizeHint().height())
+        return (x, SERVER_CARD_MARGIN_TOP, w, h)
+
+    def _position_server_card(self) -> None:
+        card = self.server_card
+        if card is None:
+            return
+        x, y, w, h = self.server_rect()
+        r = QRect(int(x), int(y), int(w), int(h))
+        if card.geometry() != r:          # 只有真的变了才 setGeometry（拖动时每帧都会走到这里）
+            card.setGeometry(r)
+
+    def avoid_top(self, x: float, w: float) -> float:
+        """
+        某张卡（左上角 x、宽 w）**允许的最小 top**：
+
+          · 完全落在服务器卡片**左右两侧的空白带**里 → 0（纵向可以一直用到自由层顶部）
+          · 否则 → 服务器卡片底边 + SERVER_CARD_GAP（不许压住服务器卡片）
+
+        横屏时服务器卡片居中占一半 → 空白带是左右各 1/4 宽。
+        """
+        sx, sy, sw, sh = self.server_rect()
+        if sw <= 0.0 or sh <= 0.0:
+            return 0.0
+        left_band = x + w <= sx - SERVER_CARD_GAP
+        right_band = x >= sx + sw + SERVER_CARD_GAP
+        if left_band or right_band:
+            return 0.0
+        return sy + sh + SERVER_CARD_GAP
+
     # ── 拖动（三种卡片同一套：按下时记住"按下点 → 卡片左上角"的偏移，之后按全局光标 1:1 跟随）──
     def _card_of(self, kind: str, name: str) -> QWidget | None:
         if kind == "me":
@@ -1371,8 +1550,11 @@ class FreeLayer(QWidget):
     def _base_of(self, kind: str, name: str) -> tuple[float, float]:
         if kind == "me":
             me_w, me_h = self._me_size
-            return ((float(self.width()) - me_w) / 2.0,
-                    float(self.height()) - ME_CARD_BOTTOM_MARGIN - me_h)
+            # 默认位置：水平居中 + **竖直居中**；但"不许压住服务器卡片"优先 ——
+            # 横屏窗口很矮时会把它推到服务器卡片下方（报告里说明）
+            x = (float(self.width()) - me_w) / 2.0
+            y = (float(self.height()) - me_h) / 2.0
+            return (x, max(y, self.avoid_top(x, me_w)))
         if kind == "peer":
             return self.peer_base_of(name)
         if kind == "socket":
@@ -1417,10 +1599,15 @@ class FreeLayer(QWidget):
         w, h = float(card.width()), float(card.height())
         max_x = max(0.0, float(self.width()) - w)
         max_y = max(0.0, float(self.height()) - h)
-        self._set_offset(kind, name, (
-            _clamp(want_tl.x() - bx, -bx, max_x - bx),
-            _clamp(want_tl.y() - by, -by, max_y - by),
-        ))
+        # x 先 clamp，再按"最终落在哪一列"决定 top 的下限（服务器卡片左右两侧空白带可到顶）
+        off_x = _clamp(want_tl.x() - bx, -bx, max_x - bx)
+        lo = self.avoid_top(bx + off_x, w)
+        if kind == "me":
+            lo = max(lo, ME_CARD_MARGIN)          # 我卡另外还留 ME_CARD_MARGIN
+            hi = max(lo, max_y - ME_CARD_MARGIN)
+        else:
+            hi = max(lo, max_y)
+        self._set_offset(kind, name, (off_x, _clamp(want_tl.y(), lo, hi) - by))
         self._relayout()
 
     def drag_by(self, kind: str, name: str, dx: float, dy: float) -> None:
@@ -1450,7 +1637,10 @@ class FreeLayer(QWidget):
             return (0.0, 0.0)
         card = self._peer_cards.get(name)
         pw = float(card.width()) if card is not None else PEER_NODE_W
-        return peer_base(rel, float(self.width()), float(self.height()), pw, PEER_NODE_H)
+        area_w = float(self.width())
+        x = max(0.0, area_w - pw) * rel[0]
+        return peer_base(rel, area_w, float(self.height()), pw, PEER_NODE_H,
+                         top_limit=self.avoid_top(x, pw))
 
     def peer_top_left(self, name: str) -> tuple[float, float]:
         bx, by = self.peer_base_of(name)
@@ -1472,8 +1662,12 @@ class FreeLayer(QWidget):
         peer_tl = self.peer_top_left(target) if target in self._peer_rel else None
         peer_card = self._peer_cards.get(target)
         peer_w = float(peer_card.width()) if peer_card is not None else PEER_NODE_W
+        # socket 卡的 x 与 peer 卡中心对齐（peer 不在时水平居中）——先算出 x，再问它那一列允许的最小 top
+        guess_x = ((peer_tl[0] + (peer_w - sw) / 2.0) if peer_tl is not None
+                   else (float(self.width()) - sw) / 2.0)
         base = socket_base(float(self.width()), float(self.height()), sw, sh,
-                           peer_tl, peer_w, PEER_NODE_H)
+                           peer_tl, peer_w, PEER_NODE_H,
+                           top_limit=self.avoid_top(guess_x, sw))
         self._socket_base[hole_id] = base
         return base
 
@@ -1485,8 +1679,9 @@ class FreeLayer(QWidget):
     def me_center(self) -> tuple[float, float]:
         area_h = float(self.height())
         me_h = self._me_size[1]
-        return (float(self.width()) / 2.0 + self._me_drag[0],
-                area_h - ME_CARD_BOTTOM_MARGIN - me_h / 2.0 + self._me_drag[1])
+        bx, by = self._base_of("me", "")
+        return (bx + self._me_size[0] / 2.0 + self._me_drag[0],
+                by + me_h / 2.0 + self._me_drag[1])
 
     def divider_y(self) -> float | None:
         """
@@ -1517,11 +1712,13 @@ class FreeLayer(QWidget):
             hh = float(card.height()) if card is not None else SOCKET_CARD_H
             x, y = self.socket_top_left(hid)
             sockets.append((hid, h.get("peer") or "", x, y, w, hh))
+        _sx, _sy, _sw, _sh = self.server_rect()
         return link_segments(
             area_w=float(self.width()), area_h=float(self.height()),
             divider_y=self.divider_y(), show_link=self.connected, logged_in=self.logged_in,
             me_center=self.me_center() if self._me_size[1] > 0 else None,
             peers=peers, sockets=sockets,
+            server_bottom=(_sy + _sh) if _sh > 0 else 0.0,
         )
 
     # ── 摆放 ──
@@ -1539,13 +1736,16 @@ class FreeLayer(QWidget):
 
     def _relayout(self) -> None:
         area_w, area_h = float(self.width()), float(self.height())
+        self._position_server_card()      # 服务器卡片：随尺寸实时重算（竖屏满宽 / 横屏居中一半）
         # ⚠️ 这里**不要**再 adjustSize()：拖动时每帧都会走到这儿，
         # 每帧都跑一次布局计算就是"卡卡的"的主因。尺寸只在内容变化时更新（见 set_me/apply_state）。
         me_w, me_h = self._me_size if self._me_size[0] > 0 else (
             float(self.me_card.sizeHint().width()), float(self.me_card.sizeHint().height()))
+        # 默认位置统一走 _base_of：水平居中 + 竖直居中，但"不许压住服务器卡片"优先
+        me_bx, me_by = self._base_of("me", "")
         self.me_card.move(
-            int((area_w - me_w) / 2.0 + self._me_drag[0]),
-            int(area_h - ME_CARD_BOTTOM_MARGIN - me_h + self._me_drag[1]),
+            int(me_bx + self._me_drag[0]),
+            int(me_by + self._me_drag[1]),
         )
         self.me_card.raise_()
 
@@ -1582,12 +1782,12 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-# ── 主页 = 服务器卡（顶部固定）+ 自由层（占满剩余）──
+# ── 主页 = 自由层填满内容区（服务器卡片是自由层里的一个元素，顶部对齐）──
 
 class HomePage(QWidget):
     """
-    主页。**注意：不是 Page 的子类** —— 安卓的主页是"服务器卡 + 自由层填满剩余"，
-    自由层要能任意摆放卡片，所以不能套在滚动区里。
+    主页。**注意：不是 Page 的子类** —— 自由层填满整个内容区、要能任意摆放卡片，
+    所以不能套在滚动区里；服务器卡片是**自由层里的**一个元素（顶部对齐、不可拖动）。
     """
 
     def __init__(self, host: "MainWindow", parent: QWidget | None = None):
@@ -1601,16 +1801,15 @@ class HomePage(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
 
-        wrap = QWidget(self)
-        wrap_row = QHBoxLayout(wrap)
-        wrap_row.setContentsMargins(4, 8, 4, 0)
-        self.server_card = ServerCard(host, wrap)
-        self.server_card.btn_toggle.clicked.connect(self._toggle_connection)
-        wrap_row.addWidget(self.server_card)
-        col.addWidget(wrap)
-
+        # 自由层**填满整个内容区**（"自由层正中"从此 = 整个内容区的正中）
         self.free_layer = FreeLayer(host, self)
         col.addWidget(self.free_layer, 1)
+
+        # 服务器卡片**在自由层里**：顶部对齐、不可拖动；宽度随窗口比例实时变
+        # （竖屏满宽 / 横屏居中占一半，见 FreeLayer.server_rect）
+        self.server_card = ServerCard(host, self.free_layer)
+        self.server_card.btn_toggle.clicked.connect(self._toggle_connection)
+        self.free_layer.set_server_card(self.server_card)
 
         # 「我」卡片的两个按钮（用户名/密码在自由层里，服务器卡没有它们）
         self.free_layer.me_card.btn_login.clicked.connect(self._toggle_login)
@@ -1673,17 +1872,77 @@ class ConfigPage(Page):
     按钮只写日志——**不做存盘、不做逻辑**。
     """
 
-    def __init__(self, host: "MainWindow", kind: str, python_hint: str = "", parent: QWidget | None = None):
+    # 各页对应的 python 端实现（只做代码注释，不再作为界面文案显示）：
+    #   media     → client/app/media.py（RTMP 收/推）+ app/ffmpeg.sh（P2P 那段是 mpegts over UDP）
+    #   proxy     → client/app/proxy.py
+    #   wireguard → client/app/wg-python.py（自己实现）/ app/wg-calltool.py → app/wghelp.sh（调系统 wg）
+    #   vpn       → client/app/vpn.py
+    #   switch    → client/app/switch.py
+    def __init__(self, host: "MainWindow", kind: str, parent: QWidget | None = None):
         super().__init__(host, parent)
         self.kind = kind
-        self.python_hint = python_hint
         self._titles: list[str] = []
 
-    def add_card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
-        frame, body = card(self, title)
+    def add_card(self, title: str, *, render_title: bool = True) -> tuple[QFrame, QVBoxLayout]:
+        """加一张卡。`render_title=False` = 卡片不画标题行，标题文字由首行 `card_head_row()` 承担
+        （这样"配置卡首行"和"DHCP 卡首行"能走**同一个容器**、内边距完全一致）。"""
+        frame, body = card(self, title if render_title else "")
         self._titles.append(title)
         self.body.addWidget(frame)
         return frame, body
+
+    def finish_layout(self) -> None:
+        """
+        页面构建完统一收尾（`MainWindow` 建页时调一次）：
+
+        每张卡的 `body` 末尾、以及页面 `body` 末尾各补一个弹簧 —— 多余高度落到"底部空白"，
+        卡片与行都贴合自身内容高度（和手机端一样**内容顶对齐**），不再被父布局拉伸。
+        """
+        for i in range(self.body.count()):
+            card = self.body.itemAt(i).widget()
+            if card is None or card.layout() is None:
+                continue
+            outer = card.layout()
+            body = None
+            for j in range(outer.count()):
+                if outer.itemAt(j).layout() is not None:
+                    body = outer.itemAt(j).layout()
+            if body is not None and body.count() and not body.itemAt(body.count() - 1).spacerItem():
+                body.addStretch(1)
+        if self.body.count() and not self.body.itemAt(self.body.count() - 1).spacerItem():
+            self.body.addStretch(1)
+
+    def set_ports(self, n: int) -> None:
+        """网口数变化 → 首行状态（0 = 未插线，非空 = 已插 N 个）。switch 用。"""
+        lab = getattr(self, "lab_ports", None)
+        if lab is not None:
+            lab.setText(ports_state_text(n))
+
+    def set_channels(self, n: int) -> None:
+        """通道数变化 → 首行状态（0 = 未接线，非空 = 已接 N 条）。vpn / proxy 用同一套文案。"""
+        lab = getattr(self, "lab_state", None)
+        if lab is not None:
+            lab.setText(channels_state_text(n))
+
+    def add_dhcp_toggle(self, body: QVBoxLayout, dhcp_card: QFrame) -> ToggleSwitch:
+        """
+        配置卡**最后一行**：`内嵌 DHCP` 开关（默认关闭）。
+
+        行为：勾上 → DHCP 整卡显示；取消 → 整卡隐藏（不是 disable）。
+        `dhcpEnabled` 默认必须是 false，所以这里显式 `setChecked(False)` + `setVisible(False)`。
+        """
+        sw = ToggleSwitch(self)                   # 自绘开关（非勾选框）
+        sw.setChecked(False)                      # dhcpEnabled 默认 false
+        sw.toggled.connect(dhcp_card.setVisible)  # 整卡显隐（不是 setEnabled）
+        # **字段行版式**（和「路由老化」那几行同构）：标签在标签列（label_w=84）→ 开关紧跟其后 → 右边留空。
+        # 不用 card_head_row 的"右侧控件"位置（那个会把控件顶到卡片最右边，用户不要）。
+        # ⚠️ 必须显式 enabled=True：field_row 的 enabled 默认是 False（Phase 1 的占位控件默认禁用），
+        # 不传的话开关会被禁用 —— 用户点了没反应、DHCP 卡也永远出不来（实机 bug）。
+        row, _, _ = field_row(self, "内嵌 DHCP", sw, enabled=True)   # 自带 row_fixed() + fieldLabel 样式
+        row.layout().addStretch(1)                       # 右边留空（开关不许被顶到最右）
+        body.addWidget(row)
+        dhcp_card.setVisible(False)               # 默认关闭 → 整卡隐藏
+        return sw
 
     def card_titles(self) -> list[str]:
         return list(self._titles)
@@ -1693,17 +1952,15 @@ class MediaPage(ConfigPage):
     """media 页：收流 / 推流 / 拉起应用（对齐安卓 MediaPage，地址端口只读，来自打洞结果）。"""
 
     def __init__(self, host, parent=None):
-        super().__init__(host, "media", "client/app/media.py + app/ffmpeg.sh", parent)
+        super().__init__(host, "media", parent)
 
         _f, body = self.add_card("收流（对端 → 本机）")
-        body.addWidget(section_note(self, "对端推过来的流在这里落地并播放（对应 media.py 的 RTMP 输入）"))
         row, grp = choice_buttons(self, ["rtmp", "rtsp", "srt", "udp"])
         body.addWidget(field_row(self, "协议", row)[0])
         body.addWidget(field_row(self, "本机地址", hint="打洞后自动带出")[0])
         body.addWidget(field_row(self, "本机端口", hint="打洞后自动带出")[0])
 
         _f, body = self.add_card("推流（本机 → 对端）")
-        body.addWidget(section_note(self, "本机采集 → 编码封装 → 推给对端（对应 media.py 的 RTMP 输出）"))
         row, grp = choice_buttons(self, ["rtmp", "rtsp", "srt", "udp"])
         body.addWidget(field_row(self, "协议", row)[0])
         body.addWidget(field_row(self, "对端地址", hint="打洞后自动带出")[0])
@@ -1713,7 +1970,6 @@ class MediaPage(ConfigPage):
         body.addWidget(section_note(self, "对方路由器公网地址:端口（对方内网地址不用管）"))
 
         _f, body = self.add_card("拉起应用")
-        body.addWidget(section_note(self, "我们只负责打洞：洞打通后，把这条洞的参数交给聊天程序，由它收发流"))
         body.addWidget(field_row(self, "应用包名", hint="留空 = 只按 action 找")[0])
         body.addWidget(field_row(self, "Action", hint="com.p2pnet.action.MEDIA_CHAT")[0])
         btn = QPushButton("拉起应用", self)
@@ -1726,24 +1982,35 @@ class ProxyPage(ConfigPage):
     """proxy 页：端口转发（-L 本机 listen / -R 本机 connect）。"""
 
     def __init__(self, host, parent=None):
-        super().__init__(host, "proxy", "client/app/proxy.py", parent)
+        super().__init__(host, "proxy", parent)
 
-        _f, body = self.add_card("配置")
+        # 配置卡首行：和 vpn / switch 完全一致（「配置」+ 状态 + 弹簧 + 启停），卡片不画标题行
+        _f, cfg_body = self.add_card("配置", render_title=False)
+        self.lab_state = QLabel(channels_state_text(0), self)      # 空态 = 未接线
+        self.lab_state.setObjectName("note")
+        self.btn_toggle = QPushButton("启动", self)
+        self.btn_toggle.setFixedHeight(CARD_HEAD_H)                # 与 vpn/switch 首行同高
+        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle.clicked.connect(lambda: self.host.log("proxy：启动（Phase 1 只写日志）"))
+        self.row_cfg = card_head_row(self, "配置",
+                                     state_widget=self.lab_state, control=self.btn_toggle)
+        cfg_body.addWidget(self.row_cfg)
+
+        # ↓ 以下字段行、模式选择、按钮行为全部保持原样（只是把"状态 + 启停"搬进了首行行尾）
         row, grp = choice_buttons(self, ["正向 -L", "反向 -R"], "反向 -R")
-        body.addWidget(field_row(self, "模式", row)[0])
-        body.addWidget(section_note(self, "-L：本机 listen 等连进来，再中继到洞；-R：本机连出去，再中继到洞"))
+        cfg_body.addWidget(field_row(self, "模式", row)[0])
         row, grp = choice_buttons(self, ["tcp", "udp"])
-        body.addWidget(field_row(self, "协议", row)[0])
-        body.addWidget(field_row(self, "保活间隔", hint="20")[0])
-        body.addWidget(field_row(self, "洞地址", hint="0.0.0.0")[0])
-        body.addWidget(field_row(self, "洞端口", hint="留空 = 用 session 的实际端口")[0])
-        btn = QPushButton("启动", self)
-        btn.setFixedHeight(30)
-        btn.clicked.connect(lambda: self.host.log("proxy：启动（Phase 1 只写日志）"))
-        body.addWidget(btn)
-        body.addWidget(section_note(self, "通道：还没有（在主页 socket 卡片第 5 行点 proxy）"))
+        cfg_body.addWidget(field_row(self, "协议", row)[0])
+        cfg_body.addWidget(field_row(self, "保活间隔", hint="20")[0])
+        cfg_body.addWidget(field_row(self, "洞地址", hint="0.0.0.0")[0])
+        cfg_body.addWidget(field_row(self, "洞端口", hint="留空 = 用 session 的实际端口")[0])
+        # 原来配置卡里还有一行 `通道：还没有` 的空态说明，以及一个独立的「启动」按钮：
+        # 空态三端一致删掉（由首行状态表达），按钮搬到了上面的首行行尾。
+        # 将来有真实通道数据时，在这里按 `if channels:` 条件渲染列表（含洞号/地址，那才是真信息）。
 
-        _f, body = self.add_card("代理（-R：本机连出去；-L：本机 listen）")
+        # 标题就是「代理」（三端一致）；原来的括号里那句
+        # "-R：本机连出去；-L：本机 listen" 是用法解释，按"界面不写说明"去掉（-L/-R 语义见上面的模式选择行）
+        _f, body = self.add_card("代理")
         body.addWidget(field_row(self, "目标地址", hint="127.0.0.1")[0])
         body.addWidget(field_row(self, "目标端口", hint="留空 = 运行时再填")[0])
 
@@ -1752,12 +2019,11 @@ class WireGuardPage(ConfigPage):
     """wireguard 页：实现三档 + My Interface + Peer 列表（Phase 1 骨架）。"""
 
     def __init__(self, host, parent=None):
-        super().__init__(host, "wireguard", "client/app/wg-python.py / wg-calltool.py", parent)
+        super().__init__(host, "wireguard", parent)
 
         _f, body = self.add_card("实现")
         row, grp = choice_buttons(self, ["自己实现", "官方库", "调系统程序"], "调系统程序")
         body.addWidget(field_row(self, "实现", row)[0])
-        body.addWidget(section_note(self, "三档都要用打洞那个本地端口做 UDP 出口，否则 NAT 映射就废了"))
 
         _f, body = self.add_card("My Interface")
         body.addWidget(field_row(self, "IP/掩码", hint="10.0.0.2/24")[0])
@@ -1788,71 +2054,107 @@ class WireGuardPage(ConfigPage):
 
 
 class VpnPage(ConfigPage):
-    """vpn 页：一对一（= switch 去掉网口卡；状态与启停并进配置卡首行）。"""
+    """vpn 页：一对一（= switch 去掉拓扑卡；状态与启停并进配置卡首行，内嵌 DHCP 开关也在配置卡）。
+
+    一对一 = 一个洞 ↔ 一块 tun/tap（这句原来显示在配置卡首行，按"界面不写说明"的要求改成注释）。
+    """
 
     def __init__(self, host, parent=None):
-        super().__init__(host, "vpn", "client/app/vpn.py", parent)
+        super().__init__(host, "vpn", parent)
 
-        _f, body = self.add_card("配置")
-        head = QWidget(self)
-        hh = QHBoxLayout(head)
-        hh.setContentsMargins(0, 0, 0, 0)
-        hh.addWidget(QLabel("一对一：一个洞 ↔ 一块 tun/tap", head))
-        hh.addStretch(1)
-        self.lab_state = QLabel("未接线", head)
+        # 配置卡：不画标题行，「配置」这个标题由首行承担（= 与 DHCP 卡首行同一套容器/内边距）
+        _f, cfg_body = self.add_card("配置", render_title=False)
+        self.lab_state = QLabel(channels_state_text(0), self)      # 空态 = 未接线
         self.lab_state.setObjectName("note")
-        hh.addWidget(self.lab_state)
-        btn = QPushButton("启动", head)
-        btn.setFixedHeight(26)
-        btn.clicked.connect(lambda: self.host.log("vpn：启动（Phase 1 只写日志）"))
-        hh.addWidget(btn)
-        body.addWidget(head)
+        self.btn_toggle = QPushButton("启动", self)
+        self.btn_toggle.setFixedHeight(CARD_HEAD_H)
+        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle.clicked.connect(lambda: self.host.log("vpn：启动（Phase 1 只写日志）"))
+        # 首行左侧固定是「配置」（三端一致）。原来这里放的是
+        # "一对一：一个洞 ↔ 一块 tun/tap" —— 那是"删说明"那轮该删的啰嗦说明，已改成注释（见类 docstring）。
+        self.row_cfg = card_head_row(self, "配置",
+                                     state_widget=self.lab_state, control=self.btn_toggle)
+        cfg_body.addWidget(self.row_cfg)
 
         row, grp = choice_buttons(self, ["none", "tun", "tap"], "tun")
-        body.addWidget(field_row(self, "card 设备", row)[0])
-        body.addWidget(field_row(self, "tun 地址", hint="10.0.0.2/24")[0])
+        cfg_body.addWidget(field_row(self, "card 设备", row)[0])
+        cfg_body.addWidget(field_row(self, "tun 地址", hint="10.0.0.2/24")[0])
         row, grp = choice_buttons(self, ["l2", "l3", "auto"], "l3")
-        body.addWidget(field_row(self, "交换模式", row)[0])
-        body.addWidget(field_row(self, "MTU", hint="1400")[0])
-        body.addWidget(field_row(self, "路由老化", hint="300 s")[0])
-        body.addWidget(section_note(self, "通道：还没有（在主页 socket 卡片第 5 行点 tun）"))
+        cfg_body.addWidget(field_row(self, "交换模式", row)[0])
+        cfg_body.addWidget(field_row(self, "MTU", hint="1400")[0])
+        cfg_body.addWidget(field_row(self, "路由老化", hint="300 s")[0])
+        # 原来这里有一行 `通道：还没有`：空态已经由本卡首行右侧的状态（`未接线`）表达，重复 → 三端一致删掉。
+        # 将来有真实通道数据时，在这里按 `if channels:` 条件渲染列表。
 
-        _f, body = self.add_card("嵌入 DHCP 服务器")
-        cb = QCheckBox("尚未实现", self)
-        cb.setEnabled(False)
-        body.addWidget(cb)
-        body.addWidget(field_row(self, "地址池", hint="10.0.0.100-10.0.0.200")[0])
-        body.addWidget(field_row(self, "网关", hint="10.0.0.1")[0])
-        body.addWidget(field_row(self, "DNS", hint="10.0.0.1")[0])
+        # 内嵌 DHCP 卡（默认隐藏，由配置卡最后一行那个开关控制显隐）
+        self.f_dhcp, dhcp_body = self.add_card("嵌入 DHCP 服务器", render_title=False)
+        lab_ni = QLabel("尚未实现", self)
+        lab_ni.setObjectName("note")
+        self.row_dhcp = card_head_row(self, "嵌入 DHCP 服务器", state_widget=lab_ni)
+        dhcp_body.addWidget(self.row_dhcp)
+        dhcp_body.addWidget(field_row(self, "地址池", hint="10.0.0.100-10.0.0.200")[0])
+        dhcp_body.addWidget(field_row(self, "网关", hint="10.0.0.1")[0])
+        dhcp_body.addWidget(field_row(self, "DNS", hint="10.0.0.1")[0])
+        dhcp_body.addStretch(1)     # 卡片被纵向拉伸时，多余高度落到弹簧上（别摊给首行）
+
+        # 配置卡**最后一行**：内嵌 DHCP 开关（放在 DHCP 卡前面，视觉上"这行开启下面那张卡"）
+        self.sw_dhcp = self.add_dhcp_toggle(cfg_body, self.f_dhcp)
 
 
 class SwitchPage(ConfigPage):
-    """switch 页：m 对 n（网口卡 + 配置卡 + DHCP 卡）。"""
+    """
+    switch 页：m 对 n（对应 client/app/switch.py）。
+
+    版式（三端一致）：**配置卡（首行最右侧是启停按钮）→ 嵌入 DHCP 服务器 → 拓扑卡（放最后）**。
+    「拓扑」卡画的是这台虚拟交换机的**连接拓扑**：一行"网口"格子，每插进来一个洞就多一格；
+    0 个时留一个虚线空位表示空槽位（点格子 = 拔线，Phase 3 接线后生效）。
+    """
 
     def __init__(self, host, parent=None):
-        super().__init__(host, "switch", "client/app/switch.py", parent)
+        super().__init__(host, "switch", parent)
 
-        _f, body = self.add_card("虚拟交换机")
-        head = QWidget(self)
-        hh = QHBoxLayout(head)
-        hh.setContentsMargins(0, 0, 0, 0)
-        hh.addWidget(QLabel("网口", head))
-        self.lab_ports = QLabel("已插 0 个", head)
+        # ── 配置卡：首行 = 标题 + 状态 + 弹簧 + 启停（和 DHCP 卡首行同一套容器）──
+        _f, cfg_body = self.add_card("配置", render_title=False)
+        self.lab_ports = QLabel(ports_state_text(0), self)      # 空态 = 未插线
         self.lab_ports.setObjectName("note")
-        hh.addWidget(self.lab_ports)
-        hh.addStretch(1)
-        btn = QPushButton("启动", head)
-        btn.setFixedHeight(26)
-        btn.clicked.connect(lambda: self.host.log("switch：启动（Phase 1 只写日志）"))
-        hh.addWidget(btn)
-        body.addWidget(head)
+        self.btn_toggle = QPushButton("启动", self)
+        self.btn_toggle.setFixedHeight(26)
+        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle.clicked.connect(lambda: self.host.log("switch：启动（Phase 1 只写日志）"))
+        # 首行左侧固定是「配置」（三端一致）；"虚拟交换机"这个说法只在注释/docstring 里
+        self.row_cfg = card_head_row(self, "配置",
+                                     state_widget=self.lab_ports, control=self.btn_toggle)
+        cfg_body.addWidget(self.row_cfg)
 
-        # 网口一行：0 个时一个虚线空位（点它 = 没得拔），运行时动态增长
-        ports = QWidget(self)
+        row, grp = choice_buttons(self, ["none", "tun", "tap"], "tun")
+        cfg_body.addWidget(field_row(self, "card 设备", row)[0])
+        cfg_body.addWidget(field_row(self, "tun 地址", hint="192.168.250.55/24")[0])
+        row, grp = choice_buttons(self, ["l2", "l3", "auto"], "l3")
+        cfg_body.addWidget(field_row(self, "交换模式", row)[0])
+        cfg_body.addWidget(field_row(self, "MTU", hint="1400")[0])
+        cfg_body.addWidget(field_row(self, "路由老化", hint="300 s")[0])
+
+        # ── 嵌入 DHCP 卡（默认隐藏，由配置卡最后一行那个开关控制显隐）──
+        self.f_dhcp, dhcp_body = self.add_card("嵌入 DHCP 服务器", render_title=False)
+        lab_ni = QLabel("尚未实现", self)
+        lab_ni.setObjectName("note")
+        self.row_dhcp = card_head_row(self, "嵌入 DHCP 服务器", state_widget=lab_ni)
+        dhcp_body.addWidget(self.row_dhcp)
+        dhcp_body.addWidget(field_row(self, "地址池", hint="192.168.250.100-192.168.250.200")[0])
+        dhcp_body.addWidget(field_row(self, "网关", hint="192.168.250.55")[0])
+        dhcp_body.addWidget(field_row(self, "DNS", hint="192.168.250.55")[0])
+        dhcp_body.addStretch(1)     # 卡片被纵向拉伸时，多余高度落到弹簧上（别摊给首行）
+
+        # 配置卡最后一行：内嵌 DHCP 开关
+        self.sw_dhcp = self.add_dhcp_toggle(cfg_body, self.f_dhcp)
+
+        # ── 拓扑卡（放最后）：只有可视化，不再放启停按钮 ──
+        _f, body = self.add_card("拓扑")
+        ports = row_fixed(QWidget(self))
         hp = QHBoxLayout(ports)
         hp.setContentsMargins(0, 0, 0, 0)
         hp.setSpacing(4)
-        empty = QLabel("（空）", ports)
+        empty = QLabel(ports_state_text(0), ports)   # 空位也用同一个词：未插线
         empty.setObjectName("portEmpty")
         empty.setFixedHeight(28)
         empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1864,23 +2166,6 @@ class SwitchPage(ConfigPage):
         hp.addStretch(1)
         body.addWidget(ports)
         body.addWidget(section_note(self, "点网口 = 拔线"))
-
-        _f, body = self.add_card("配置")
-        row, grp = choice_buttons(self, ["none", "tun", "tap"], "tun")
-        body.addWidget(field_row(self, "card 设备", row)[0])
-        body.addWidget(field_row(self, "tun 地址", hint="192.168.250.55/24")[0])
-        row, grp = choice_buttons(self, ["l2", "l3", "auto"], "l3")
-        body.addWidget(field_row(self, "交换模式", row)[0])
-        body.addWidget(field_row(self, "MTU", hint="1400")[0])
-        body.addWidget(field_row(self, "路由老化", hint="300 s")[0])
-
-        _f, body = self.add_card("嵌入 DHCP 服务器")
-        cb = QCheckBox("尚未实现", self)
-        cb.setEnabled(False)
-        body.addWidget(cb)
-        body.addWidget(field_row(self, "地址池", hint="192.168.250.100-192.168.250.200")[0])
-        body.addWidget(field_row(self, "网关", hint="192.168.250.55")[0])
-        body.addWidget(field_row(self, "DNS", hint="192.168.250.55")[0])
 
 
 PAGE_CLASSES = [HomePage, MediaPage, ProxyPage, WireGuardPage, VpnPage, SwitchPage]
@@ -2245,6 +2530,14 @@ class EngineBridge(QObject):
         # 输入过的用户名（list 过滤自己时，作为 cli.logged_in_user 的兜底，对齐安卓 ifBlank{username}）
         self.login_user: str | None = None
         self._holes_sig: tuple = ()
+        # ── WS 自动重连（带熔断）状态 ──
+        self._host: str | None = None        # 记下连接参数，重连要用
+        self._port: int = 0
+        self._debug = False
+        self._manual_disconnect = False      # 用户点过"断开" → 不自动重连
+        self._closing = False                # shutdown() → 停止一切重连
+        self._reconnect_thread: threading.Thread | None = None
+        self._connected_at = 0.0             # 本次连接建立时刻（稳定 60s → 计数重置）
 
     # ── 装载：只导入 + 接线，不联网 ──
     def load(self) -> bool:
@@ -2331,12 +2624,17 @@ class EngineBridge(QObject):
             return
         if self.cli is None and not self.load():
             return
+        self._host, self._port, self._debug = host, int(port), debug
+        self._manual_disconnect = False
+        if self.cli is not None:
+            self.cli.mark_user_connect()       # 手动连接：清"被踢/主动退出"状态 + 清零计数（实现在 client.py）
         self.thread = threading.Thread(
             target=self._run, args=(host, int(port), debug), name="p2pnet-engine", daemon=True
         )
         self.thread.start()
 
-    def _run(self, host: str, port: int, debug: bool) -> None:
+    def _connect_once(self, host: str, port: int, debug: bool) -> bool:
+        """建 socket + WS 握手（握手成功后 client.py 自己会起心跳）。成功返回 True。"""
         cli = self.cli
         cli.SERVER_IP, cli.SERVER_PORT, cli.DEBUG = host, port, debug
         self.state_changed.emit(STATE_CONNECTING)
@@ -2345,8 +2643,7 @@ class EngineBridge(QObject):
         except Exception as exc:
             self.line.emit(f"desktop: 连接 {host}:{port} 失败：{exc}")
             self.state_changed.emit(STATE_UNCONNECTED)
-            self.engine_stopped.emit("连接失败")
-            return
+            return False
         sock.settimeout(None)
         self.sock = sock
         # 照 client.py main() 的做法把全局状态接上
@@ -2359,12 +2656,78 @@ class EngineBridge(QObject):
             cli.ws_handshake(sock, host, port)
         except Exception as exc:
             self.line.emit(f"desktop: WebSocket 握手失败：{exc}")
-            self._teardown("握手失败")
-            return
+            self._close_sock()
+            self.state_changed.emit(STATE_UNCONNECTED)
+            return False
+        self._connected_at = time.time()
         self.line.emit(f"desktop: 已连接 {host}:{port}（ws{'' if not debug else ' + debug'}），等待登录")
+        return True
+
+    def _run(self, host: str, port: int, debug: bool) -> None:
+        """引擎线程入口（首次连接 / 用户手动连接）。首次连接失败**不**自动重连。"""
+        if not self._connect_once(host, port, debug):
+            self.engine_stopped.emit("连接失败")
+            return
+        self.thread = threading.current_thread()
+        self._serve_until_disconnect()
+
+    def _serve_until_disconnect(self, reason: str = "引擎线程结束") -> None:
+        """跑读循环，直到断开/判死/被停；收尾后按策略决定要不要自动重连。"""
         self.running = True
-        self._engine_loop(sock)
-        self._teardown("引擎线程结束")
+        self._engine_loop(self.sock)
+        self._teardown(reason)
+        self._maybe_reconnect()
+
+    # ── WS 自动重连（带熔断）── 实现全在 client.py（`ws_auto_reconnect`），GUI 只负责起线程 + 收尾。
+    def _reconnect_plan(self, now: float):
+        """决策（第 N 次, 等待秒数）或 None（= 熔断）。直接问 client.py，别在这里重复一套策略。"""
+        if self.cli is None:
+            return None
+        return self.cli.ws_reconnect_plan(now)
+
+    def _maybe_reconnect(self) -> None:
+        """断开收尾后被调用：该不该自动重连由 client.py 决定，这里只做"起一条重连线程"。"""
+        if self._closing or self._manual_disconnect:
+            return
+        if self._host is None or self.cli is None:
+            return
+        if not self.cli.reconnect_allowed():
+            # ② 被服务器踢下线 / ① 用户主动断开：不起重连线程
+            return
+        if self._reconnect_plan(time.time()) is None:
+            # 熔断：正常路径下这行日志由 client.py 的 ws_auto_reconnect 打；
+            # 但"重连成功之后又掉线、而窗口已经用满"这种情况下 worker 不会再进循环，
+            # 所以这里补一次（同一份文案，不会重复，因为那条路径已经 return 了）
+            self.line.emit(self.cli.WS_RECONNECT_GIVEUP_TEXT)
+            return
+        if self._reconnect_thread is not None and self._reconnect_thread.is_alive():
+            return
+        self._reconnect_thread = threading.Thread(
+            target=self._reconnect_worker, args=(self._host, self._port, self._debug),
+            name="p2pnet-reconnect", daemon=True,
+        )
+        self._reconnect_thread.start()
+
+    def _reconnect_worker(self, host: str, port: int, debug: bool) -> None:
+        """重连线程：循环/退避/熔断/日志全部由 `client.py` 的 `ws_auto_reconnect()` 负责。"""
+        cli = self.cli
+        cli.SERVER_IP, cli.SERVER_PORT, cli.DEBUG = host, port, debug
+        ok = cli.ws_auto_reconnect(
+            host, port,
+            should_stop=lambda: self._closing or self._manual_disconnect,
+        )
+        if not ok or self._closing or self._manual_disconnect:
+            return
+        self.thread = threading.current_thread()      # 这条线程接着当引擎线程
+        self.sock = cli.ws_sock
+        self._connected_at = time.time()
+        self._restore_login()
+        self._serve_until_disconnect("重连后的引擎线程结束")
+
+    def _restore_login(self) -> None:
+        """重连成功后恢复登录 —— 直接调 `client.py` 的 `resume_login()`（命令行走同一份）。"""
+        if self.cli is not None:
+            self.cli.resume_login()
 
     def _engine_loop(self, sock: "socket.socket") -> None:
         cli = self.cli
@@ -2437,6 +2800,11 @@ class EngineBridge(QObject):
         t = obj.get("type")
         if t == "login_ok":
             self.state_changed.emit(STATE_LOGGED_IN)
+        elif t == "kicked":
+            # ② 被踢 = 登录被取消，**连接还在**：所以状态回"已连接/未登录"，而不是未连接
+            self.state_changed.emit(STATE_CONNECTING)
+            self.peers_changed.emit([])
+            self.me_changed.emit("", 0)
         elif t == "logout_ok":
             # 仍连着 WebSocket，只是不再处于登录态。
             # 照安卓 onLogout：peers 清空、myIp/myPort 归零（否则别人卡片会留在屏幕上）。
@@ -2481,6 +2849,7 @@ class EngineBridge(QObject):
         self.command("logout")
 
     def disconnect(self) -> None:
+        self._manual_disconnect = True     # 用户主动断开 → 不触发自动重连
         self.running = False
         self._close_sock()
         self.state_changed.emit(STATE_UNCONNECTED)
@@ -2491,6 +2860,7 @@ class EngineBridge(QObject):
     def shutdown(self) -> None:
         """退出前清理：停 hello 线程、关所有洞、关连接、恢复 stdout。"""
         cli = self.cli
+        self._closing = True               # 退出 → 停止一切自动重连
         self.running = False
         try:
             if cli is not None:
@@ -2499,6 +2869,9 @@ class EngineBridge(QObject):
         except Exception:
             pass
         self._close_sock()
+        t = self._reconnect_thread
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=2.0)
         if self.thread is not None and self.thread.is_alive():
             self.thread.join(timeout=1.0)
         self._restore_streams()
@@ -2524,6 +2897,9 @@ class EngineBridge(QObject):
 
     def _teardown(self, reason: str) -> None:
         self.running = False
+        # 会话收尾统一交给 client.py（记"断开前是否已登录"、稳定 60s 清零、清会话态、关 socket）
+        if self.cli is not None:
+            self.cli.mark_disconnected()
         self._close_sock()
         self.state_changed.emit(STATE_UNCONNECTED)
         self.peers_changed.emit([])
@@ -2621,6 +2997,8 @@ class MainWindow(QWidget):
         self.pages: list[Page] = []
         for cls in PAGE_CLASSES:
             page = cls(self)
+            if hasattr(page, "finish_layout"):
+                page.finish_layout()     # 卡 body + 页 body 末尾补弹簧（内容顶对齐，不被拉伸）
             self.pages.append(page)
             self.stack.addWidget(page)
         self.title_bar.tab_clicked.connect(self.switch_page)
@@ -2676,7 +3054,6 @@ class MainWindow(QWidget):
         /* 服务器卡第一行的小字标签（只提示，位置与下面控件对齐） */
         QLabel#colLabel {{ color: {C_TEXT_DIM}; font-size: 11px; }}
         QLabel#panelTitle {{ font-weight: 600; color: {C_TEXT}; }}
-        QLabel#warnNote {{ color: {C_WARN}; font-size: 11px; }}
 
         /* 自由层：和内容区同色（卡片靠高亮描边浮在它上面；它自己也要真的画，别留透的） */
         QWidget#freeLayer {{ background: {C_WINDOW}; }}
@@ -3215,11 +3592,13 @@ def run_self_test(app: QApplication) -> int:
 
     me_x, me_y = home.free_layer.me_card.x(), home.free_layer.me_card.y()
     me_w, me_h = fl.me_card.width(), fl.me_card.height()
-    print(f"  我卡 左上=({me_x},{me_y}) {me_w}x{me_h}；贴底居中检查："
-          f"中心x={me_x + me_w/2:.0f}（区域中心 {area_w/2:.0f}），底边={me_y + me_h}"
-          f"（区域底 {area_h:.0f}，margin={ME_CARD_BOTTOM_MARGIN}）")
+    print(f"  我卡 左上=({me_x},{me_y}) {me_w}x{me_h}；**默认居中**检查："
+          f"中心x={me_x + me_w/2:.0f}（区域中心 {area_w/2:.0f}），"
+          f"中心y={me_y + me_h/2:.0f}（区域中心 {area_h/2:.0f}）")
+    print(f"    → me_y={me_y}｜me_h={me_h:.0f}｜area_h={area_h:.0f}"
+          f"（(area_h-me_h)/2 = {(area_h - me_h) / 2:.1f}）")
     assert abs((me_x + me_w / 2) - area_w / 2) <= 1, "我卡应水平居中"
-    assert abs((me_y + me_h) - (area_h - ME_CARD_BOTTOM_MARGIN)) <= 1, "我卡应贴底"
+    assert abs((me_y + me_h / 2) - area_h / 2) <= 1, "我卡默认应竖直居中"
 
     sock_id = 1
     sx, sy = fl.socket_top_left(sock_id)
@@ -3252,8 +3631,12 @@ def run_self_test(app: QApplication) -> int:
     print(f"  未登录：server_me 颜色={me_seg.color} 虚线={me_seg.dash} 从 y={me_seg.y1} 到 y={me_seg.y2:.0f}")
     assert me_seg.color == "#FFFFFF" and me_seg.dash == (LINK_DASH_ON, LINK_DASH_OFF), \
         "未登录时 服务器↔我 应是白色虚线"
+    _srx, _sry, _srw, _srh = fl.server_rect()
+    _srv_bottom = _sry + _srh
+    print(f"  服务器卡片矩形 = ({_srx:.0f},{_sry:.0f}) {_srw:.0f}x{_srh:.0f} → 底边 y={_srv_bottom:.0f}"
+          f"（连线起点应从它底边开始，不再是自由层顶边）")
     assert abs(me_seg.x1 - (me_x + me_w / 2)) <= 1, "连线起点应是 我卡中心 x"
-    assert abs(me_seg.y1) <= 1, "连线起点应在自由层顶边"
+    assert abs(me_seg.y1 - _srv_bottom) <= 1, "连线起点应在服务器卡片底边"
 
     fl.apply_state(connected=True, logged_in=True)
     segs = fl.segments()
@@ -3269,7 +3652,7 @@ def run_self_test(app: QApplication) -> int:
           f"终点 y={ {round(s.y2) for s in peer_segs} }（应 = peer卡y+{PEER_TITLE_CENTER_Y:.0f}）")
     assert len(peer_segs) == 3 and all(sg.color == LINK_GREEN and sg.dash is None for sg in peer_segs)
     for sg in peer_segs:
-        assert abs(sg.y1) <= 1, "peer 连线起点应在自由层顶边"
+        assert abs(sg.y1 - _srv_bottom) <= 1, "peer 连线起点应在服务器卡片底边"
     assert any(abs(sg.y2 - (fl.peer_top_left("alice")[1] + PEER_TITLE_CENTER_Y)) <= 1
                for sg in peer_segs), "peer 连线终点应是标题行中心"
 
@@ -3309,6 +3692,109 @@ def run_self_test(app: QApplication) -> int:
     print(f"  socket 卡拖到右下极限 → 左上=({sx2:.0f},{sy2:.0f})，"
           f"右={sx2 + sc.width():.0f} 底={sy2 + sc.height():.0f}（≤ {area_w:.0f},{area_h:.0f}）")
     assert sx2 + sc.width() <= area_w + 1 and sy2 + sc.height() <= area_h + 1
+
+    # ────────────────────────────────────────────────────────────────────────────────
+    # 服务器卡片：搬进自由层 + 宽度随窗口比例**实时**变（竖屏满宽 / 横屏居中占一半）
+    # ────────────────────────────────────────────────────────────────────────────────
+    print("===== 服务器卡片：在自由层里 + 宽度规则（真量像素）=====")
+    scard = home.server_card
+
+    def _overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+        """两个矩形是否相交（用于"不许压住服务器卡片"）"""
+        return not (a[0] + a[2] <= b[0] or b[0] + b[2] <= a[0]
+                    or a[1] + a[3] <= b[1] or b[1] + b[3] <= a[1])
+
+    def _measure_server(tag: str):
+        win.grab()
+        app.processEvents()
+        fw, fh = float(fl.width()), float(fl.height())
+        print(f"  [{tag}] 自由层 {fw:.0f}x{fh:.0f}（{'竖屏 高>宽' if fh > fw else '横屏 宽>高'}）"
+              f" → 服务器卡 x={scard.x()} y={scard.y()} w={scard.width()} h={scard.height()}"
+              f"（自由层宽的 {scard.width() / fw * 100:.0f}%）")
+        return fw, fh, float(scard.x()), float(scard.width())
+
+    assert scard.parent() is fl, "服务器卡片必须是自由层的子控件"
+    win.resize(800, 1000)
+    p1 = _measure_server("800x1000 竖屏")
+    assert abs(p1[3] - (p1[0] - 2 * SERVER_CARD_MARGIN_X)) <= 2, "竖屏应**满宽**"
+    win.resize(1200, 800)
+    p2 = _measure_server("1200x800 横屏")
+    assert abs(p2[3] - (p2[0] - 2 * SERVER_CARD_MARGIN_X) / 2) <= 2, "横屏应占**一半宽**"
+    assert abs(p2[2] - (p2[0] - p2[3]) / 2.0) <= 2, "横屏应**水平居中**占一半"
+    win.resize(800, 1000)
+    p3 = _measure_server("再切回 800x1000")
+    print(f"    → 竖屏宽 {p1[3]:.0f} → 横屏宽 {p2[3]:.0f} → 再竖屏宽 {p3[3]:.0f}"
+          f"（跟着 resize 变，证明不是构造时算一次）")
+    assert abs(p3[3] - p1[3]) <= 2, "切回竖屏宽度必须变回满宽"
+    assert abs(p3[2] - SERVER_CARD_MARGIN_X) <= 2 or abs(p3[2] - (p3[0] - p3[3]) / 2) <= 2
+
+    # 「我」卡默认**居中**（竖屏：没有冲突，正好居中）
+    me_w, me_h = float(fl.me_card.width()), float(fl.me_card.height())
+    fl._me_drag = (0.0, 0.0)
+    fl._relayout()
+    win.grab()
+    app.processEvents()
+    cx = fl.me_card.x() + me_w / 2.0
+    cy = fl.me_card.y() + me_h / 2.0
+    print(f"  [竖屏 800x1000] 我卡 左上=({fl.me_card.x()},{fl.me_card.y()}) {me_w:.0f}x{me_h:.0f}"
+          f" → 中心=({cx:.1f},{cy:.1f})；自由层中心=({fl.width()/2:.1f},{fl.height()/2:.1f})"
+          f"｜me_y={fl.me_card.y()} me_h={me_h:.0f} area_h={fl.height()}")
+    assert abs(cx - fl.width() / 2.0) <= 1, "我卡应水平居中"
+    assert abs(cy - fl.height() / 2.0) <= 1, "竖屏我卡默认应**竖直居中**"
+
+    # 很矮的横屏（直接压自由层高度，让冲突真的发生）：
+    # 默认居中会压住服务器卡片 → **限位优先**（正好被推到服务器卡片下方）
+    fl.resize(1200, 340)
+    fl._me_drag = (0.0, 0.0)
+    fl._relayout()
+    app.processEvents()
+    _sx, _sy, _sw, _sh = fl.server_rect()
+    me_top = fl.me_card.y()
+    limit = fl.avoid_top(float(fl.me_card.x()), me_w)
+    centered_y = (fl.height() - me_h) / 2.0
+    print(f"  [很矮横屏 1200x340] 服务器卡=({_sx:.0f},{_sy:.0f}) {_sw:.0f}x{_sh:.0f}"
+          f"（底边 {_sy + _sh:.0f}，限位 {limit:.0f}）；我卡 top={me_top}"
+          f"（居中会是 {centered_y:.0f}，但被限位推下来了）"
+          f"｜我卡底={me_top + me_h:.0f} ≤ 自由层高 {fl.height()}")
+    assert me_top >= limit - 1, "限位优先：我卡必须被推到服务器卡片下方"
+    assert me_top <= limit + 2, "冲突时应正好贴在限位上（不是随便乱放）"
+    assert me_top + me_h <= fl.height() + 1, "仍要落在自由层内"
+    assert not _overlap((float(fl.me_card.x()), float(me_top), me_w, me_h),
+                        fl.server_rect()), "冲突解完仍不许压住服务器卡片"
+    win.resize(1080, 720)
+    fl.resize(1000, 600)
+    fl._me_drag = (0.0, 0.0)
+    fl._relayout()
+
+    # 不压服务器卡片：默认位置 + 拖到上下极限都验一遍
+    print("===== 卡片限位：不许压住服务器卡片 =====")
+
+    srv = fl.server_rect()
+    for name in ("alice", "bob", "carol"):
+        c = fl._peer_cards[name]
+        x, y = fl.peer_top_left(name)
+        rect = (x, y, float(c.width()), float(c.height()))
+        print(f"  peer {name:6s} 左上=({x:.0f},{y:.0f}) 底={y + c.height():.0f}"
+              f"｜服务器卡底边={srv[1] + srv[3]:.0f}｜重叠={_overlap(rect, srv)}")
+        assert not _overlap(rect, srv), f"{name} 压住了服务器卡片"
+    sy_ = fl.socket_top_left(sock_id)
+    srect = (sy_[0], sy_[1], float(sc.width()), float(sc.height()))
+    assert not _overlap(srect, srv), "socket 卡压住了服务器卡片"
+
+    fl._drag_me(-100000.0, -100000.0)
+    print(f"  我卡拖到**上**极限 → 左上=({fl.me_card.x()},{fl.me_card.y()})"
+          f"（限位 ≥ {fl.avoid_top(float(fl.me_card.x()), me_w):.0f}）"
+          f"｜重叠={_overlap((float(fl.me_card.x()), float(fl.me_card.y()), me_w, me_h), srv)}")
+    assert not _overlap((float(fl.me_card.x()), float(fl.me_card.y()), me_w, me_h), srv), \
+        "我卡拖到上极限也不许压住服务器卡片"
+    assert fl.me_card.y() >= -1 and fl.me_card.x() >= -1
+    fl._drag_me(100000.0, 100000.0)
+    print(f"  我卡拖到**下**极限 → 左上=({fl.me_card.x()},{fl.me_card.y()})，"
+          f"底={fl.me_card.y() + me_h:.0f}（≤ {fl.height()}）")
+    assert fl.me_card.y() + me_h <= fl.height() + 1, "下极限仍要落在自由层内"
+    fl._drag_me(-100000.0, 100000.0)
+    fl._me_drag = (0.0, 0.0)
+    fl._relayout()
 
     print("===== 数据：list_result → peer 卡；洞状态 → 五步 + 用法按钮 =====")
     recorder: list[str] = []
@@ -3587,6 +4073,10 @@ def run_self_test(app: QApplication) -> int:
     hb_sock = _StubSocket()
     t0 = 1000.0
 
+    def _unmask(masked: bytes, mask: bytes) -> bytes:
+        """本地解掩码（GUI 已不再有 ws_unmask —— 那是随心跳实现一起删掉的）"""
+        return bytes(b ^ mask[i % 4] for i, b in enumerate(masked))
+
     def _hb_log_lines():
         """只数**真正的日志行**（带 [时间][client] 前缀）——
         self-test 自己的 print 也会被 tee 进日志浮层，不能算进去。"""
@@ -3611,11 +4101,16 @@ def run_self_test(app: QApplication) -> int:
 
     r_sent = _cli_mod._ws_heartbeat_tick(t0 + 20.5)   # 到点：打日志 + 发帧
     frame1 = hb_sock.take()
+    payload1 = _cli_mod.ws_heartbeat_payload(1)
     hb_lines = _hb_log_lines()
     print(f"    now-{t0:.0f}=20.5s → {r_sent!r}，计数={_cli_mod._hb_count}（应 1），"
           f"socket 收到 {len(frame1)} 字节 byte0={frame1[0]:#04x}，日志={hb_lines[-1:]}")
     assert r_sent == "sent" and _cli_mod._hb_count == 1
     assert frame1 and frame1[0] == 0x89, "到点必须真发 0x9 掩码帧"
+    assert len(frame1) == 6 + len(payload1), "帧长应是 2 字节头 + 4 字节 mask + payload"
+    assert frame1[6:] != payload1 and _unmask(frame1[6:], frame1[2:6]) == payload1, \
+        "心跳 payload 必须带序号（p2pnet#N）且是掩码后的"
+    print(f"    心跳 payload = {payload1!r}（带序号，服务端原样回）")
     assert hb_lines and hb_lines[-1].endswith(expect1), "发之前必须打那行日志"
 
     _cli_mod._hb_last_rx = t0 + 20.6                  # 模拟服务端的协议级 pong 到了
@@ -3635,14 +4130,62 @@ def run_self_test(app: QApplication) -> int:
     assert frame2 and frame2[0] == 0x89
     assert hb_lines[-1].endswith("WS 心跳：发出协议级 ping（第 2 次，间隔 20s）")
 
-    print("  判死分支（10s 内没收到任何字节）：")
-    _cli_mod._hb_last_rx = t0 + 41.0
-    _cli_mod._hb_ping_sent_at = t0 + 41.0
-    r_dead = _cli_mod._ws_heartbeat_tick(t0 + 51.5)
-    tail = ov.text.toPlainText().splitlines()[-1]
-    print(f"    now-{t0:.0f}=51.5s → {r_dead!r}，connected={_cli_mod.connected}，日志末行={tail!r}")
-    assert r_dead == "dead" and _cli_mod.connected is False
-    assert "pong 超时：连接已断开（WS 心跳失败）" in tail
+    print("  收到协议级 pong（真喂 0xA 帧进 ws_recv，返回契约仍是 None）：")
+    def _feed_pong(payload_bytes):
+        _cli_mod.recv_buf = bytes([0x8A, len(payload_bytes)]) + payload_bytes  # 服务端→客户端不掩码
+        ret = _cli_mod.ws_recv()
+        return ret
+
+    before = len([l for l in ov.text.toPlainText().splitlines()
+                  if l.startswith("[") and "收到协议级 pong" in l])
+    _cli_mod._hb_ping_sent_at = t0 + 20.5      # 先摆成"正在等应答"
+    ret1 = _feed_pong(_cli_mod.ws_heartbeat_payload(1))
+    pong_lines = [l for l in ov.text.toPlainText().splitlines()
+                  if l.startswith("[") and "收到协议级 pong" in l]
+    print(f"    喂 payload={_cli_mod.ws_heartbeat_payload(1)!r} → ws_recv() 返回 {ret1!r}（契约：必须 None），"
+          f"日志={pong_lines[-1:]}")
+    assert ret1 is None, "ws_recv() 对 pong 的返回契约必须保持 None"
+    print(f"    应答到达后 _hb_ping_sent_at={_cli_mod._hb_ping_sent_at}（应 0.0 = 不再等应答）")
+    assert _cli_mod._hb_ping_sent_at == 0.0, "收到自己的心跳 pong 后应清掉等待状态"
+    assert len(pong_lines) == before + 1, "真读到 0xA 才该多一行日志"
+    assert pong_lines[-1].endswith("WS 心跳：收到协议级 pong（第 1 次）"), "文案必须逐字一致"
+
+    ret2 = _feed_pong(_cli_mod.ws_heartbeat_payload(7))
+    pong_lines2 = [l for l in ov.text.toPlainText().splitlines()
+                   if l.startswith("[") and "收到协议级 pong" in l]
+    print(f"    喂 payload={_cli_mod.ws_heartbeat_payload(7)!r} → 日志={pong_lines2[-1:]}"
+          f"（N 应等于 payload 里的序号 7）")
+    assert pong_lines2[-1].endswith("WS 心跳：收到协议级 pong（第 7 次）"), "N 必须等于 payload 里的序号"
+
+    ret3 = _feed_pong(b"someone-elses-pong")
+    pong_lines3 = [l for l in ov.text.toPlainText().splitlines()
+                   if l.startswith("[") and "收到协议级 pong" in l]
+    print(f"    喂一个非心跳 payload={b'someone-elses-pong'!r} → 日志行数不变="
+          f"{len(pong_lines3) == len(pong_lines2)}（不该误报成第 N 次）")
+    assert ret3 is None and len(pong_lines3) == len(pong_lines2)
+
+    print(f"  文案 helper：{_cli_mod.ws_heartbeat_pong_log_text(5)!r}")
+    assert _cli_mod.ws_heartbeat_pong_log_text(5) == "WS 心跳：收到协议级 pong（第 5 次）"
+
+    print("  判死条件（回归：必须「ping 之后一直没收到任何字节」才判死）")
+    def _hb_die_case(name, last_rx, ping_at, now, want_dead):
+        _hb_set(last_tx=ping_at, last_rx=last_rx, ping_at=ping_at)   # last_tx=ping_at：像刚发过 ping
+        r = _cli_mod._ws_heartbeat_tick(now)
+        print(f"    {name:36s} last_rx-ping={last_rx - ping_at:+.1f}s，"
+              f"now-ping={now - ping_at:+.1f}s → {r!r}，connected={_cli_mod.connected}")
+        assert (r == "dead") is want_dead, \
+            f"{name}：期望 {'dead' if want_dead else '不判死'}，实际 {r!r}"
+        return r
+
+    t_ping = t0 + 41.0
+    _hb_die_case("① pong 已到达（last_rx=ping+0.1s）", t_ping + 0.1, t_ping, t_ping + 10.5, False)
+    _hb_die_case("② 真没回（last_rx=ping-0.1s）", t_ping - 0.1, t_ping, t_ping + 10.5, True)
+    _hb_die_case("③ 边界 last_rx == ping_at", t_ping, t_ping, t_ping + 10.5, False)
+    _hb_die_case("④ 还没到超时（ping+9.5s）", t_ping - 0.1, t_ping, t_ping + 9.5, False)
+    print(f"    ①③④ 都不判死、② 判死 → 这条曾写错的判死条件已被钉住"
+          f"（旧写法 now-last_rx>=10 会让 ① 在 ping+10s 稳定误判）")
+    tail_dead = [l for l in ov.text.toPlainText().splitlines() if "pong 超时" in l]
+    assert tail_dead, "② 应该留下判死那一行日志"
 
     # 复位（别把假状态留给后面的断言）
     _cli_mod.stop_ws_heartbeat()
@@ -3651,6 +4194,559 @@ def run_self_test(app: QApplication) -> int:
     _cli_mod._hb_count = 0
     _cli_mod.connected = True
     _cli_mod.ws_sock = None
+
+    # ────────────────────────────────────────────────────────────────────────────────
+    # 【1】WS 自动重连：策略纯函数 + 熔断/重置 + 文案
+    # ────────────────────────────────────────────────────────────────────────────────
+    print("===== WS 自动重连（带熔断）策略 =====")
+    delays = [_cli_mod.ws_reconnect_delay(i) for i in range(1, 5)]
+    print(f"  退避表（第 1/2/3/4 次）= {delays}（应 [1.0, 2.0, 4.0, None]）")
+    assert delays == [1.0, 2.0, 4.0, None], "退避必须是 1s→2s→4s，第 4 次熔断"
+
+    T = 10000.0
+    W = _cli_mod.WS_RECONNECT_WINDOW
+    L = _cli_mod.WS_RECONNECT_MAX
+    print(f"  滑窗 = {W}s，窗口内上限 = {L} 次")
+    assert (W, L) == (60.0, 3)
+
+    three = [T - 50, T - 30, T - 1]         # 3 次都在 60s 窗口内
+    print(f"  窗口内 3 次尝试 → allowed={_cli_mod.ws_reconnect_allowed(three, T)}（应 False = 第 4 次不许）")
+    assert _cli_mod.ws_reconnect_allowed(three, T) is False
+    pruned = _cli_mod.ws_reconnect_prune(three + [T - 61, T - 70], T)
+    print(f"  滑窗外（-61s/-70s）被丢掉 → 剩下 {len(pruned)} 条（应 3）")
+    assert len(pruned) == 3
+    print(f"  时间滑过去 61s 后 → allowed={_cli_mod.ws_reconnect_allowed(three, T + 61)}（应 True）")
+    assert _cli_mod.ws_reconnect_allowed(three, T + 61) is True
+    print(f"  空列表（= 手动连接/稳定 60s 后清零）→ allowed="
+          f"{_cli_mod.ws_reconnect_allowed([], T)}（应 True）")
+    assert _cli_mod.ws_reconnect_allowed([], T) is True
+
+    print(f"  文案：{_cli_mod.ws_reconnect_log_attempt_text(1)!r}")
+    print(f"  文案：{_cli_mod.ws_reconnect_log_ok_text(3)!r}")
+    print(f"  文案：{_cli_mod.WS_RECONNECT_GIVEUP_TEXT!r}")
+    assert _cli_mod.ws_reconnect_log_attempt_text(1) == "WS 自动重连：第 1 次（60 秒窗口内）"
+    assert _cli_mod.ws_reconnect_log_ok_text(3) == "WS 自动重连成功（第 3 次）"
+    assert _cli_mod.WS_RECONNECT_GIVEUP_TEXT == (
+        "WS 自动重连已放弃：60 秒内已重连 3 次仍失败（不再自动重连，请手动连接）")
+
+    print("  桥的决策 _reconnect_plan（不起线程、不联网）：")
+    _cli_mod._rc_attempts = []
+    print(f"    空计数        → {win.engine._reconnect_plan(T)}（应 (1, 1.0)）")
+    assert win.engine._reconnect_plan(T) == (1, 1.0)
+    _cli_mod._rc_attempts = [T - 30]
+    print(f"    窗口内 1 次    → {win.engine._reconnect_plan(T)}（应 (2, 2.0)）")
+    assert win.engine._reconnect_plan(T) == (2, 2.0)
+    _cli_mod._rc_attempts = [T - 30, T - 20]
+    print(f"    窗口内 2 次    → {win.engine._reconnect_plan(T)}（应 (3, 4.0)）")
+    assert win.engine._reconnect_plan(T) == (3, 4.0)
+    _cli_mod._rc_attempts = [T - 30, T - 20, T - 10]
+    print(f"    窗口内 3 次    → {win.engine._reconnect_plan(T)}（应 None = 放弃，且之后不再尝试）")
+    assert win.engine._reconnect_plan(T) is None
+    assert win.engine._reconnect_plan(T + 5) is None, "放弃后（窗口没滑过去）不应再尝试"
+    _cli_mod._rc_attempts = [T - 30, T - 20, T - 10]
+    _cli_mod._rc_attempts = []               # 模拟『计数重置①：用户手动连接』
+    print(f"    计数清零后     → {win.engine._reconnect_plan(T)}（应 (1, 1.0)）")
+    assert win.engine._reconnect_plan(T) == (1, 1.0)
+    # 真跑一次"放弃"路径：窗口已满 → client.py 的 ws_auto_reconnect 直接打日志并放弃（**不联网**）
+    caught: list = []
+    now_real = time.time()
+    win.engine.line.connect(caught.append)
+    _cli_mod._rc_attempts = [now_real - 30, now_real - 20, now_real - 10]   # 窗口内已 3 次
+    _cli_mod._last_connected_at = 0.0
+    ok = _cli_mod.ws_auto_reconnect("127.0.0.1", 1)
+    gave_up = [l for l in caught if "自动重连已放弃" in l]
+    print(f"    窗口内已用满 3 次 → ws_auto_reconnect 返回 {ok}（应 False），"
+          f"打出 {len(gave_up)} 行放弃日志：{gave_up[-1:]}")
+    assert ok is False and gave_up and gave_up[-1].endswith(_cli_mod.WS_RECONNECT_GIVEUP_TEXT)
+    win.engine.line.disconnect(caught.append)
+    _cli_mod._rc_attempts = []
+
+    # 手动断开 / 退出 都不该重连
+    win.engine._manual_disconnect = True
+    print(f"    手动断开标记 → _maybe_reconnect() 是否会起线程："
+          f"{'会' if (win.engine._host is not None) else '不会'}（_host=None 时也不会）")
+    win.engine._manual_disconnect = False
+
+    # ────────────────────────────────────────────────────────────────────────────────
+    # 【2】界面里不该再有啰嗦说明（机器证据：源码里的字符串字面量里没有那些字样）
+    # ────────────────────────────────────────────────────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────────────
+    # 四端统一：① 主动断开 / ② 被踢 → 都不重连、不重登；③ 被动断开 → 都允许
+    # ────────────────────────────────────────────────────────────────────────────────
+    print("===== 自动重连/重登规则（只看断开前的最后状态）=====")
+    t1 = _cli_mod.should_reconnect("manual")
+    t2 = _cli_mod.should_relogin("manual", True)
+    t3 = _cli_mod.should_reconnect("passive")
+    t4 = _cli_mod.should_relogin("passive", True)
+    t5 = _cli_mod.should_relogin("passive", False)
+    print(f"  1) 用户主动断开                        → 重连={t1} 重登={t2}（应 False/False）")
+    print(f"  2) 被动断开 + 断开前已登录              → 重连={t3} 重登={t4}（应 True/True）")
+    print(f"  3) 被动断开 + 断开前未登录              → 重连={t3} 重登={t5}（应 True/False）")
+    assert (t1, t2) == (False, False), "① 主动断开：都不做"
+    assert (t3, t4) == (True, True), "② 被动断开 + 已登录：都做"
+    assert (t3, t5) == (True, False), "③ 被动断开 + 未登录：只重连"
+
+    # 4) 被踢 → 状态变成"已连接未登录" → 掉线 → 重连 ✅ / 重登 ❌
+    _cli_mod._user_quit = False
+    _cli_mod.logged_in_user = "e2e"          # 先假装已登录
+    _cli_mod.handle_server_message({"type": "kicked", "message": "re-login from another connection"})
+    kicked_state = _cli_mod.logged_in_user
+    _cli_mod.mark_disconnected()             # 之后连接被动断开（收尾记下"断开前是否已登录"）
+    kicked_rc, kicked_rl = _cli_mod.reconnect_allowed(), _cli_mod.relogin_allowed()
+    print(f"  4) 被踢（logged_in_user={kicked_state!r}）后掉线 → 重连={kicked_rc} 重登={kicked_rl}"
+          f"（应 True/False；_was_logged_in={_cli_mod._was_logged_in}）")
+    assert (kicked_rc, kicked_rl) == (True, False), "被踢后掉线：要重连、不要自动重登"
+
+    # 5) 被踢后用户手动 login 成功（状态回到已登录）→ 再掉线 → 重连 ✅ / **重登 ✅**
+    #    （证明"状态本身就是真相"，不需要任何"被踢标记"）
+    _cli_mod.mark_user_connect()             # 手动连接/登录时调
+    _cli_mod.logged_in_user = "e2e"          # 手动 login 成功
+    _cli_mod.mark_disconnected()             # 再掉线
+    relogin_after_manual = _cli_mod.relogin_allowed()
+    print(f"  5) 被踢 → 手动 login → 再掉线 → 重连={_cli_mod.reconnect_allowed()} "
+          f"重登={relogin_after_manual}（应 True/True）｜_was_logged_in={_cli_mod._was_logged_in}")
+    assert _cli_mod.reconnect_allowed() is True and relogin_after_manual is True, \
+        "手动登录后状态回到已登录 → 再掉线应当又能自动重登（说明不需要清什么标记）"
+
+    # 6) 被踢本身：不产生断开、不排重连、**不停心跳**；只取消登录态 + 打统一文案
+    _cli_mod._hb_stop.clear()
+    _cli_mod.logged_in_user = "e2e"
+    _cli_mod.session_key = b"x"
+    before_kick = ov.text.toPlainText()
+    _cli_mod.handle_server_message({"type": "kicked", "message": "re-login from another connection"})
+    kicked_log = ov.text.toPlainText()[len(before_kick):]
+    print(f"  6) kicked 之后：登录态已清={_cli_mod.logged_in_user is None and _cli_mod.session_key is None}"
+          f"｜心跳是否被停={_cli_mod._hb_stop.is_set()}（应 False）"
+          f"｜日志={[l for l in kicked_log.splitlines() if l.startswith('[')][-1:]}")
+    assert _cli_mod.logged_in_user is None and _cli_mod.session_key is None
+    assert _cli_mod._hb_stop.is_set() is False, "被踢不是断开：不许停心跳"
+    assert "被服务器踢下线（re-login from another connection）：登录已取消，不会自动重新登录" in kicked_log
+
+    # 7) resume_login 的两行统一文案 + "只发一次登录"（不循环重试）
+    caught2: list = []
+    sent: list = []
+    real_send = _cli_mod.ws_send
+    _cli_mod.ws_send = lambda sock, obj: sent.append(obj)
+    win.engine.line.connect(caught2.append)
+
+    _cli_mod._was_logged_in = False
+    _cli_mod.resume_login()
+    text_not_logged_in = list(caught2)
+
+    caught2.clear()
+    _cli_mod._was_logged_in = True
+    _cli_mod._saved_login_user = _cli_mod._saved_login_pass = None
+    _cli_mod.resume_login()
+    text_no_cred = list(caught2)
+
+    caught2.clear()
+    _cli_mod._user_quit = False
+    _cli_mod._was_logged_in = True
+    _cli_mod._saved_login_user, _cli_mod._saved_login_pass = "e2e", "pw"
+    _cli_mod.resume_login()
+    text_relogin = list(caught2)
+    n_login_sent = len(sent)
+    _cli_mod.ws_send = real_send
+    win.engine.line.disconnect(caught2.append)
+
+    print(f"  7) 断开前未登录      → {[l for l in text_not_logged_in if '自动重连' in l][-1:]}")
+    print(f"     已登录但没凭据    → {[l for l in text_no_cred if '自动重连' in l][-1:]}")
+    print(f"     已登录且有凭据    → {[l for l in text_relogin if '自动重连' in l][-1:]}"
+          f"｜实际发出的 login 条数={n_login_sent}（只发一次，不循环重试）")
+    assert any("连接已恢复，断开前未登录，不自动重新登录" in l for l in text_not_logged_in)
+    assert any("连接已恢复，但没有可用的凭据，需要手动重新登录" in l for l in text_no_cred)
+    assert any("用保存的凭据重新登录" in l for l in text_relogin)
+    assert n_login_sent == 1, f"三种情况里只有「有凭据」那次该发 login，实际发了 {n_login_sent} 次"
+
+    # 8) 主动断开：连试都不试（不联网）
+    _cli_mod._user_quit = True
+    ok_manual = _cli_mod.ws_auto_reconnect("127.0.0.1", 1)
+    print(f"  8) 用户主动断开时 ws_auto_reconnect() = {ok_manual}（应 False，且不联网）")
+    assert ok_manual is False
+
+    # 复位
+    _cli_mod.mark_user_connect()
+    _cli_mod._was_logged_in = False
+    _cli_mod._saved_login_user = _cli_mod._saved_login_pass = None
+    _cli_mod.logged_in_user = None
+    _cli_mod.session_key = None
+
+    print("===== 界面文案净化（AST 抽字符串字面量，排除 docstring）=====")
+    import ast as _ast
+    tree = _ast.parse(open(os.path.abspath(__file__), encoding="utf-8").read())
+    docstrings = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.Module, _ast.ClassDef, _ast.FunctionDef, _ast.AsyncFunctionDef)):
+            doc = _ast.get_docstring(node, clean=False)
+            if doc:
+                docstrings.add(doc)
+    ui_strings = [n.value for n in _ast.walk(tree)
+                  if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+                  and n.value not in docstrings]
+    # ⚠️ 用拼接构造：否则这些字样本身就是"字符串字面量"，会被断言自己扫到（踩过两次）
+    banned_ui = ["python" + " 端", "python" + "端", "第 5 行" + "点", "第5行" + "点",
+                 "参数" + "一一对应", "media" + ".py", "switch" + ".py", "vpn" + ".py",
+                 "proxy" + ".py", "wg-python" + ".py", "wg-calltool" + ".py",
+                 "ffmpeg" + ".sh", "client/" + "app/",
+                 # 空态废话：空态已由首行状态表达，不该再单独占一行（有通道时要渲染的是动态列表）
+                 "通道：" + "还没有"]
+    print(f"  扫了 {len(ui_strings)} 个界面字符串字面量；被禁字样：{banned_ui}")
+    hits = [(b, t) for b in banned_ui for t in ui_strings if b in t]
+    for b, t in hits:
+        print(f"    ✗ {b!r} 出现在 {t[:60]!r}")
+    assert not hits, f"界面文案里还有啰嗦说明：{hits}"
+    print("  ✓ 0 处命中（这些信息现在只在代码注释/docstring 里）")
+
+    # 界面说明行清单（白名单）：**只剩这两条**，且都不属于"空态重复"
+    #   · 字段语义：填哪个地址（不是教学，也不是空态）
+    #   · 最短操作提示：网口可点（别处没有表达）
+    # 空态文案（如 `通道：还没有`）已删 —— 空态由首行状态表达；有通道时该渲染的是动态列表。
+    own_src2 = open(os.path.abspath(__file__), encoding="utf-8").read()
+    note_texts = re.findall(r'section_note\(self,\s*"([^"]+)"', own_src2)
+    expected_notes = ["对方路由器公网地址:端口（对方内网地址不用管）", "点网口 = 拔线"]
+    print(f"  界面说明行清单（section_note）共 {len(note_texts)} 条：")
+    for t in note_texts:
+        print(f"    · {t}")
+    assert note_texts == expected_notes, \
+        f"界面说明行清单变了（{note_texts}）：新增说明行要先过'是否啰嗦/空态重复'这一关"
+
+    # ────────────────────────────────────────────────────────────────────────────────
+    # 【3】switch 页版式：配置（含启停）→ DHCP → 拓扑（最后）
+    # ────────────────────────────────────────────────────────────────────────────────
+    print("===== switch / vpn 页版式 + DHCP 卡显隐 + 首行等宽（真量像素）=====")
+
+    def _card_body(card_frame):
+        """取卡片的内容布局（卡片可能没有标题行，所以不能假设固定层号）"""
+        outer = card_frame.layout()
+        for i in range(outer.count()):
+            if outer.itemAt(i).layout() is not None:
+                return outer.itemAt(i).layout()
+        raise AssertionError("卡片里没有取到内容布局")
+
+    def _measure_row(page, row):
+        """
+        把页面切到当前页并**强制跑一次布局/渲染**（win.grab()），再量这一行在页面坐标里的 x/宽度。
+
+        ⚠️ 不 grab 的话，控件全是 100×30 的默认尺寸（父 agent 也踩过这个坑）——
+        这样量出来的"等宽"毫无意义。所以这里断言宽度必须接近页面可用宽度。
+        """
+        win.stack.setCurrentWidget(page)
+        win.grab()
+        app.processEvents()
+        tl = row.mapTo(page, QPoint(0, 0))
+        return tl.x(), row.width(), row.height()
+
+    def _card_direct_rows(card_frame):
+        body = _card_body(card_frame)
+        return [body.itemAt(i).widget() for i in range(body.count())
+                if body.itemAt(i).widget() is not None]
+
+    vpn_page = next(p for p in win.pages if getattr(p, "kind", "") == "vpn")
+    sw_page = next(p for p in win.pages if getattr(p, "kind", "") == "switch")
+    proxy_page = next(p for p in win.pages if getattr(p, "kind", "") == "proxy")
+
+    for page, name in ((vpn_page, "vpn"), (sw_page, "switch"), (proxy_page, "proxy")):
+        titles = page.card_titles()
+        print(f"  [{name}] 卡片顺序 = {titles}")
+        assert titles[0] == "配置", f"{name}: 配置卡必须是第一张"
+        if name == "switch":
+            assert titles == ["配置", "嵌入 DHCP 服务器", "拓扑"]
+        elif name == "vpn":
+            assert titles == ["配置", "嵌入 DHCP 服务器"]
+        # proxy 第二张卡的标题还带着 -L/-R 说明（三端一致的老文案，等父 agent 统一，这里不钉死）
+
+        have_dhcp = hasattr(page, "f_dhcp")
+        if have_dhcp:
+            # dhcpEnabled 默认必须是 false，且 DHCP 整卡默认隐藏
+            print(f"  [{name}] dhcpEnabled 默认 = {page.sw_dhcp.isChecked()}（必须 False）"
+                  f"｜DHCP 卡默认 isHidden = {page.f_dhcp.isHidden()}（必须 True）")
+            assert page.sw_dhcp.isChecked() is False, "dhcpEnabled 默认必须是 false"
+            assert page.f_dhcp.isHidden() is True, "默认不启用时 DHCP 卡必须整卡隐藏"
+            # ⚠️ 必须先让 DHCP 卡**可见**再量：隐藏控件的几何是未布局的 sizeHint（会量出 x=13 w=74 h=0）
+            page.sw_dhcp.setChecked(True)
+            win.grab()
+            app.processEvents()
+
+        x1, w1, h1 = _measure_row(page, page.row_cfg)
+        usable = page.width() - 2 * 12 - 2 * 1          # 卡片左右各 12 margin + 1px 边框
+        print(f"  [{name}] 页面宽={page.width()}（可用内宽≈{usable}）")
+        print(f"  [{name}] 配置卡首行： x={x1:4d}  w={w1:4d}  右边界={x1 + w1:4d}  h={h1}")
+        assert w1 > 500, f"没量到真实尺寸（{w1}px 说明页面没被激活/布局）"
+        assert h1 == CARD_HEAD_H, f"{name}: 配置卡首行高度应 = CARD_HEAD_H={CARD_HEAD_H}，实际 {h1}"
+
+        if have_dhcp:
+            x2, w2, h2 = _measure_row(page, page.row_dhcp)
+            page.sw_dhcp.setChecked(False)      # 量完立刻复位成"默认关闭"
+            win.grab()
+            app.processEvents()
+            print(f"  [{name}] DHCP 卡首行：x={x2:4d}  w={w2:4d}  右边界={x2 + w2:4d}  h={h2}")
+            assert x1 == x2, f"{name}: 两行左边界不一致（配置 x={x1} vs DHCP x={x2}）"
+            assert w1 == w2, f"{name}: 两行宽度不一致（配置 w={w1} vs DHCP w={w2}）"
+            assert h1 == h2, f"{name}: 两行高度不一致（配置 h={h1} vs DHCP h={h2}）"
+            print(f"  [{name}] ✓ 两行 x/宽度/高度完全一致（x={x1}, w={w1}, h={h1}）")
+            assert h1 == CARD_HEAD_H == h2
+            # 勾上开关 → DHCP 整卡显示；取消 → 又隐藏
+            page.sw_dhcp.setChecked(True)
+            app.processEvents()
+            shown = not page.f_dhcp.isHidden()
+            page.sw_dhcp.setChecked(False)
+            app.processEvents()
+            hidden_again = page.f_dhcp.isHidden()
+            print(f"  [{name}] 开关打开 → DHCP 卡显示={shown}；再关闭 → 隐藏={hidden_again}")
+            assert shown is True and hidden_again is True, "开关必须控制整卡显隐"
+
+        # 防呆：固定高度别把文字/控件裁掉（连 minimumHeight 一起看，30px 的按钮也会被抓）
+        for row in [page.row_cfg] + ([page.row_dhcp] if have_dhcp else []):
+            for i in range(row.layout().count()):
+                w = row.layout().itemAt(i).widget()
+                if w is not None:
+                    need = max(w.sizeHint().height(), w.minimumHeight())
+                    assert need <= row.height(), \
+                        f"{name}: {type(w).__name__} 需要 {need}px > 行高 {row.height()}px（会被裁）"
+
+        # 首行左标签固定「配置」；状态与启停都必须在这一行里
+        cfg_title = next(l for l in page.row_cfg.findChildren(QLabel)
+                         if l.objectName() == "cardTitle")
+        state_lab = getattr(page, "lab_state", None) or getattr(page, "lab_ports", None)
+        print(f"  [{name}] 配置卡首行左标签 = {cfg_title.text()!r}（必须 '配置'）"
+              f"｜右状态 = {state_lab.text()!r}｜按钮 = {page.btn_toggle.text()!r}"
+              f"（按钮高={page.btn_toggle.height()}px）")
+        assert cfg_title.text() == "配置", f"{name}: 首行左标签必须是「配置」（三端一致）"
+        assert page.btn_toggle.parent() is page.row_cfg, "启停按钮必须在首行里"
+        assert state_lab is not None and state_lab.parent() is page.row_cfg, \
+            "状态标签必须在首行里（vpn/proxy=lab_state，switch=lab_ports）"
+
+        # 状态文案两态：**口径三端统一** —— vpn/proxy 看通道数，switch 看网口数（词不同，别被"统一"掉）
+        if name in ("vpn", "proxy"):
+            assert state_lab.text() == "未接线", f"{name}: 空态应为「未接线」"
+            page.set_channels(3)
+            mid = state_lab.text()
+            page.set_channels(0)
+            print(f"  [{name}] 状态文案两态（通道数）：空={state_lab.text()!r}，N=3 → {mid!r}")
+            assert mid == "已接 3 条" and state_lab.text() == "未接线"
+        elif name == "switch":
+            assert state_lab.text() == "未插线", "switch: 空态应为「未插线」（与同页拓扑卡同词）"
+            page.set_ports(3)
+            mid = state_lab.text()
+            page.set_ports(0)
+            print(f"  [{name}] 状态文案两态（网口数）：空={state_lab.text()!r}，N=3 → {mid!r}")
+            assert mid == "已插 3 个" and state_lab.text() == "未插线"
+
+        # 至少一张卡的页面，第二张卡的标题行也量一下（仅供参考，不参与等宽/等高断言）
+        if not have_dhcp:
+            print(f"  [{name}] 页内卡片：{titles}（无 DHCP 卡，故只断言配置首行 h={h1}）")
+
+
+    # ────────────────────────────────────────────────────────────────────────────────
+    # 行高/行间隙：**必须在高窗口下量**（bug 只在"卡片独吞高度"时明显）
+    # ────────────────────────────────────────────────────────────────────────────────
+    # switch 页尾部结构 + 「内嵌 DHCP」行（开关 + 标签样式）—— 这三条在上一轮大块替换时被我弄丢过，补回
+    cfg_card = sw_page.body.itemAt(0).widget()
+    head_row = _card_body(cfg_card).itemAt(0).widget()
+    head_widgets = [head_row.layout().itemAt(i).widget().__class__.__name__
+                    for i in range(head_row.layout().count())]
+    print(f"  [switch] 配置卡第一行控件 = {head_widgets}｜文案 = {sw_page.btn_toggle.text()!r}")
+    assert sw_page.btn_toggle in head_row.findChildren(QPushButton), "启停按钮必须在配置卡首行"
+    assert sw_page.lab_ports in head_row.findChildren(QLabel), "状态文本也应在首行"
+    topo_card = sw_page.body.itemAt(2).widget()
+    print(f"  [switch] 拓扑卡里的按钮数 = {len(topo_card.findChildren(QPushButton))}（应 0）")
+    assert not topo_card.findChildren(QPushButton), "拓扑卡里不该再放启停按钮"
+
+    for page, name in ((sw_page, "switch"), (vpn_page, "vpn"), (proxy_page, "proxy")):
+        win.stack.setCurrentWidget(page)
+        if hasattr(page, "sw_dhcp"):
+            default_checked = page.sw_dhcp.isChecked()      # 新页面的**默认**值（应为 False）
+            default_hidden = page.f_dhcp.isHidden()         # 默认 DHCP 卡隐藏
+            page.sw_dhcp.setChecked(True)                   # 量可见几何时临时打开（下面会复位）
+        win.grab()
+        app.processEvents()
+        cfg = page.body.itemAt(0).widget()
+        rows = _card_direct_rows(cfg)
+        if not hasattr(page, "sw_dhcp"):
+            win.grab()
+            continue
+        toggle_row = rows[-1]
+        sw = toggle_row.findChildren(ToggleSwitch)[0]
+        t_lab = toggle_row.findChildren(QLabel)[0]
+        ref_row = next(r for r in rows
+                       if any(l.text() == "路由老化" for l in r.findChildren(QLabel)))
+        ref_lab = next(l for l in ref_row.findChildren(QLabel) if l.text() == "路由老化")
+        ref_ctl = ref_row.findChildren(QLineEdit)[0]        # 同卡片「路由老化」那行的输入框
+        title_lab = next(l for l in rows[0].findChildren(QLabel) if l.objectName() == "cardTitle")
+        sw_x = sw.mapTo(page, QPoint(0, 0)).x()
+        ctl_x = ref_ctl.mapTo(page, QPoint(0, 0)).x()
+        right_inner = cfg.mapTo(page, QPoint(0, 0)).x() + cfg.width() - 13   # 卡片内容右边界（12 margin + 1 边框）
+        print(f"  [{name}] 内嵌 DHCP 行：开关 {type(sw).__name__} {sw.width()}x{sw.height()}，"
+              f"x={sw_x}（同行控件「路由老化」输入框 x={ctl_x}）"
+              f"｜开关右边界={sw_x + sw.width()} vs 卡片内容右边界={right_inner}")
+        print(f"  [{name}] 行高：内嵌 DHCP={toggle_row.height()}，路由老化={ref_row.height()}"
+              f"（应相等；开关不再贴最右，右边留空 {right_inner - sw_x - sw.width()}px）")
+        print(f"  [{name}] 新页面默认：checked={default_checked}（应 False）／DHCP 卡默认隐藏={default_hidden}"
+              f"（应 True）｜本次测量为临时打开")
+        assert sw in toggle_row.findChildren(ToggleSwitch), "内嵌 DHCP 开关应是配置卡最后一行"
+        assert sw_x == ctl_x, f"开关必须落在字段标签列之后（x={sw_x} vs 同行控件 x={ctl_x}）"
+        assert toggle_row.height() == ref_row.height(), \
+            f"该行高度必须与相邻字段行相同（{toggle_row.height()} vs {ref_row.height()}）"
+        assert right_inner - (sw_x + sw.width()) > 300, \
+            f"开关不该被顶到最右（右边只剩 {right_inner - sw_x - sw.width()}px）"
+        assert t_lab.objectName() == "fieldLabel", "「内嵌 DHCP」标签必须跟字段标签同样式（别用 cardTitle）"
+        assert t_lab.font().weight() == ref_lab.font().weight(), "字重必须和「路由老化」一致（不许加粗）"
+        assert t_lab.font().weight() < title_lab.font().weight(), "应比卡片标题细（标题才是加粗白）"
+        assert default_checked is False and default_hidden is True, "新页面必须默认关闭且 DHCP 卡隐藏"
+        assert sw.isChecked() is True and not page.f_dhcp.isHidden(), "开关打开时 DHCP 卡应可见"
+        sw.setChecked(False)
+        app.processEvents()
+        assert page.f_dhcp.isHidden(), "开关关闭时 DHCP 卡应隐藏"
+        win.grab()
+
+        # ⚠️ **真鼠标事件**路径（上面只用 setChecked，漏掉过实机 bug：开关被 field_row 的
+        #    `enabled=False` 默认值禁用 → 点了没反应、DHCP 卡永远出不来）
+        def _click(widget):
+            c = widget.rect().center()
+            g = widget.mapToGlobal(c)
+            for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+                widget.event(QMouseEvent(kind, QPointF(c), QPointF(g),
+                                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                         Qt.KeyboardModifier.NoModifier))
+
+        assert sw.isEnabled() is True, \
+            "开关必须可点（field_row 的 enabled 默认 False，构造时别忘 enabled=True）"
+        _click(sw)
+        app.processEvents()
+        win.grab()
+        app.processEvents()
+        on_ok = sw.isChecked() and not page.f_dhcp.isHidden() and page.f_dhcp.height() > 0
+        geo = page.f_dhcp.geometry()
+        _click(sw)
+        app.processEvents()
+        off_ok = (not sw.isChecked()) and page.f_dhcp.isHidden()
+        print(f"  [{name}] 真鼠标点击开关：开 → checked={sw.isChecked() is False} "
+              f"卡可见/几何={geo}；再点 → 关={off_ok}")
+        assert on_ok, f"真点击必须能打开并显示 DHCP 卡（几何={geo}）"
+        assert off_ok, "真点击必须能关回去"
+
+        # 点完开关以后页面还得能响应别的控件（用户报过"点其他东西也没反应"）
+        before = len(ov.text.toPlainText())
+        _click(page.btn_toggle)
+        app.processEvents()
+        after_txt = ov.text.toPlainText()
+        assert len(after_txt) > before and f"{name}：启动" in after_txt, \
+            "切换开关后，页面上的其它按钮仍须有反应（应打出启动日志）"
+        win.grab()
+
+    # 自绘开关的**禁用态必须看得出来**（否则"看着正常却点不动"，正是实机那个 bug 的体感）
+    probe_sw = ToggleSwitch()
+    probe_sw.setChecked(True)
+
+    def _accent_pixels(w) -> int:
+        img = w.grab().toImage()
+        want = QColor(C_ACCENT)
+        n = 0
+        for y in range(img.height()):
+            for x in range(img.width()):
+                col = img.pixelColor(x, y)
+                if (abs(col.red() - want.red()) < 30 and abs(col.green() - want.green()) < 30
+                        and abs(col.blue() - want.blue()) < 30):
+                    n += 1
+        return n
+
+    probe_sw.setEnabled(True)
+    n_on = _accent_pixels(probe_sw)
+    probe_sw.setEnabled(False)
+    n_off = _accent_pixels(probe_sw)
+    print(f"===== 自绘开关的禁用态 =====\n  启用时高亮蓝像素={n_on}，禁用时={n_off}（禁用必须明显不同）")
+    assert n_on > 20, "启用+打开时轨道应画出高亮蓝"
+    assert n_off == 0, "禁用时不该还有高亮蓝（否则看不出被禁用）"
+
+    print("===== 行高/行间隙（720 与 1400 两种窗口高度）=====")
+
+    cfg_pages = [p for p in win.pages if hasattr(p, "finish_layout")]
+    for wh in (720, 1400):
+        win.resize(1080, wh)
+        print(f"  ── 窗口 1080x{wh} ──")
+        for page in cfg_pages:
+            name = getattr(page, "kind", "?")
+            win.stack.setCurrentWidget(page)
+            if hasattr(page, "sw_dhcp"):
+                page.sw_dhcp.setChecked(True)     # DHCP 卡也一起参与（量完复位）
+            win.grab()
+            app.processEvents()
+            for ci in range(page.body.count()):
+                card = page.body.itemAt(ci).widget()
+                if card is None:
+                    continue
+                rows = _card_direct_rows(card)
+                if not rows:
+                    continue
+                heights = [r.height() for r in rows]
+                hints = [r.sizeHint().height() for r in rows]
+                gaps = []
+                for a, b in zip(rows, rows[1:]):
+                    ya = a.mapTo(card, QPoint(0, 0)).y()
+                    yb = b.mapTo(card, QPoint(0, 0)).y()
+                    gaps.append(yb - (ya + a.height()))
+                print(f"    [{name}] 卡{ci} 高={card.height():4d} 行高={heights} 间隙={gaps}")
+                for r, h, hint in zip(rows, heights, hints):
+                    # 上界 = "行里每个控件真正需要的高度"（sizeHint 与 minimumHeight 取大）。
+                    # 行**因为内容要求**（比如 30px 的按钮）而高是正当的；
+                    # 被父布局摊高度（sizeHint 26 → 实际 107）才是 bug。
+                    if r.layout() is None:          # 有些 body 项本身就是控件（如直接加进去的按钮）
+                        bound = max(hint, r.minimumHeight())
+                    else:
+                        kids = [r.layout().itemAt(k).widget() for k in range(r.layout().count())]
+                        kids = [k for k in kids if k is not None]
+                        bound = max([hint, r.minimumHeight()] +
+                                    [max(k.sizeHint().height(), k.minimumHeight()) for k in kids])
+                    assert h <= bound + 2, \
+                        f"[{name}] 卡{ci}: 行被纵向拉伸（实际 {h}px > 内容需要 {bound}px + 2）"
+                for g in gaps:
+                    assert g <= 4, f"[{name}] 卡{ci}: 相邻行间隙 {g}px > 4px（没贴合）"
+            if hasattr(page, "sw_dhcp"):
+                page.sw_dhcp.setChecked(False)
+                win.grab()
+                app.processEvents()
+    win.resize(1080, 720)
+
+    win.stack.setCurrentWidget(win.pages[0])   # 复位到主页（fl 是自由层，不在 stack 里，别传它）
+    win.grab()
+
+    # ────────────────────────────────────────────────────────────────────────────────
+    # ffmpeg 这条路：脚本路径必须真的存在 + 拉起时不再报"找不到脚本" + 发送端 URL 形式
+    # ────────────────────────────────────────────────────────────────────────────────
+    SH = "ffmpeg" + ".sh"        # 拼接：这些字样在"界面文案禁字样"清单里，别让断言自己扫到自己
+    print(f"===== {SH} 脚本路径 / 发送端 URL =====")
+    sp = _cli_mod._ffmpeg_script_path()
+    print(f"  _ffmpeg_script_path() = {sp}")
+    print(f"  文件存在 = {os.path.exists(sp)}｜大小 = "
+          f"{os.path.getsize(sp) if os.path.exists(sp) else 0} 字节")
+    assert os.path.basename(sp) == SH, "文件名必须是 " + SH
+    assert os.path.basename(os.path.dirname(sp)) == "app", "必须放在 app/ 目录下"
+    assert os.path.exists(sp), "脚本不存在：" + sp
+
+    script_txt = open(sp, encoding="utf-8").read()
+    # 只看**非注释行**：注释里可以提到旧写法（脚本里就有解释那段坑的注释）
+    code_txt = "\n".join(l for l in script_txt.splitlines() if not l.lstrip().startswith("#"))
+    print(f"  发送端用 localport= 指定本机端口：{'localport=$MY_PORT' in code_txt}")
+    print(f"  代码里还残留非法的 '@$MY_IP' 写法：{'@$MY_IP' in code_txt}")
+    assert "localport=$MY_PORT" in code_txt, "发送端必须用 localport= 指定洞里那个本机端口"
+    assert "@$MY_IP" not in code_txt, "`@local` 不是 ffmpeg 的合法写法（包会发错地方 + 源端口随机）"
+
+    # 真跑 _launch_ffmpeg()，但把"开新终端"这一步换成记录器（不然会真弹终端窗口）
+    launched: list = []
+    real_launch = _cli_mod.launch_in_new_terminal
+    _cli_mod.launch_in_new_terminal = lambda argv, **kw: launched.append((argv, kw)) or {"pid": 1}
+    fake_hole = {"id": 1, "peer": "bob", "peer_ip": "127.0.0.1", "peer_port": 50002,
+                 "my_ip": "127.0.0.1", "my_port": 50001, "candidates": []}
+    before_log = len(ov.text.toPlainText())
+    ok_launch = _cli_mod._launch_ffmpeg(fake_hole)
+    _cli_mod.launch_in_new_terminal = real_launch
+    new_log = ov.text.toPlainText()[before_log:]
+    print(f"  _launch_ffmpeg() 返回 = {ok_launch}｜拉起的命令行 = {launched[0][0] if launched else None}")
+    assert ok_launch is True and launched, "应该成功拉起（不再因路径失败）"
+    assert launched[0][0][:2] == ["bash", sp], "必须用 bash 跑真实路径的脚本"
+    assert launched[0][0][2:] == ["127.0.0.1", "50001", "127.0.0.1", "50002"], "4 个位置参数不变"
+    print(f"  日志里有没有旧报错：{'不在当前目录' in new_log}（必须 False）")
+    assert "不在当前目录" not in new_log, "不该再出现旧的路径报错"
 
     print("SELF-TEST OK")
     return 0

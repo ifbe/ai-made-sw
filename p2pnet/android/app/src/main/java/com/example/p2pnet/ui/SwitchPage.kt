@@ -61,40 +61,27 @@ fun SwitchPage(viewModel: LoginViewModel) {
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // ── 交换机本体：正好两行 ──
-        //   第一行：「网口」 + 状态 + 启停按钮 + 说明文字
-        //   第二行：各个网口
+        // ── 配置：第一行最右是启停按钮（版式与 vpn 页一致）──
         Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
             Column(
-                modifier = Modifier.padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 左对齐：[名字] [已插 N 个] [说明文字（可有可无，放不下就省略）]
+                    Text("配置", style = MaterialTheme.typography.labelMedium)
                     Text(
-                        "网口",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "已插 ${ports.size} 个",
+                        // switch 用自己的"网口/插线"词汇（与拓扑卡一致）：未插线 / 已插 N 个
+                        text = portStatusText(ports.size),
                         fontSize = 10.sp,
                         color = if (uiState.switchRunning) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text(
-                        text = if (ports.isEmpty()) "点 switch 插线" else "点网口 = 拔线",
-                        fontSize = 9.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f)
-                    )
-                    // 右对齐：一个按钮管启停（运行时变红、字变"停止"）
+                    Spacer(modifier = Modifier.weight(1f))
+                    // 一个按钮管启停（运行时变红、字变"停止"）
                     Button(
                         onClick = {
                             if (uiState.switchRunning) viewModel.onSwitchStop()
@@ -109,49 +96,6 @@ fun SwitchPage(viewModel: LoginViewModel) {
                         }
                     ) { Text(if (uiState.switchRunning) "停止" else "启动", fontSize = 10.sp) }
                 }
-
-                // 第二行：网口，动态增长；0 个时显示一个虚线空位
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (ports.isEmpty()) {
-                        PortCell(
-                            title = "空",
-                            line1 = "未插线",
-                            line2 = "",
-                            filled = false,
-                            dashed = true,
-                            width = 84.dp
-                        )
-                    } else {
-                        ports.forEachIndexed { index, card ->
-                            PortCell(
-                                title = "port${index + 1}",
-                                line1 = card.target,
-                                line2 = formatHostPort(card.peerPublicIp, card.peerPublicPort),
-                                filled = true,
-                                width = 108.dp,
-                                onClick = { viewModel.unplugSwitchPort(card.id) }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── 配置 ──
-        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
-            Column(
-                modifier = Modifier.padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text("配置", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    text = "和 python 端 client/app/switch.py 的参数一一对应；配置是全局一份（交换机是单例）",
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
 
                 ChoiceRow(
                     label = "card 设备",
@@ -192,49 +136,124 @@ fun SwitchPage(viewModel: LoginViewModel) {
                     suffix = "s",
                     onChange = { viewModel.onSwitchRouteTtlChange(it) }
                 )
+
+                // 配置卡最后一行：内嵌 DHCP 开关（开 → 下面才出现 DHCP 卡；默认关）
+                // 行高与 MTU / 路由老化 那些行**完全一致**（都是 swFieldHeight），
+                // 开关的左边也落在字段列上（label 宽 swLabelWidth + 同一个 4dp 间距 = NumberField 里文本框的位置），
+                // 不放到卡片最右边。
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(swFieldHeight),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("内嵌 DHCP", fontSize = 11.sp, modifier = Modifier.width(swLabelWidth))
+                    Switch(
+                        checked = cfg.dhcpEnabled,
+                        onCheckedChange = { viewModel.onSwitchDhcpEnabledChange(it) },
+                        modifier = Modifier.height(swFieldHeight)
+                    )
+                }
             }
         }
 
-        // ── DHCP（以后别的内嵌服务各自单独一张卡）──
+        // ── DHCP 卡：只有「内嵌 DHCP」开关打开时才渲染（和 vpn 页一致）──
+        if (cfg.dhcpEnabled) {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // 首行与配置卡首行同构：左标签 + Spacer(weight 1f) 把右侧内容顶到同一个右边界
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("嵌入 DHCP 服务器", fontSize = 11.sp, modifier = Modifier.weight(1f))
+                        Text(
+                            text = "尚未实现",
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    FieldRow(
+                        label = "地址池",
+                        value = cfg.dhcpPool,
+                        enabled = false,
+                        onChange = { viewModel.onSwitchDhcpPoolChange(it) }
+                    )
+                    FieldRow(
+                        label = "网关",
+                        value = cfg.dhcpGateway,
+                        enabled = false,
+                        onChange = { viewModel.onSwitchDhcpGatewayChange(it) }
+                    )
+                    FieldRow(
+                        label = "DNS",
+                        value = cfg.dhcpDns,
+                        enabled = false,
+                        onChange = { viewModel.onSwitchDhcpDnsChange(it) }
+                    )
+                }
+            }
+        }
+
+        // ── 拓扑：最后一张卡，可视化"交换机 ↔ 各已插的洞"（标题行不放启停按钮）──
         Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
             Column(
-                modifier = Modifier.padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("嵌入 DHCP 服务器", fontSize = 11.sp, modifier = Modifier.weight(1f))
                     Text(
-                        text = "尚未实现",
-                        fontSize = 9.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 6.dp)
+                        "拓扑",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Switch(
-                        checked = cfg.dhcpEnabled,
-                        onCheckedChange = { viewModel.onSwitchDhcpEnabledChange(it) }
-                    )
+                    // 有网口时才提示"能点"（空的时候那个虚线格子自己写着"未插线"）
+                    if (ports.isNotEmpty()) {
+                        Text(
+                            text = "点网口 = 拔线",
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-                FieldRow(
-                    label = "地址池",
-                    value = cfg.dhcpPool,
-                    enabled = false,
-                    onChange = { viewModel.onSwitchDhcpPoolChange(it) }
-                )
-                FieldRow(
-                    label = "网关",
-                    value = cfg.dhcpGateway,
-                    enabled = false,
-                    onChange = { viewModel.onSwitchDhcpGatewayChange(it) }
-                )
-                FieldRow(
-                    label = "DNS",
-                    value = cfg.dhcpDns,
-                    enabled = false,
-                    onChange = { viewModel.onSwitchDhcpDnsChange(it) }
-                )
+
+                // 网口，动态增长；0 个时显示一个虚线空位
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (ports.isEmpty()) {
+                        PortCell(
+                            title = "空",
+                            line1 = "未插线",
+                            line2 = "",
+                            filled = false,
+                            dashed = true,
+                            width = 84.dp
+                        )
+                    } else {
+                        ports.forEachIndexed { index, card ->
+                            PortCell(
+                                title = "port${index + 1}",
+                                line1 = card.target,
+                                line2 = formatHostPort(card.peerPublicIp, card.peerPublicPort),
+                                filled = true,
+                                width = 108.dp,
+                                onClick = { viewModel.unplugSwitchPort(card.id) }
+                            )
+                        }
+                    }
+                }
             }
         }
     }

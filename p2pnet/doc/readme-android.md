@@ -72,12 +72,16 @@ com/example/p2pnet/
 
 | tab | 页面 | 干什么 | 对应 Python |
 |---|---|---|---|
-| 主页 | `MainPage` | 服务器卡（固定顶部，**三行**：小字标签行 `协议/服务器/端口` → 协议切换按钮 + 地址框 + 端口框 → 连接/断开按钮）+ 自由层：「我」卡（贴底居中、可拖，用户名/密码 + `[登录/退出] [ping] [list]`）、其他人卡（`名字(ip:port)` + **direct/upnp/udp/tcp** 四个打洞按钮）、三种连线 + 屏幕几何中心横线、socket 卡（挂对应 peer 卡正下方，白色虚线相连） | — |
+| 主页 | `MainPage` | **自由层 = 整个内容区**：服务器卡（自由层内**顶部对齐、居中、不可拖动**；竖屏满宽 / 横屏居中占一半）+ 「我」卡（**默认在自由层正中**、可拖，用户名/密码 + `[登录/退出] [ping] [list]`）、其他人卡（`名字(ip:port)` + **direct/upnp/udp/tcp** 四个打洞按钮）、三种连线 + 屏幕几何中心横线、socket 卡（挂对应 peer 卡正下方，白色虚线相连） | — |
 | media | `MediaPage` | 多媒体聊天：收流卡（协议 + 本机地址/端口，**只读、来自打洞结果**）、推流卡（协议 + 对端公网地址/端口 + 采集）、拉起应用卡 | `app/media.py` + `app/ffmpeg.sh` |
-| proxy | `ProxyPage` | 端口转发：模式 `-L`（本机 listen）/`-R`（本机 connect）+ 协议 + 保活 + 洞地址/洞端口 + 该模式的地址端口 | `app/proxy.py`（`-R` 那一半） |
+| proxy | `ProxyPage` | 端口转发：**配置卡首行 = `配置` + 通道数状态 + 启停按钮（与 vpn / switch 同一套版式）**，下面依次是 模式 `-L`（本机 listen）/`-R`（本机 connect）+ 协议 + 保活 + 洞地址/洞端口 + 该模式的地址端口（原来单独一行的 `运行中/已停止` 已删） | `app/proxy.py`（`-R` 那一半） |
 | wireguard | `WireGuardPage` | 「实现」三档（自己实现 / 官方库 / 调系统程序）+ My Interface（IP/掩码、端口、私钥）+ Peer 列表（Endpoint/公钥/Preshared/AllowedIPs） | `app/wg-python.py` / `app/wg-calltool.py` |
-| vpn | `VpnPage` | **一对一**：配置（card 设备 / tun 地址 / 交换模式 / MTU / 路由老化）+ DHCP 卡；**没有网口那张卡** | `app/vpn.py` |
-| switch | `SwitchPage` | **m 对 n** 虚拟交换机：网口卡（`网口` + `已插 N 个` + 单个启停按钮；第二行网口动态增长、0 个时虚线空位、点口拔线）+ 配置卡 + DHCP 卡 | `app/switch.py` |
+| vpn | `VpnPage` | **一对一**：配置卡（card 设备 / tun 地址 / 交换模式 / MTU / 路由老化 / **末行「内嵌 DHCP」开关**）→ DHCP 卡（**仅开关打开时渲染**）；**没有网口那张卡** | `app/vpn.py` |
+| switch | `SwitchPage` | **m 对 n** 虚拟交换机，页面顺序：**配置卡（第一行最右是启停按钮，版式与 vpn 一致；末行是「内嵌 DHCP」开关）→ DHCP 卡（仅开关打开时渲染）→ 拓扑卡**；拓扑卡（最后一张）把已插的洞画成一行网口格子（`portN` + 对端用户名 + 对端公网 ip:port；0 个时一个虚线空位；点网口 = 拔线，标题行**不放**启停按钮） | `app/switch.py` |
+
+> **DHCP 卡片与配置卡片**：两张卡用**完全相同**的容器链 `Card(Modifier.fillMaxWidth(), RoundedCornerShape(8.dp))` → `Column(Modifier.padding(8.dp), Arrangement.spacedBy(4.dp))` → `Row(Modifier.fillMaxWidth(), Alignment.CenterVertically)`，
+> 首行都是"左标签（`weight(1f)` / `Spacer(weight(1f))`）把右侧内容顶到同一个右边界" —— **结构上不可能不等宽**（两页、两张卡都没在任一侧加额外 margin/inset）。
+> `dhcpEnabled` 在两页的配置里**默认 `false`**（`fromJson` 缺字段也回落 `false`），有 JVM 单测 `PageConfigDhcpDefaultsTest` 盯着。
 
 ---
 
@@ -301,16 +305,63 @@ WireGuard 统一 `wg: `（集中在 `appendWgLog` 一处加）、direct 统一 `
 | `p2ptcp` | C→S | TCP 打洞（**目前只显示流程预览，不发这个信令**） |
 | `p2pdirect` / `p2pdirect_reply` | 双向 | direct 地址交换（`from` 由服务器填；**只有 IP 列表、没有端口**、不带签名） |
 
-> 其它 type（`error` / `kicked` / `user_joined` / `user_left` …）目前**不处理**，落到 `when` 之外静默忽略（原始 JSON 仍会进 App 内日志）。
+> 其它 type（`error` / `user_joined` / `user_left` …）目前**不处理**，落到 `when` 之外静默忽略（原始 JSON 仍会进 App 内日志）。
+> `kicked`（被服务器踢下线）**已处理**：只取消登录状态、连接不断，见 §8.2。
 > **WS 协议级心跳**是另一层，和应用层 `ping`/`pong` 不是一回事：OkHttp 的 `pingInterval(20s)` 自动发 `0x9` ping 帧，服务器原样回 `0xA` pong（payload 一致）；
 > 连续收不到 pong 时 OkHttp 把连接判死并回调 `onFailure` → 记一行 `android: WS 心跳失败（20s 没收到 pong），连接已断开` 并把状态收回「未连接」。
-> 每次心跳**之前**会在 App 内日志打一行（`N` 从 1 起、随连接重置）：
-> `android: WS 心跳：发出协议级 ping（第 N 次，间隔 20s）`（三端逐字一致，前缀由各自日志管线加）。
-> ⚠️ **这行日志由应用侧同节奏计时器打出**（`LoginViewModel.startWsPingLog`，20s，随 `onConnected` 起、随 `onDisconnected` 停），
-> 真正的 ping 帧是 OkHttp 按 `pingInterval` 发的；**OkHttp 没有暴露"ping 已发出"的回调**，
-> 所以日志与真实发帧**不是严格同一瞬间**，可能相差不到 1 个周期。间隔常量只有一处：`WsClient.PING_INTERVAL_SECONDS = 20`（builder 与计时器共用）。
+> 每次心跳会在 App 内日志打**两行**（`N` 从 1 起、随连接重置；`android:` 前缀由日志管线加）：
+> `android: WS 心跳：发出协议级 ping（第 N 次，间隔 20s）` /
+> `android: WS 心跳：okhttp不会收到pong（OkHttp 不暴露 ping/pong 回调，无法观测应答）`
+> ⚠️ **第二行是如实说明"收不到"，不是"收到"** —— OkHttp 的协议级 ping/pong **没有暴露任何回调**，
+> 安卓端**无法观测应答**，所以**不打"收到 pong"**（那会是撒谎），只写"无法观测应答"。两点补充：
+> 1. **发出行**由应用侧同节奏计时器打出（`LoginViewModel.startWsPingLog`，20s，随 `onConnected` 起、随 `onDisconnected`/`onDisconnect` 停），
+>    节奏与 OkHttp 的 ping 相同，但**不是严格同一瞬间**，可能相差不到 1 个周期；
+> 2. 连接仍会因"ping 20s 内没等到 pong"被 OkHttp 判死并回调 `onFailure`（→ 状态收回「未连接」，见上一行），
+>    只是**这个过程没有回调可挂**，所以日志只能写"无法观测应答"。
+>    连接已死（`WsClient.isOpen()` 为 false）时**一行都不打**。iOS / 桌面端能精确观测 pong，**只有安卓是这条"无法观测"路径**。
+> 两行都由纯函数 `ui/login/WsHeartbeatLog.kt`（零 Android 依赖）生成，配 JVM 单测 `app/src/test/java/.../WsHeartbeatLogTest.kt`
+> （6 个用例，含反向断言"**绝不出现** `收到协议级 pong`"，不用模拟器即可钉住）。
 > `wghelp` **已废弃**：服务端 handler 早就注释掉，安卓端按钮/方法也已删除（发了只会收到 `unknown type`）。
 > `WsClient.kt:104` 的 `_helloMode` 现在恒为 `"udp"`（wghelp 删除后它只剩一个值），属于待清理的历史遗留。
+
+### 8.1 WS 自动重连（心跳失败 / 异常断开）
+
+触发：连接**已建立**之后，因**协议级心跳失败**（OkHttp 判超时 → `onFailure`）或**异常断开**（非用户主动）→ 自动重连。
+**不触发**：用户手动点「断开」；首次连接就失败（那时 `isConnected` 还是 false，保持现状）。
+
+- **退避**：1s → 2s → 4s；**熔断**：60 秒滑窗内最多 **3** 次自动重连（滑窗+熔断是纯逻辑 `ui/login/WsReconnectPolicy.kt`，零 Android 依赖，配 JVM 单测 `app/src/test/.../WsReconnectPolicyTest.kt`）。
+- **计数重置**：① 用户手动点「连接」；② 连接**稳定存活 ≥60 秒**（`startStableTimer`）。
+- 过程日志（三端逐字一致，`android:` 前缀由管线加）：
+  - 每次尝试：`WS 自动重连：第 N 次（60 秒窗口内）`
+  - 成功：`WS 自动重连成功（第 N 次）`
+  - 放弃：`WS 自动重连已放弃：60 秒内已重连 3 次仍失败（不再自动重连，请手动连接）`
+- **重连成功后恢复登录**：断开前是已登录状态且内存里还有账号密码 → 走**现有登录流程**重新登录（服务端对同名重登是"踢掉旧连接、接受新连接"）；拿不到凭据 → 只恢复连接并明确打日志"需要手动重新登录"，**不假装已登录**。
+- 状态显示：重连期间按"未连接"处理（沿用现有断线态），重连+登录恢复后再回到"已连接"。
+- **旧服务端（没有 ping/pong）下**：心跳必然判失败 → 走自动重连 → 3 次后打"已放弃"。**这是预期行为**，没有特例。
+
+### 8.2 被服务器踢下线（`kicked`）—— **不是断开**
+
+服务器踢人时（同账号在别处登录）**只**发 `{"type":"kicked","message":...}` + 清 `username` + 从在线表移除：
+**socket 不关、连接仍然活着、仍可收发**（再发消息会回 `not logged in`）。所以安卓这边：
+
+- `WsClient.handleMessage` 加 `kicked` 分支：只清**登录会话**（`sessionKey`、登录过程的临时值）并回调 `listener.onKicked(message)`；
+  **不动 `wsOpen`、不关连接**（心跳/协议级 ping 与心跳日志都继续跑）；
+- `LoginViewModel.onKicked`：**只做两件事** —— 打日志 + 取消登录状态（`isLoggedIn=false`、清 `loggedInUsername`/`myIp`/`myPort`/`peers`、`closeAllUdpSockets()`）；
+  **不排重连、不停心跳、不记任何"被踢标记"**（`onKicked` 里没有 `scheduleAutoReconnect` / `stopWsPingLog` / `disconnectOnly`）；
+- 日志（四端逐字一致）：`被服务器踢下线（<服务端 message>）：登录已取消，不会自动重新登录`
+- **没有"被踢标记"这回事**：踢的作用就是把状态从"已登录"打回"**已连接未登录**"，
+  之后掉线自然只重连、不自动重登（判据只看断开前的最后状态）；用户之后手动登录成功，状态又变回"已登录"，
+  再掉线自然又会自动重登 —— **状态即真相**；
+- 规则表（权威）由纯逻辑 `ui/login/AutoReconnectRules.kt` 表达并单测（`shouldRelogin(reason, wasLoggedInBeforeDrop)`）：
+
+| 断开前最后状态 | 连接 | 自动重连 | 自动重新登录 |
+|---|---|---|---|
+| 用户主动断开 | 主动关 | ❌ | ❌ |
+| 已登录 | —— | ✅ | ✅（还需要凭据还在） |
+| 已连接未登录（含"被踢之后"） | —— | ✅ | ❌ |
+
+> 被踢本身**不产生"断开"**（连接还在），所以上表里没有"被踢"这一行；
+> 它只是把状态推到第三行。另外：**重登失败不会循环重试**（`login_failed` 只记一行日志，重连策略只统计"断开"），等用户手动。
 
 ---
 
@@ -385,12 +436,31 @@ WireGuard 统一 `wg: `（集中在 `appendWgLog` 一处加）、direct 统一 `
 | socket 卡片被撑到满屏高 | 卡片里用了 `fillMaxHeight()` + 标题 `weight(1f)` | 去掉，改为内容自适应（`IntrinsicSize.Max`） |
 | **连接其实已经死了，界面还显示"已连接"** | `WsClient.onFailure` 只回调 `onError`，而 VM 的 `onError` 只设 `loading`/`error`，**没清 `isConnected`** | `onFailure` 里补一次 `listener?.onDisconnected()`（状态收回未连接），并把原因分成"心跳失败 / 连接失败"两种写进日志；`onDisconnected` 的日志也改成中文 |
 | 长连接被中间设备静默掐断（收不到任何事件） | 没有任何心跳 | 两层：OkHttp `pingInterval(20, SECONDS)` 走协议级 WS ping（服务器回 pong），服务端另加应用层 `ping`/`pong`，「我」卡片加 `ping` 按钮可手动验 |
+| 心跳失败/异常断开后只能靠用户手动重连 | 没有自动重连 | 加 `WsReconnectPolicy`（60s 滑窗内最多 3 次、退避 1s/2s/4s、超了熔断）+ 稳定 60s / 手动连接清零；重连成功后用内存凭据按现有流程重登，见 §8.1 |
+| **重连只试了一次就停**（自己实现时差点漏掉） | 重连尝试本身失败时 `isConnected` 已经是 `false`，只按"之前连上过"判断就会被当成"首次连接失败"挡掉，退避链断掉 | 单独一个 `autoReconnectActive` 状态：**已在重连过程中**时，失败也继续按退避重试（直到熔断） |
+| **被踢会被当成"被动断开"→ 自动重连 + 自动重登** | `kicked` 原来落到 `when` 之外被忽略，而那之后的断开会走"被动断开" | 加 `kicked` 分支：被踢**只取消登录状态**（连接不断、心跳不停）；之后掉线因为"断开前未登录"自然只重连不重登 —— **不引入任何"被踢标记"**（见 §8.2） |
+| 早期误解：以为"被踢"服务器会关连接 | —— | 实际服务器**只发消息不关 socket**（连接还活着、还能收到 `not logged in`）；所以 `onKicked` 里**不许**动 `wsOpen`、不许停心跳 |
 
 ---
 
 ## 13. UI 布局
 
 - **Compose + Material3**，非 XML。
+- **vpn / switch / proxy 三页的配置卡首行是完全同一套模板**（容器、padding、行高、按钮全都一样，只有"状态文案"和状态变量不同）：
+  `Card(fillMaxWidth, RoundedCornerShape(8.dp))` → `Column(Modifier.padding(8.dp), Arrangement.spacedBy(4.dp))` →
+  `Row(fillMaxWidth, CenterVertically, Arrangement.spacedBy(6.dp))` = `Text("配置", labelMedium)` + `Text(状态文案, 10.sp, 运行时 primary)` + `Spacer(Modifier.weight(1f))` +
+  `Button(height 26.dp, contentPadding h10v0, 运行时红底, 文案 停止/启动 10sp)`。
+- **状态文案是两套词汇，别混用**（`ui/ChannelStatusText.kt`，两个兄弟函数，各有 JVM 单测）：
+  - **vpn / proxy**（说的是"通道/洞"）→ `channelStatusText(N)`：空 `未接线` / 非空 `已接 N 条`；
+  - **switch**（说的是"网口/插线"，与拓扑卡的 `已插 N 个`、`未插线`、`点网口 = 拔线` 保持一致）→ `portStatusText(N)`：空 `未插线` / 非空 `已插 N 个`。
+  - 特意**不共用一个带"词汇参数"的函数**，并有一条单测断言两套文案互不相等 —— 防止以后被"顺手统一"成一套导致同页前后不一致。
+- **"通道"明细行只在有通道时渲染**（vpn / proxy / media 三页，`if (channels.isNotEmpty())`）：
+  **空态不占一行** —— "没有通道"已经由配置卡首行的状态（`未接线` / 已接 N 条）表达，再挂一句"通道：还没有"是重复。
+  有通道时保留原格式（列出是哪些洞 + 数量；proxy 带条数）。**判据：首行状态已表达的空态文案 = 不渲染；含动态信息（列表/数量）的 = 保留。**
+- **「内嵌 DHCP」那一行和普通字段行完全同构**（vpn / switch 都是，`NumberField` 是基准）：
+  `Row(Modifier.fillMaxWidth().height(fieldHeight))` + `Arrangement.spacedBy(4.dp)` + `Text("内嵌 DHCP", 11.sp, Modifier.width(labelWidth))` + `Switch(Modifier.height(fieldHeight))` ——
+  **行高 = `swFieldHeight`/`vpnFieldHeight`(30dp)**（不比 MTU / 路由老化 那些行高；`Switch` 被压到同一高度，否则它的 48dp 最小触摸目标会把行撑高），
+  **开关的左边缘落在字段列上**（`labelWidth(84dp) + 4dp = 88dp`，与 `NumberField` 里文本框的左边缘一致），**不贴卡片右边界**。
 - **主页**：服务器卡片固定顶部 + 下面一整块**自由层**——
   - **服务器卡是三行**（`MainPage.kt` 的 `ConnectionCard`）：
     1. **小字标签行**：`协议` / `服务器` / `端口`（11sp，比输入框正文 14sp 小一号，只起提示作用，左对齐到下面的控件）；
@@ -400,10 +470,18 @@ WireGuard 统一 `wg: `（集中在 `appendWgLog` 一处加）、direct 统一 `
   - **对齐做法**：第 1、2 行用**同一组列宽** + 同一个 `Arrangement.spacedBy(6dp)`，外面套 `fillMaxWidth().widthIn(max = 492dp)`（= 62 + 300 + 118 + 2×6）——
     宽屏时地址框正好 300dp，窄屏（手机）时整块收到卡片宽度、地址框靠 `weight(1f)` 自动变窄，两行**天然对齐**（不依赖任何"按内容自适应"的格子）；
     连接行在限宽块**之外**，仍然整宽。
-  - 「我」卡片（`我` 标题 + 用户名/密码，默认贴底居中、可拖）、其他人卡片（随机落在上半区、可拖）、
+  - **自由层 = 整个内容区**（`MainPage` 里就是 `FreeLayer(Modifier.fillMaxSize())`，**没有**外层 `Column` 了）：
+    **服务器卡片画在自由层里面**（`align(TopCenter)`、顶部对齐、**不可拖动**、两侧 4dp 内边距），
+    宽度**随窗口比例实时变化**（读 `BoxWithConstraints` 的 `areaW/areaH` → `serverCardWidthFraction`）：
+    **竖屏（高 > 宽）= 满宽；横屏（宽 > 高）= 居中占一半**（左右各留 1/4 宽的空白带；正方形按竖屏算）。
+    目的：**"自由层正中" = 整个内容区的正中**（= 用户要的"屏幕中心"）。
+  - 「我」卡片（`我` 标题 + 用户名/密码，**默认在自由层正中**、可拖）、其他人卡片（随机落在上半区、可拖）、
   **屏幕几何中心横线**（按窗口 bounds 换算，保证落在屏幕正中）、
   **三种连线**：服务器↔我（未登录=白色虚线 / 登录后=绿色实线）、服务器↔其他每个人（绿色实线）、其他人卡片↔它的 socket 卡片（白色虚线）；
-  socket 卡片挂在对应 peer 卡片正下方。
+  socket 卡片挂在对应 peer 卡片正下方。连线起点 = **服务器卡片实测下沿**（卡片现在画在自由层里）。
+  - **不许盖住服务器卡片**（A3）：限位按**服务器卡片实测矩形 + 6dp** 算（`avoidServerRectPx`）——
+    卡片**要么落在左右空白带里**（横屏时纵向可以一直用到顶部），**要么完全在服务器卡片下方**；
+    「我」卡片水平居中 ⇒ 必然与服务器卡片同列，所以"默认居中"与限位冲突时**以限位为准**（自动下移到它下面）。
 - **底部 6 个固定 tab**（主页 / media / proxy / wireguard / vpn / switch，都不可关闭），临时页（UDP 等）可关。
 - **悬浮（edge-to-edge）+ 上下两条纯黑"避让区"**（`MainScreen.kt`）：
   - `MainActivity` 调了 `enableEdgeToEdge()`，且 `targetSdk = 36` 在 Android 15+ **强制** edge-to-edge（所以**不要**去调 `setDecorFitsSystemWindows`，无效）；

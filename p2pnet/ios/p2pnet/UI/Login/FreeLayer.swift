@@ -31,6 +31,16 @@ struct FreeLayer: View {
     @State private var freeTopInWindow: CGFloat = 0
     /// 窗口高度（缓存一次；ScreenMetrics 是 MainActor 的，不能每帧在 Canvas 里读）
     @State private var windowHeight: CGFloat = 0
+    /// 服务器卡片实测高度（宽度由 ContentLayout 按内容区宽高比算；高度由卡片内容撑开）
+    @State private var serverCardSize: CGSize = .zero
+
+    /// 服务器卡片在自由层里的实际矩形：**顶部对齐**（横屏**水平居中**占半宽），
+    /// 高度用实测值 —— 别处（「我」卡片限位、连线起点）都用它，所以尺寸一变就跟着变
+    private func serverRect(_ area: CGSize) -> CGRect {
+        var r = ContentLayout.serverCardFrame(content: area, padding: 4)
+        r.size.height = serverCardSize.height
+        return r
+    }
 
     private let linkGreen = Color(hex: 0x4CAF50)
     private let linkWidth: CGFloat = 2
@@ -51,7 +61,19 @@ struct FreeLayer: View {
                     // 不去 onChange 观察 `.global` frame —— 那会让 body 依赖全局布局，容易触发更新循环
                     .onChange(of: geo.size) { _ in refreshGlobalMetrics(geo) }
 
-                // ── 「我」卡片：默认贴底居中 ──
+                // ── 服务器卡片：**自由层内的元素**，顶部对齐（横屏**水平居中**半宽）。
+                //    宽度每帧按 `ContentLayout.serverCardFrame(content:)` 算 → 旋转/改窗口实时跟着变；
+                //    不可拖动（A1），高度由内容撑开并量进 `serverCardSize`（限位与连线都要用）
+                ConnectionCard(viewModel: viewModel)
+                    .frame(width: ContentLayout.serverCardFrame(content: area, padding: 4).width)
+                    // 用 offset 摆到矩形的左边界：竖屏 = 两侧各 4pt；横屏 = 居中（左右各 1/4 空白带）。
+                    // offset 不影响布局尺寸，但命中测试会跟着走（卡片的输入框照样可点）
+                    .offset(x: ContentLayout.serverCardFrame(content: area, padding: 4).minX)
+                    .background(sizeReader { size in
+                        if size != .zero && serverCardSize != size { serverCardSize = size }
+                    })
+
+                // ── 「我」卡片：默认落在**整块自由层的正中** ──
                 MeCard(
                     viewModel: viewModel,
                     onDrag: { value in
@@ -165,14 +187,11 @@ struct FreeLayer: View {
 
     // MARK: - 位置
 
-    /// 「我」卡片中心：默认贴底居中 + 拖动位移（横向限制在屏幕 25%~75%，即 ±(宽度-卡片宽)/2）
+    /// 「我」卡片中心：**默认落在自由层正中**（不是贴底）+ 拖动位移。
+    /// 几何计算抽到 `MeCardGeometry`（Foundation-only 纯函数，可单独 swiftc 断言）：
+    /// 横向 ±(可用宽−卡片宽)/2，纵向相对中心锚点对称、两端各留 margin（默认 0，即上能贴顶、下能贴底）。
     private func meCenter(_ area: CGSize) -> CGPoint {
-        let maxDx = max(0, (area.width - meSize.width) / 2)
-        let hiY: CGFloat = 0
-        let loY = min(hiY, -(area.height - meSize.height))
-        let dx = min(max(meDrag.width, -maxDx), maxDx)
-        let dy = min(max(meDrag.height, loY), hiY)
-        return CGPoint(x: area.width / 2 + dx, y: area.height - meSize.height / 2 + dy)
+        MeCardGeometry.center(area: area, meSize: meSize, drag: meDrag, serverRect: serverRect(area))
     }
 
     /// 其他人的默认左上角（相对位置 × 可用空间，用名字哈希当种子）+ 拖动位移
@@ -181,10 +200,21 @@ struct FreeLayer: View {
         let size = peerSizes[name] ?? CGSize(width: 160, height: 58)
         let (rx, ry) = Self.pseudoRandom(name)
         let maxX = max(0, area.width - size.width)
-        let maxY = max(0, area.height - size.height)
-        let base = CGPoint(x: maxX * rx, y: maxY * ry)
+        // 默认分布仍在"服务器卡片以下那条带"里 —— 服务器卡片进自由层之后，
+        // 这样算出来的位置和改造前（自由层=服务器卡片下方那块）**完全一致**
+        let bandTop = serverRect(area).maxY
+        let bandHeight = max(0, area.height - bandTop)
+        let maxY = max(0, bandHeight - size.height)
+        let base = CGPoint(x: maxX * rx, y: bandTop + maxY * ry)
         let d = peerDrags[name] ?? .zero
-        return CGPoint(x: base.x + d.width, y: base.y + d.height)
+        // 限位：不出左右/下边界；上边界若与服务器卡片水平相交则让到它下沿（A3）
+        let clamped = ContentLayout.clampTopLeft(
+            CGPoint(x: base.x + d.width, y: base.y + d.height),
+            cardSize: size,
+            area: area,
+            serverRect: serverRect(area)
+        )
+        return clamped
     }
 
     private func peerCenter(_ name: String, _ area: CGSize) -> CGPoint {
@@ -202,11 +232,14 @@ struct FreeLayer: View {
         }
         let size = socketSizes[id] ?? CGSize(width: 190, height: 150)
         let d = socketDrags[id] ?? .zero
-        let halfW = size.width / 2
-        let halfH = size.height / 2
-        let x = min(max(base.x + d.width, halfW), max(halfW, area.width - halfW))
-        let y = min(max(base.y + d.height, halfH), max(halfH, area.height - halfH))
-        return CGPoint(x: x, y: y)
+        // 中心 → 左上角，按同一套限位夹取（不压服务器卡片、不出边界），再转回中心
+        let topLeft = ContentLayout.clampTopLeft(
+            CGPoint(x: base.x + d.width - size.width / 2, y: base.y + d.height - size.height / 2),
+            cardSize: size,
+            area: area,
+            serverRect: serverRect(area)
+        )
+        return CGPoint(x: topLeft.x + size.width / 2, y: topLeft.y + size.height / 2)
     }
 
     /// 稳定的伪随机（同一个名字每次一样）：x ∈ [0,1]，y ∈ [0,0.5]（只在上半区）
@@ -221,14 +254,10 @@ struct FreeLayer: View {
 
     // MARK: - 拖动
 
-    /// 「我」卡片的位移夹取：横向限制在屏幕 25%~75%，纵向只能往上（不能拖到服务器卡上）
+    /// 「我」卡片的位移夹取：横向不出左右边界；纵向相对**居中锚点**对称，
+    /// 上能贴自由层顶部、下能贴底边（两端 margin 都是 0，与改造前一致）。
     private func clampMeDrag(_ next: CGSize, _ area: CGSize) -> CGSize {
-        let maxDx = max(0, (area.width - meSize.width) / 2)
-        let loY = min(0, -(area.height - meSize.height))
-        return CGSize(
-            width: min(max(next.width, -maxDx), maxDx),
-            height: min(max(next.height, loY), 0)
-        )
+        MeCardGeometry.clamp(drag: next, area: area, meSize: meSize, serverRect: serverRect(area))
     }
 
     /// socket 卡片的拖动：Android 那边这张卡就是**整卡可拖**（`UdpSocketCardView` 把
@@ -282,7 +311,7 @@ struct FreeLayer: View {
             if uiState.isConnected && meSize.height > 0 {
                 let center = meCenter(area)
                 var path = Path()
-                path.move(to: CGPoint(x: center.x, y: 0))
+                path.move(to: CGPoint(x: center.x, y: serverRect(area).maxY))
                 path.addLine(to: center)
                 ctx.stroke(
                     path,
@@ -301,7 +330,7 @@ struct FreeLayer: View {
                 let w = peerSizes[peer.username]?.width ?? 160
                 let centerX = topLeft.x + w / 2
                 var path = Path()
-                path.move(to: CGPoint(x: centerX, y: 0))
+                path.move(to: CGPoint(x: centerX, y: serverRect(area).maxY))
                 path.addLine(to: CGPoint(x: centerX, y: topLeft.y + peerTitleCenterY))
                 ctx.stroke(
                     path,

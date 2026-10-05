@@ -110,3 +110,136 @@ nonisolated final class HeartbeatWatchdog {
         onFail("看门狗超时（\(String(format: "%g", timeout))s 内没等到 pong）")
     }
 }
+
+// MARK: - WS 自动重连的熔断策略
+
+/// WS 自动重连的「60 秒滑窗 + 最多 3 次」熔断策略（纯逻辑，Foundation-only，可单独 swiftc 编译）。
+///
+/// 规则（三端一致）：
+///  - 重连尝试间隔 **1s → 2s → 4s**（第 4 次就直接熔断，不做）；
+///  - **60 秒滑窗内最多 3 次**自动重连，超了就放弃（`beginAttempt()` 返回 nil）；
+///  - 计数清零：① 用户手动点连接（`noteManualConnect()`）；② 连接稳定存活 ≥60s（`noteStable()`）；
+///  - 一旦熔断（`isAbandoned`），要等上面两种清零之一才能再自动重连。
+///
+/// 注意：**自动重连自己不能清零**（否则熔断永远不触发）——所以重置只由手动连接 / 稳定存活触发。
+nonisolated final class WsReconnectPolicy {
+
+    /// 滑窗长度（秒）
+    let window: TimeInterval
+    /// 窗口内允许的最大自动重连次数
+    let maxAttempts: Int
+    /// 各次尝试前的等待（第 1/2/3 次）
+    let delays: [TimeInterval]
+
+    /// 一次尝试的决策
+    struct Decision {
+        /// 这是窗口内的第几次（从 1 起）
+        let attempt: Int
+        /// 等多久再发起连接
+        let delay: TimeInterval
+    }
+
+    private let lock = NSLock()
+    private var attemptTimes: [Date] = []
+    /// 是否已熔断放弃（要等一次清零才能再试）
+    private var abandoned = false
+    /// 取"现在"的方式：默认系统时钟；测试里注入假时钟，才能断言 60s 滑窗
+    private let now: () -> Date
+
+    init(
+        window: TimeInterval = 60,
+        maxAttempts: Int = 3,
+        delays: [TimeInterval] = [1, 2, 4],
+        now: @escaping () -> Date = { Date() }
+    ) {
+        self.window = window
+        self.maxAttempts = maxAttempts
+        self.delays = delays
+        self.now = now
+    }
+
+    /// 窗口内已记录的尝试次数
+    var attemptsInWindow: Int {
+        lock.lock(); defer { lock.unlock() }
+        pruneLocked()
+        return attemptTimes.count
+    }
+
+    /// 是否已熔断
+    var isAbandoned: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return abandoned
+    }
+
+    /// 决定"这一次能不能试"：返回 nil = 不该再试（窗口内已满 3 次 / 已熔断）
+    func beginAttempt() -> Decision? {
+        lock.lock(); defer { lock.unlock() }
+        pruneLocked()
+        if abandoned { return nil }
+        if attemptTimes.count >= maxAttempts {
+            abandoned = true
+            return nil
+        }
+        attemptTimes.append(now())
+        let n = attemptTimes.count
+        let idx = min(max(n - 1, 0), max(delays.count - 1, 0))
+        return Decision(attempt: n, delay: delays.isEmpty ? 1 : delays[idx])
+    }
+
+    /// ① 用户手动点连接 → 清零并解除熔断
+    func noteManualConnect() {
+        lock.lock(); defer { lock.unlock() }
+        attemptTimes.removeAll()
+        abandoned = false
+    }
+
+    /// ② 连接稳定存活 ≥60s → 清零并解除熔断
+    func noteStable() {
+        lock.lock(); defer { lock.unlock() }
+        attemptTimes.removeAll()
+        abandoned = false
+    }
+
+    private func pruneLocked() {
+        let t = now()
+        attemptTimes.removeAll { t.timeIntervalSince($0) > window }
+    }
+}
+
+// MARK: - 连接/登录事件 → 是否自动重连 / 自动重登（四端统一口径）
+
+/// 三种"会话事件"。⚠️ **被踢不是断开**：踢人只取消登录状态，连接仍然活着、仍可收发
+///（服务端只发 `kicked` + 清 username + 从 `online_users` 移除，**不关 socket**）。
+nonisolated enum WsSessionEvent {
+    /// ① 用户主动断开（传输层被我们关掉）
+    case userDisconnect
+    /// ② 被服务器踢下线（**连接保持**，只是登录被取消；之后发消息会被回 `not logged in`）
+    case kicked
+    /// ③ 其他被动断开（心跳/看门狗判死、接收失败、被中间设备回收…）——传输层已经断了
+    case passiveDrop
+}
+
+/// 四端统一的判定。
+nonisolated enum WsReconnectRules {
+
+    /// 这个事件会不会把传输层弄断？——**被踢不会**（所以收到 `kicked` 时不许关连接、
+    /// 不许停心跳/看门狗；只有 ①③ 才走断开收尾）。
+    static func breaksTransport(_ event: WsSessionEvent) -> Bool {
+        return event != .kicked
+    }
+
+    /// 要不要排自动重连？——只有"③ 其他被动断开"需要（① 是用户自己要断，② 连接本来就没断）。
+    static func shouldReconnect(_ event: WsSessionEvent) -> Bool {
+        return event == .passiveDrop
+    }
+
+    /// 要不要自动重新登录？——**只看"断开前的最后状态"**：
+    ///  - ① 用户主动断开 → 不重登；
+    ///  - ③ 被动断开 → 断开前**已登录**才重登，断开前只是"已连接未登录"就只恢复连接。
+    ///
+    /// 被踢**不需要单列规则**：踢的作用就是把状态从"已登录"打回"已连接未登录"，
+    /// 之后掉线自然落进"不重登"那一档 —— 状态即真相，不用额外记标记。
+    static func shouldRelogin(_ event: WsSessionEvent, wasLoggedIn: Bool) -> Bool {
+        return event == .passiveDrop && wasLoggedIn
+    }
+}

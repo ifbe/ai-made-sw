@@ -35,6 +35,14 @@ protocol WsClientListener: AnyObject {
     func onUdpRecv(_ text: String)
     func onHelloDone(_ info: PeerInfo?, _ sock: Int32?, _ peerIp: String, _ peerPort: Int, _ mode: String)
 
+    /// 被服务器**明确踢下线**（收到 `kicked`）：上层据此**取消登录状态**（连接没断，别动传输层）。
+    /// 之后如果连接被动断开，是否自动重登由"断开前的最后状态"决定（见 `WsReconnectRules.shouldRelogin`）。
+    func onKicked(_ message: String)
+
+    /// 自动重连**成功**（连接已经重新打开）：上层据此用原凭据走一遍登录流程。
+    /// 断开前没登录 / 没有凭据 → 上层只打一行说明，不假装已登录。
+    func onAutoReconnected()
+
     /// list 回复解析出来的在线用户（username / ip / port）。
     /// 对齐 Android `WsClient` / `LoginViewModel.tryParseListResult` 的解析结果。
     func onListResult(_ users: [PeerEntry])
@@ -119,20 +127,47 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
         self?.handleHeartbeatFailure(reason)
     }
 
+    // MARK: - 自动重连（带熔断）
+    /// 用户**手动**断开 → 不自动重连
+    private var userInitiatedDisconnect = false
+    /// 当前这次 connect 是不是"自动重连"（决定打不打「重连成功」、且**不能**清熔断计数）
+    private var autoReconnecting = false
+    /// 自动重连成功后要用的「第 N 次」
+    private var autoReconnectAttempt = 0
+    /// 连接是否**成功打开过**：首次连接就失败 → 不自动重连（保持现状）
+    private var hasBeenConnected = false
+    /// 熔断策略：60s 滑窗内最多 3 次自动重连
+    private let reconnectPolicy = WsReconnectPolicy()
+    /// 已排队的自动重连（用 token 判断是否已作废，避免手动连接后又被它连一次）
+    private var pendingReconnectToken: UUID?
+    /// 稳定存活计时：连接活满 60s → 熔断计数清零
+    private var stableTimer: DispatchSourceTimer?
+
     deinit {
         heartbeatTimer?.cancel()
+        stableTimer?.cancel()
     }
 
     override init() {
         super.init()
     }
 
-    func connect(useWss: Bool, host: String, port: Int) {
+    /// 建连接。
+    /// - Parameter isAutoReconnect: true = 这是自动重连发起的（**不能**清熔断计数，否则熔断永远不触发）
+    func connect(useWss: Bool, host: String, port: Int, isAutoReconnect: Bool = false) {
         self.serverHost = host
         self.serverPort = port
         self.useWss = useWss
         self.isConnected = false
         self.pendingMessages = []
+        self.userInitiatedDisconnect = false
+        self.autoReconnecting = isAutoReconnect
+        if !isAutoReconnect {
+            // ① 用户手动点连接：熔断计数清零、解除熔断；重置"曾经连上过"；清掉"被踢"标记
+            hasBeenConnected = false
+            pendingReconnectToken = nil
+            reconnectPolicy.noteManualConnect()
+        }
 
         let proto = useWss ? "wss" : "ws"
         let urlStr = "\(proto)://\(host):\(port)/"
@@ -161,8 +196,20 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol proto: String?) {
         print("[WsClient] didOpenWithProtocol: \(proto ?? "nil")")
         isConnected = true
+        hasBeenConnected = true
+        pendingReconnectToken = nil          // 这一次自动重连已经落地
         listener?.onMessage("WebSocket 连接已打开，协议: \(proto ?? "nil")")
         listener?.onConnected()
+        startStableTimer()                   // 活满 60s → 熔断计数清零
+
+        if autoReconnecting {
+            // 自动重连成功：打一行（文案三端一致），再让上层决定要不要用保存的凭据重新登录
+            autoReconnecting = false
+            listener?.onMessage("WS 自动重连成功（第 \(autoReconnectAttempt) 次）")
+            // 要不要自动重登由**上层**按"断开前的最后状态"判定（`uiState.isLoggedIn` 在断开那刻的值），
+            // 这里只负责通知"连接已恢复"
+            listener?.onAutoReconnected()
+        }
 
         // Flush pending messages
         for text in pendingMessages {
@@ -177,18 +224,12 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         print("[WsClient] didCloseWith closeCode=\(closeCode.rawValue)")
-        stopHeartbeat()
-        isConnected = false
-        isReceiving = false
         listener?.onMessage("WebSocket 连接关闭 closeCode=\(closeCode.rawValue)")
-        listener?.onDisconnected()
+        handleAbnormalDisconnect()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         print("[WsClient] didCompleteWithError: \(error?.localizedDescription ?? "nil")")
-        stopHeartbeat()
-        isConnected = false
-        isReceiving = false
         if let error = error {
             let nsErr = error as NSError
             // ATS / NSURLErrorDomain errors
@@ -216,6 +257,9 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
                 listener?.onMessage(error.localizedDescription)
             }
         }
+        // 连接已经结束：统一收尾（手动断开时 handleAbnormalDisconnect 内部会因
+        // userInitiatedDisconnect 而不排重连；自动重连尝试失败则在这里排下一次）
+        handleAbnormalDisconnect()
     }
 
     private func startReceiveLoop() {
@@ -251,22 +295,26 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
             case .failure(let err):
                 let nsErr = err as NSError
                 print("[WsClient] receive failure: code=\(nsErr.code) msg=\(err.localizedDescription)")
-                if nsErr.code == 57 || nsErr.code == 1 {
-                    self.listener?.onDisconnected()
-                } else if nsErr.code == -1001 {
+                if nsErr.code == -1001 {
                     self.listener?.onMessage("接收超时")
                 } else if nsErr.code == -1005 {
                     self.listener?.onMessage("网络连接丢失")
                 } else {
                     self.listener?.onMessage("接收错误 [\(nsErr.code)]: \(err.localizedDescription)")
                 }
+                // 接收挂了 = 连接坏了：统一收尾（含"重连期间按未连接"）+ 排自动重连
+                self.handleAbnormalDisconnect()
             }
         }
     }
 
     func disconnectOnly() {
         print("[WsClient] disconnectOnly()")
+        userInitiatedDisconnect = true       // 用户手动断开 → 不自动重连
+        autoReconnecting = false
+        pendingReconnectToken = nil          // 让已排队的自动重连作废
         stopHeartbeat()
+        stopStableTimer()
         resetUdpState()
         isReceiving = false
         isConnected = false
@@ -347,6 +395,19 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
                 stringArray(obj, "ipv6"),
                 type == "p2pdirect_reply"
             )
+
+        case "kicked":
+            // ⚠️ **被踢不是断开**：服务端只发 `kicked` + 清 username + 从 online_users 移除，
+            // **不关 socket** —— 连接仍然活着、仍可收发（再发消息会回 `not logged in`）。
+            // 所以这里**绝不能**走 `handleAbnormalDisconnect()`：不关连接、不停心跳/看门狗、
+            // 不排自动重连；只做两件事：① 清掉 WS 侧的登录态；② 置"禁止自动重登"标记。
+            sessionKey = nil
+            confirmedUsername = ""
+            loginUsername = ""
+            loginPassword = ""
+            let why = obj["message"] as? String ?? ""
+            listener?.onMessage("被服务器踢下线（\(why.isEmpty ? "无说明" : why)）：登录已取消，不会自动重新登录")
+            listener?.onKicked(why)
 
         case "challenge":
             print("[WsClient] got challenge, computing response")
@@ -655,7 +716,8 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
         heartbeatWatchdog.cancel()
     }
 
-    /// 发一次协议级 ping；**只有失败才打日志**（成功的心跳不刷屏）。
+    /// 发一次协议级 ping：**发出**打一行、**收到 pong** 打一行、**失败**走 `handleHeartbeatFailure` 那行。
+    /// 被看门狗挡下而跳过的那一轮什么都不打（既没有"发出"也没有"收到"）。
     ///
     /// ⚠️ 关键：`sendPing` 的回调**只在收到 pong 或出错时才触发** —— 对端不回 pong 时
     /// （例如服务端还是老代码、不支持 WS 协议级 ping）回调**永远不触发**，
@@ -672,13 +734,21 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
             // 所以上面被跳过的那一轮不会留下"发了"的假日志。
             // 文案三端逐字一致（`ios:` 前缀由日志管线按 Direction.system 加）
             self.heartbeatSeq += 1
+            // 把**这一次**的序号捕获成局部常量：回调是异步的，等它触发时
+            // `self.heartbeatSeq` 可能已经涨到下一次了，直接读会张冠李戴
+            let seq = self.heartbeatSeq
             self.listener?.onMessage(
-                "WS 心跳：发出协议级 ping（第 \(self.heartbeatSeq) 次，间隔 \(self.heartbeatIntervalSec)s）"
+                "WS 心跳：发出协议级 ping（第 \(seq) 次，间隔 \(self.heartbeatIntervalSec)s）"
             )
 
             task.sendPing { [weak self] error in
                 guard let self = self else { return }
-                // nil = 收到 pong（取消看门狗、不打日志）；非 nil = 出错（取消看门狗并立即判死）
+                if error == nil {
+                    // 收到 pong：用**这一次** ping 的序号（局部捕获的 `seq`）；
+                    // 出错时不打这行（那条走下面的失败路径）
+                    self.listener?.onMessage("WS 心跳：收到协议级 pong（第 \(seq) 次）")
+                }
+                // nil = 收到 pong（取消看门狗）；非 nil = 出错（取消看门狗并立即判死）
                 self.heartbeatWatchdog.complete(error)
             }
         }
@@ -690,16 +760,82 @@ class WsClient: NSObject, URLSessionWebSocketDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.isConnected else { return }   // 已经断了就别重复处理
             self.listener?.onMessage("ios: WS 心跳失败，连接已断开（\(reason)）")
-            // 走和"连接被关闭"同一套收尾：停心跳 + 清连接状态 + 让上层把界面改成未连接
-            self.stopHeartbeat()
-            self.isConnected = false
-            self.isReceiving = false
-            self.wsTask?.cancel(with: .goingAway, reason: nil)
-            self.wsTask = nil
-            self.session?.invalidateAndCancel()
-            self.session = nil
-            self.listener?.onDisconnected()
+            // 统一收尾：停心跳 + 清连接状态 + 让上层改成未连接 + 排自动重连
+            self.handleAbnormalDisconnect()
         }
+    }
+
+    // MARK: - 异常断开与自动重连
+
+    /// 异常断开（心跳失败 / 连接关闭 / 接收失败 / 自动重连尝试失败）的统一收尾：
+    /// 停心跳与稳定计时、清连接状态、通知上层（界面因此显示"未连接"）、然后排自动重连。
+    /// 用户手动断开时 `userInitiatedDisconnect == true`，`scheduleAutoReconnect()` 会直接不排。
+    private func handleAbnormalDisconnect() {
+        stopHeartbeat()
+        stopStableTimer()
+        isConnected = false
+        isReceiving = false
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        wsTask = nil
+        session?.invalidateAndCancel()
+        session = nil
+        listener?.onDisconnected()
+        scheduleAutoReconnect()
+    }
+
+    /// 排一次自动重连（1s → 2s → 4s；60s 滑窗内最多 3 次，超了打"已放弃"）
+    private func scheduleAutoReconnect() {
+        // 四端统一口径：只有"③ 其他被动断开"才排自动重连。
+        // 走到这里的一定是断开收尾（心跳判死/连接关闭/接收失败/自动重连尝试失败），
+        // 所以只需区分"用户主动断开"（不重连）——**被踢标记在这里不参与**：
+        // 被踢时连接没断、压根不会走到这；被踢之后连接若又被被动断开，传输层照③重连。
+        let event: WsSessionEvent = userInitiatedDisconnect ? .userDisconnect : .passiveDrop
+        guard WsReconnectRules.shouldReconnect(event) else { return }
+        // 首次连接就没成功过 → 也不重连（保持现状）
+        guard hasBeenConnected else { return }
+        // 已经有一次排队的重连（同一次掉线会被多个回调通知到）→ 不重复排
+        guard pendingReconnectToken == nil else { return }
+
+        guard let decision = reconnectPolicy.beginAttempt() else {
+            listener?.onMessage("WS 自动重连已放弃：60 秒内已重连 3 次仍失败（不再自动重连，请手动连接）")
+            return
+        }
+
+        autoReconnectAttempt = decision.attempt
+        listener?.onMessage("WS 自动重连：第 \(decision.attempt) 次（60 秒窗口内）")
+
+        let token = UUID()
+        pendingReconnectToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + decision.delay) { [weak self] in
+            guard let self = self else { return }
+            // token 对不上（用户又手动连了 / 已经断开）/ 用户手动断开 → 这次作废
+            guard self.pendingReconnectToken == token, !self.userInitiatedDisconnect else { return }
+            self.pendingReconnectToken = nil
+            self.connect(
+                useWss: self.useWss,
+                host: self.serverHost,
+                port: self.serverPort,
+                isAutoReconnect: true
+            )
+        }
+    }
+
+    /// 连接活满 `reconnectPolicy.window`（60s）→ 熔断计数清零（② 稳定存活）
+    private func startStableTimer() {
+        stopStableTimer()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + reconnectPolicy.window, leeway: .seconds(2))
+        timer.setEventHandler { [weak self] in
+            guard let self = self, self.isConnected else { return }
+            self.reconnectPolicy.noteStable()
+        }
+        stableTimer = timer
+        timer.resume()
+    }
+
+    private func stopStableTimer() {
+        stableTimer?.cancel()
+        stableTimer = nil
     }
 
     /// **应用层** ping：`{"type":"ping","seq":N}` → 服务端原样回 `{"type":"pong","seq":N}`

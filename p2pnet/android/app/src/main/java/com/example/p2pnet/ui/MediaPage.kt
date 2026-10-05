@@ -67,11 +67,6 @@ fun MediaPage(viewModel: LoginViewModel) {
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text("收流（对端 → 本机）", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    text = "对端推过来的流在这里落地并播放（对应 media.py 的 RTMP 输入）",
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 MdChoiceRow(
                     label = "协议",
                     ids = MediaPageConfig.PROTO_IDS,
@@ -103,11 +98,6 @@ fun MediaPage(viewModel: LoginViewModel) {
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text("推流（本机 → 对端）", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    text = "本机采集 → 编码封装 → 推给对端（对应 media.py 的 RTMP 输出）",
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 MdChoiceRow(
                     label = "协议",
                     ids = MediaPageConfig.PROTO_IDS,
@@ -138,11 +128,6 @@ fun MediaPage(viewModel: LoginViewModel) {
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text("拉起应用", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    text = "我们只负责打洞：洞打通后，把这条洞的参数交给聊天程序，由它收发流",
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 MdFieldRow(
                     label = "应用包名",
                     value = cfg.appPackage,
@@ -167,19 +152,18 @@ fun MediaPage(viewModel: LoginViewModel) {
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    text = if (channels.isEmpty()) {
-                        "还没打洞：去主页 socket 卡片第 5 行点 media，打通后这里自动填上"
-                    } else {
-                        "通道：" + channels.joinToString("、") { "${it.target}(洞${it.localPort})" } +
-                            if (channels.size > 1) "  ⚠️ 多媒体聊天一般只要一条" else ""
-                    },
-                    fontSize = 9.sp,
-                    color = if (channels.size > 1) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // 空态不渲染；有通道时才显示这条明细
+                if (channels.isNotEmpty()) {
+                    Text(
+                        text = "通道：" + channels.joinToString("、") { "${it.target}(洞${it.localPort})" } +
+                            if (channels.size > 1) "  ⚠️ 多媒体聊天一般只要一条" else "",
+                        fontSize = 9.sp,
+                        color = if (channels.size > 1) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
 
                 Button(
                     onClick = { viewModel.onMediaLaunchApp() },

@@ -32,14 +32,34 @@ struct ProxyPage: View {
 
     private var configCard: some View {
         VStack(alignment: .leading, spacing: 5) {
+            // 首行版式与同端 vpn / switch **完全一致**：
+            // `配置`（左）+ 通道数状态（未接线 / 已接 N 条）+ Spacer + 启停按钮（最右，同一行）。
+            // 原来的 `运行中 / 已停止` 去掉了 —— 运行状态已由按钮文案（启动/停止）表达
             HStack(spacing: 6) {
                 Text("配置")
                     .font(.footnote)
-                Text(viewModel.uiState.proxyRunning ? "运行中" : "已停止")
+                Text(channels.isEmpty ? "未接线" : "已接 \(channels.count) 条")
                     .font(.system(size: 10))
                     .foregroundColor(viewModel.uiState.proxyRunning ? Color(hex: 0x6650A4) : .secondary)
-                Spacer(minLength: 0)
+
+                Spacer(minLength: 6)
+
+                Button(action: {
+                    if viewModel.uiState.proxyRunning {
+                        viewModel.onProxyStop()
+                    } else {
+                        viewModel.onProxyStart()
+                    }
+                }) {
+                    Text(viewModel.uiState.proxyRunning ? "停止" : "启动")
+                        .font(.system(size: 10))
+                        .frame(height: 26)
+                        .padding(.horizontal, 10)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(viewModel.uiState.proxyRunning ? Color(hex: 0xFFB3261E) : Color(hex: 0x6650A4))
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             PxChoiceRow(
                 label: "模式",
@@ -84,26 +104,14 @@ struct ProxyPage: View {
                 .font(.system(size: 9))
                 .foregroundColor(.secondary)
 
-            Button(action: {
-                if viewModel.uiState.proxyRunning {
-                    viewModel.onProxyStop()
-                } else {
-                    viewModel.onProxyStart()
-                }
-            }) {
-                Text(viewModel.uiState.proxyRunning ? "停止" : "启动")
-                    .font(.system(size: 11))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 32)
+            // 空态不渲染这一行（没有通道时不再挂一句"还没有"）
+            if !channels.isEmpty {
+                Text(channelText)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(viewModel.uiState.proxyRunning ? Color(hex: 0xFFB3261E) : Color(hex: 0x6650A4))
-
-            Text(channelText)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-                .lineLimit(2)
-                .truncationMode(.tail)
         }
         .padding(8)
         .background(Color(.systemBackground))
@@ -111,10 +119,8 @@ struct ProxyPage: View {
         .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
     }
 
+    /// 只在**有通道**时用（空态整行不渲染，见调用处）
     private var channelText: String {
-        if channels.isEmpty {
-            return "通道：还没有（在主页 socket 卡片第 5 行点 proxy）"
-        }
         let list = channels.map { "\($0.target)(洞\($0.localPort))" }.joined(separator: "、")
         return "通道 \(channels.count) 条：\(list)"
     }
@@ -139,14 +145,8 @@ struct ProxyPage: View {
                     suffix: cfg.lListenPort == "0" ? "(自动)" : "",
                     onChange: { viewModel.onProxyLListenPortChange($0) }
                 )
-                let port = Int(cfg.lListenPort) ?? 0
-                let shown = port == 0 ? "\(cfg.lListenIp):自动" : formatHostPort(cfg.lListenIp, port)
-                Text("   本机应用连 \(shown) → 数据进洞 → 对端 -R 去 connect 它的目标")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                Text("   监听地址填 127.0.0.1 = 只有本机应用能连；0.0.0.0 = 局域网也能连")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                // （原来这里还有一行"本机应用连 … → 对端 -R 去 connect 它的目标"的说明，按用户要求整行删掉；
+                //   端口是否自动/具体值已经在上面的输入框里显示）
             } else {
                 PxFieldRow(
                     label: "目标地址",
@@ -160,14 +160,7 @@ struct ProxyPage: View {
                     placeholder: "3389",
                     onChange: { viewModel.onProxyRTargetPortChange($0) }
                 )
-                let port = Int(cfg.rTargetPort) ?? 0
-                let shown = port == 0 ? "\(cfg.rTargetHost):(端口未填)" : formatHostPort(cfg.rTargetHost, port)
-                Text("   洞里的流量 → \(shown)，回包原路送回洞里")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                Text("   目标通常是本机服务（SSH 22 / 远程桌面 3389…）；填 0.0.0.0 没意义，要填具体地址")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                // （原来这里还有一行"洞里的流量 → …"和一行"目标通常是本机服务…"的说明，按用户要求整行删掉）
             }
         }
         .padding(8)

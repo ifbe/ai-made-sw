@@ -95,13 +95,7 @@ private struct WgImplCard: View {
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(.secondary)
 
-                Text("listen_port 必须是打洞时那个本地端口，否则已建立的 NAT 映射会废")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
             } else {
-                Text("UDP 出口固定用已打洞的那个本地端口" + (pageMyPort > 0 ? "（本页当前 \(pageMyPort)）" : ""))
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

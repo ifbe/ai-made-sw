@@ -306,7 +306,7 @@ session_key = None  # login_ok 后派生，HKDF(pw_hash, info=challenge)
 #   · 成功的心跳不打日志，失败只打一行。
 WS_HEARTBEAT_INTERVAL = 20.0   # 每 20s 发一个 ping 帧（三端统一）
 WS_HEARTBEAT_TIMEOUT = 10.0    # 发过 ping 之后这么久没收到任何字节 → 判定连接已死
-WS_HEARTBEAT_PAYLOAD = b'p2pnet'
+WS_HEARTBEAT_PAYLOAD = b'p2pnet'      # payload 基名（下面带序号成 p2pnet#N）
 
 _hb_lock = threading.Lock()
 _hb_thread = None
@@ -315,6 +315,267 @@ _hb_last_rx = 0.0        # 最后一次"收到任何字节"的时刻（由读方
 _hb_last_tx = 0.0        # 最后一次"往这条 WS 上发东西"的时刻（含普通消息）
 _hb_ping_sent_at = 0.0   # 最后一次发 ping 帧的时刻
 _hb_count = 0            # 本次连接已经发过几次协议级 ping（日志里的"第 N 次"，随连接重置）
+
+# ====== WS 自动重连（带熔断）======
+# 触发：**连接已建立之后**，因 WS 协议级心跳判死、或异常断开（非用户主动断开）。
+# 不触发：用户手动断开、首次连接就失败。
+# 规则：退避 1s → 2s → 4s；**60 秒滑窗内最多 3 次**；到顶仍失败 → 放弃并打一行（文案三端一致）。
+# 计数重置：① 用户手动连接；② 连接稳定存活 ≥60 秒。
+WS_RECONNECT_BACKOFF = (1.0, 2.0, 4.0)   # 每次尝试前的等待（1s → 2s → 4s）
+WS_RECONNECT_WINDOW = 60.0               # 60 秒滑窗
+WS_RECONNECT_MAX = 3                     # 滑窗内最多 3 次
+
+
+def ws_reconnect_delay(attempt):
+    """第 attempt 次（从 1 开始）重连前的等待秒数；超出退避表 → None（= 该熔断了）"""
+    if 1 <= attempt <= len(WS_RECONNECT_BACKOFF):
+        return WS_RECONNECT_BACKOFF[attempt - 1]
+    return None
+
+
+def ws_reconnect_prune(attempts, now, window=WS_RECONNECT_WINDOW):
+    """丢掉滑窗之外的尝试时刻（60 秒滑动窗口）"""
+    return [t for t in attempts if (now - t) < window]
+
+
+def ws_reconnect_allowed(attempts, now, window=WS_RECONNECT_WINDOW, limit=WS_RECONNECT_MAX):
+    """滑窗内还能不能再自动重连一次"""
+    return len(ws_reconnect_prune(attempts, now, window)) < limit
+
+
+def ws_reconnect_log_attempt_text(n):
+    """每次尝试前的日志正文（三端逐字一致）：WS 自动重连：第 N 次（60 秒窗口内）"""
+    return f'WS 自动重连：第 {n} 次（{int(WS_RECONNECT_WINDOW)} 秒窗口内）'
+
+
+def ws_reconnect_log_ok_text(n):
+    """重连成功的日志正文（三端逐字一致）：WS 自动重连成功（第 N 次）"""
+    return f'WS 自动重连成功（第 {n} 次）'
+
+
+# 熔断放弃那一行（三端逐字一致）
+WS_RECONNECT_GIVEUP_TEXT = (
+    f'WS 自动重连已放弃：{int(WS_RECONNECT_WINDOW)} 秒内已重连 {WS_RECONNECT_MAX} 次仍失败'
+    f'（不再自动重连，请手动连接）'
+)
+
+# ── 自动重连的运行时状态（client.py 自己持有：命令行和 GUI 都走这一份）──
+_rc_attempts = []          # 60 秒滑窗内的重连尝试时刻
+_last_connected_at = 0.0   # 本次连接建立时刻（稳定存活 ≥60s → 计数清零）
+_saved_login_user = None   # 断线前登录用的凭据（重连后恢复登录）
+_saved_login_pass = None
+_was_logged_in = False     # 断开收尾时记下"断开前是否已登录"
+_user_quit = False         # 用户输入 quit → 不自动重连
+
+# "断开"的两种原因（四端统一口径）。
+# ⚠️ "被踢"**不是**一种断开原因：它只把登录状态从"已登录"打回"已连接未登录"，
+#    之后掉线自然落进"被动断开 + 断开前未登录"那一行 —— 所以不需要单独标记。
+DISCONNECT_MANUAL = 'manual'     # ① 用户主动断开（quit / 点"断开"）
+DISCONNECT_PASSIVE = 'passive'   # ② 其他被动断开（心跳判死 / 对端关闭 …）
+
+
+def should_reconnect(reason):
+    """四端统一：**只有 ③ 被动断开**才自动重连（① 主动断开不重连；② 被踢根本不是断开）。"""
+    return reason == DISCONNECT_PASSIVE
+
+
+def should_relogin(reason, was_logged_in):
+    """
+    四端统一：**被动断开** 且 **断开前最后状态是"已登录"** 才自动重新登录。
+
+    没有单独的"被踢标记"：被踢只是把状态打回"已连接未登录"，于是这里自然是 False；
+    用户被踢后手动 login 成功 → 状态又变"已登录" → 再掉线就又会自动重登（状态本身就是真相）。
+    """
+    return reason == DISCONNECT_PASSIVE and bool(was_logged_in)
+
+
+def current_disconnect_reason():
+    """当前这次**断开**属于哪种（被踢不是断开，所以不在这里）"""
+    if _user_quit:
+        return DISCONNECT_MANUAL
+    return DISCONNECT_PASSIVE
+
+
+def reconnect_allowed():
+    """现在允许自动重连吗（用户主动断开 → False）。
+
+    `ws_auto_reconnect()` 内部还会再查一次（保险）；GUI 起线程前也查这个。
+    """
+    return should_reconnect(current_disconnect_reason())
+
+
+def relogin_allowed():
+    """现在允许自动重新登录吗（判据 = 被动断开 + 断开前最后状态是已登录）"""
+    return should_relogin(current_disconnect_reason(), _was_logged_in)
+
+
+def mark_user_connect():
+    """用户**手动**连接 / 手动登录时调：清掉"主动退出"标记并清零重连计数。"""
+    global _user_quit
+    _user_quit = False
+    ws_reconnect_reset()
+
+
+def ws_reconnect_reset():
+    """重连计数清零（① 用户手动连接；② 连接稳定存活 ≥60 秒）"""
+    global _rc_attempts, _last_connected_at
+    _rc_attempts = []
+    _last_connected_at = time.time()
+
+
+def ws_reconnect_plan(now=None):
+    """
+    现在该不该重连、该等多久（**纯决策**，命令行与 GUI 共用；self-test 也直接测它）：
+      返回 (第 N 次, 等待秒数)，或 None（= 熔断，放弃自动重连）
+    """
+    now = time.time() if now is None else now
+    attempts = ws_reconnect_prune(_rc_attempts, now)
+    if not ws_reconnect_allowed(attempts, now):
+        return None
+    n = len(attempts) + 1
+    delay = ws_reconnect_delay(n)
+    return None if delay is None else (n, delay)
+
+
+def ws_reconnect_note_attempt(now=None):
+    """记一次重连尝试（进 60 秒滑窗）"""
+    global _rc_attempts
+    now = time.time() if now is None else now
+    _rc_attempts = ws_reconnect_prune(_rc_attempts, now) + [now]
+
+
+def ws_reconnect_sleep(seconds, should_stop=None):
+    """可打断的退避等待；返回 True = 被打断（用户断开/退出，别再重连了）"""
+    end = time.time() + max(0.0, seconds)
+    while time.time() < end:
+        if should_stop is not None and should_stop():
+            return True
+        time.sleep(0.05)
+    return bool(should_stop is not None and should_stop())
+
+
+def _close_ws_socket():
+    """关掉当前 WS socket（重连前必须关，别漏 fd）"""
+    global ws_sock
+    try:
+        if ws_sock is not None:
+            ws_sock.close()
+    except Exception:
+        pass
+    ws_sock = None
+
+
+def ws_connect_once(host=None, port=None):
+    """
+    建 socket + WS 握手（握手成功后**心跳自动起**，见 ws_handshake）。成功返回 True。
+
+    命令行与 GUI 都用它，所以"连接"这件事只有一个实现。
+    """
+    global connected, ws_sock, recv_buf
+    host = host or SERVER_IP
+    port = int(port or SERVER_PORT)
+    try:
+        info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        family, socktype, proto, _, sockaddr = info[0]
+        sock = socket.socket(family, socktype, proto)
+        sock.settimeout(10)
+        sock.connect(sockaddr)
+    except Exception as e:
+        log(f"连接失败: {e}")
+        return False
+    if not ws_handshake(sock, host, port):
+        log("WebSocket 握手失败")
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return False
+    sock.setblocking(False)
+    ws_sock = sock
+    recv_buf = b''
+    connected = True
+    return True
+
+
+def mark_disconnected():
+    """
+    一次会话结束时的统一收尾（命令行与 GUI 都调）：
+
+      · 记下"断开前是否已登录"，供重连后恢复登录；
+      · 连接稳定存活 ≥60 秒 → 重连计数清零；
+      · 清掉会话态（登录用户 / session_key / 半截登录），关掉旧 socket。
+    """
+    global _was_logged_in, logged_in_user, session_key, pending_auth, connected
+    _was_logged_in = logged_in_user is not None
+    if _last_connected_at and (time.time() - _last_connected_at) >= WS_RECONNECT_WINDOW:
+        ws_reconnect_reset()          # 稳定存活 ≥60 秒 → 计数清零
+    logged_in_user = None
+    session_key = None
+    pending_auth = None
+    connected = False
+    stop_ws_heartbeat()      # 会话真的结束了 → 心跳停
+    _close_ws_socket()
+
+
+def ws_auto_reconnect(host=None, port=None, *, on_connected=None, should_stop=None):
+    """
+    **连接已建立过**之后异常断开时调用：按策略自动重连（退避 1s→2s→4s，60 秒滑窗内最多 3 次）。
+
+      返回 True  = 已重连上（socket/心跳都就绪，调用方接着跑自己的读循环）；
+      返回 False = 放弃（熔断）/ 被 should_stop 打断（用户断开或退出）。
+
+    命令行（main()）和 GUI（EngineBridge）都调这个 —— 重连只有这一份实现。
+    """
+    if not reconnect_allowed():
+        # 用户主动断开（quit / 点"断开"）：连试都不试（调用方忘了判断也拦得住）。
+        return False
+    host = host or SERVER_IP
+    port = int(port or SERVER_PORT)
+    while True:
+        if should_stop is not None and should_stop():
+            return False
+        plan = ws_reconnect_plan()
+        if plan is None:
+            log(WS_RECONNECT_GIVEUP_TEXT)
+            return False
+        n, delay = plan
+        log(ws_reconnect_log_attempt_text(n))
+        if ws_reconnect_sleep(delay, should_stop):
+            return False
+        ws_reconnect_note_attempt()
+        if not ws_connect_once(host, port):
+            continue                      # 失败 → 下一轮（计数已 +1，窗口满就熔断）
+        log(ws_reconnect_log_ok_text(n))
+        if on_connected is not None:
+            on_connected()
+        return True
+
+
+def start_login(username):
+    """发起一次登录（发 login 等 challenge）。命令行自动登录 / 重连后恢复登录都走这里。"""
+    global pending_auth
+    pending_auth = (username,)
+    ws_send(ws_sock, {"type": "login", "username": username})
+    log("等待服务器验证...")
+
+
+def resume_login():
+    """重连成功后：断开前若为已登录，用保存的凭据走现有登录流程重新登录；没凭据就如实说明。"""
+    global ARGS_USER, ARGS_PASS
+    if not relogin_allowed():
+        # 断开前就是"已连接未登录"（含被服务器踢下线之后）→ 本来就不该自动重登（四端统一文案）
+        if not _was_logged_in:
+            log("WS 自动重连：连接已恢复，断开前未登录，不自动重新登录")
+        return
+    if not (_saved_login_user and _saved_login_pass):
+        # 被动断开 + 断开前已登录，但拿不到凭据 → 只恢复连接，不假装已登录（四端统一文案）
+        log("WS 自动重连：连接已恢复，但没有可用的凭据，需要手动重新登录")
+        return
+    # 断开前已登录且有凭据：**只发这一次**（登录失败也不循环重试，等用户手动）
+    log("WS 自动重连：用保存的凭据重新登录")      # 四端统一文案
+    ARGS_USER, ARGS_PASS = _saved_login_user, _saved_login_pass
+    start_login(_saved_login_user)
+
 
 # ====== 应用层 ping（服务端：{"type":"ping","seq":N} → {"type":"pong","seq":N}，不需要登录）======
 # ⚠️ 和这两处是**不同**的东西，别混：
@@ -504,7 +765,15 @@ def ws_recv():
             pass
         return None
     if opcode == 0xA:
-        # pong 帧：判活靠 note_ws_rx()（读方的事），这里同样返回 None
+        # 协议级 pong：服务端把 payload 原样回（我们发的是 p2pnet#N），从这里解出序号，
+        # 打出与"发出"配对的那一行。**只有真的读到 0xA 才打**（不是发的时候就预告）。
+        # 判活仍靠 note_ws_rx()（读方的事）；返回值仍然是 None，契约不变。
+        seq = ws_heartbeat_seq_from_payload(payload)
+        if seq is not None:
+            log(ws_heartbeat_pong_log_text(seq))
+            # 应答到了 → 不再"等应答"。这是第二道防线：即便将来判死条件又被改坏，
+            # 也不会拿着旧的等待状态去判死（语义最直白：还在等吗？不等了）。
+            _hb_clear_pending()
         return None
     if opcode == 0x1:
         return payload.decode('utf-8', errors='replace')
@@ -583,6 +852,42 @@ def ws_heartbeat_log_text(n):
     return f'WS 心跳：发出协议级 ping（第 {n} 次，间隔 {int(WS_HEARTBEAT_INTERVAL)}s）'
 
 
+def ws_heartbeat_pong_log_text(n):
+    """协议级心跳"收到 pong"的日志正文（三端逐字一致）：
+        WS 心跳：收到协议级 pong（第 N 次）
+    """
+    return f'WS 心跳：收到协议级 pong（第 {n} 次）'
+
+
+def ws_heartbeat_payload(n):
+    """心跳 ping 的 payload：**带序号**（`p2pnet#3`）。
+
+    为什么要带：服务端会把 payload **原样回**，所以收到 pong 时能从 payload 解出
+    这是"第几次 ping 的回包"，做到**精确对应**（而不是靠"数收到过几次"去猜）。
+    """
+    return f'{WS_HEARTBEAT_PAYLOAD.decode()}#{n}'.encode()
+
+
+def ws_heartbeat_seq_from_payload(payload):
+    """从 pong 的 payload 解出对应的 ping 序号；不是我们的心跳 payload 就返回 None"""
+    try:
+        text = payload.decode('utf-8', errors='replace')
+    except Exception:
+        return None
+    prefix = WS_HEARTBEAT_PAYLOAD.decode() + '#'
+    if not text.startswith(prefix):
+        return None
+    tail = text[len(prefix):]
+    return int(tail) if tail.isdigit() else None
+
+
+def _hb_clear_pending():
+    """清掉"正在等协议级 pong"的状态（收到应答时调）"""
+    global _hb_ping_sent_at
+    with _hb_lock:
+        _hb_ping_sent_at = 0.0
+
+
 def note_ws_rx():
     """**读方**每收到任何字节就喊一声（pong 帧也算"有字节"）。
 
@@ -659,8 +964,12 @@ def _ws_heartbeat_tick(now):
     global connected, _hb_last_tx, _hb_ping_sent_at, _hb_count
     with _hb_lock:
         last_rx, last_tx, ping_at = _hb_last_rx, _hb_last_tx, _hb_ping_sent_at
-    # 发过 ping 之后，超时窗口内一个字节都没收到 → 判定连接已死
-    if ping_at and (now - last_rx) >= WS_HEARTBEAT_TIMEOUT:
+    # 发过 ping 之后，超时窗口内**一个字节都没收到** → 判定连接已死。
+    # ⚠️ 必须写成"`last_rx < ping_at`（发 ping 之后没收到过任何字节）**且**距 ping 已超时"。
+    # 只写 `now - last_rx >= TIMEOUT` 是错的：那看的是"距上次收字节多久"，
+    # 于是 ping 发出去满 10s 就必然为真 —— 哪怕这期间 pong 早就到了、last_rx 刚被刷新，
+    # 每个心跳周期都会在 ping+10s 稳定误判死（用户实机撞到过）。
+    if ping_at and last_rx < ping_at and (now - ping_at) >= WS_HEARTBEAT_TIMEOUT:
         log('pong 超时：连接已断开（WS 心跳失败）')
         connected = False
         stop_ws_heartbeat()
@@ -674,7 +983,8 @@ def _ws_heartbeat_tick(now):
     _hb_count += 1
     log(ws_heartbeat_log_text(_hb_count))    # ← 发之前打一行（三端逐字一致）
     try:
-        sock.send(ws_ping_frame())
+        # payload 带序号：服务端原样回，收到 pong 时就能打出"第 N 次"，精确对应
+        sock.send(ws_ping_frame(ws_heartbeat_payload(_hb_count)))
     except Exception as e:
         log(f'发送 WS 心跳失败：{e!r}')
         connected = False
@@ -1002,11 +1312,22 @@ def _launch_proxy(hole, target):
                                 hole, 'proxy')
 
 
+def _ffmpeg_script_path():
+    """
+    ffmpeg.sh 的真实路径：`client/app/ffmpeg.sh`。
+
+    ⚠️ 原来这里拼的是 `dirname(client.py)/ffmpeg.sh` = `client/ffmpeg.sh`（不存在）
+    → `ffmpeg <洞>` / `--ffmpeg <user>` / `onholefrom* ffmpeg` 永远失败，只打一行
+    "ffmpeg.sh 不在当前目录"。抽成函数是为了让 self-test 能直接断言它存在。
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app', 'ffmpeg.sh')
+
+
 def _launch_ffmpeg(hole):
     """在打好的洞上跑 ffmpeg.sh <my_ip> <my_port> <peer_ip> <peer_port>"""
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg.sh')
+    script_path = _ffmpeg_script_path()
     if not os.path.exists(script_path):
-        log(f"[P2P] 错误: ffmpeg.sh 不在当前目录: {script_path}")
+        log(f"[P2P] 错误: 找不到 ffmpeg.sh: {script_path}")     # 明确错误（不是"不在当前目录"）
         return False
     call_args = ['bash', script_path,
                  hole['my_ip'] or '0.0.0.0', str(hole['my_port']),
@@ -1180,8 +1501,12 @@ def _wg_admin_add_peer(hole, pubkey_b64):
 
 
 def close_all_holes(reason=''):
-    """关掉所有洞的 socket（退出/被踢/登出）"""
-    stop_ws_heartbeat()   # 走到"清洞"就是连接要结束了，心跳一起停
+    """关掉所有洞的 socket（退出/被踢/登出）
+
+    ⚠️ 这里**不停 WS 心跳**：登出与被踢都"只是登录态变了"，连接还在（还得靠心跳保活/判活）。
+    心跳在**会话真的结束**时停 —— 见 `mark_disconnected()`（以及 main() 最后的收尾）。
+    """
+    # 注意：以前这里有一行 stop_ws_heartbeat()，被踢时会把还活着的连接的心跳停掉（已修）
     with _holes_lock:
         hs = list(holes)
     for h in hs:
@@ -1755,6 +2080,9 @@ def handle_server_message(obj):
             ARGS_PASS = None
         else:
             password = input("密码: ").strip()
+        # 留一份凭据在内存里：断线自动重连后用同一套流程恢复登录（命令行与 GUI 共用）
+        global _saved_login_user, _saved_login_pass
+        _saved_login_user, _saved_login_pass = username, password
         if not password:
             pending_auth = None
             log("取消登录")
@@ -1819,12 +2147,17 @@ def handle_server_message(obj):
         session_key = None
         log("已登出（连接还在，可以再 login）")
     elif obj.get('type') == 'kicked':
-        stop_ws_heartbeat()
+        # ② 被踢 = **登录状态被取消，连接没断**（服务端只发 kicked + 清 username，不关 socket）。
+        #    所以这里**不许**停心跳、**不许**关连接 —— 连接还活着，心跳继续保活；
+        #    只做两件事：取消登录态 + 置"不许自动重新登录"的标记（标记留到用户手动 login）。
+        #    ⚠️ 不需要额外的"被踢标记"：登录状态被清成"未登录"本身就是判据 ——
+        #    之后这条连接若自己被动断开，传输层照常重连，而"断开前未登录" → 不自动重登；
+        #    用户再手动 login 成功（状态回到已登录）后掉线，又会正常自动重登。
         logged_in_user = None
         session_key = None
         hole_udp.stop_all_hellos()
         close_all_holes('被踢')
-        log(f"被踢: {obj.get('message','')}")
+        log(f"被服务器踢下线（{obj.get('message','')}）：登录已取消，不会自动重新登录")   # 四端统一文案
     elif obj.get('type') == 'incoming_p2pudp':
         from_user = obj.get('from_username', '')
         log(f"⚠️  {from_user} 请求和你建立 UDP P2P 连接，输入 udp {from_user} 回应")
@@ -1935,6 +2268,8 @@ def process_input_line(line):
     arg = parts[1].strip() if len(parts) > 1 else ''
 
     if cmd == 'quit':
+        global _user_quit
+        _user_quit = True          # 用户主动退出 → 不自动重连
         return False
     elif cmd == 'help':
         print_help()
@@ -1948,6 +2283,8 @@ def process_input_line(line):
                 return True
         else:
             username = arg
+        # 用户**手动**登录 → 清掉"被踢/主动退出"状态（以后掉线还能自动重连重登）
+        mark_user_connect()
         # 先发 login username，等收到 challenge 后再要密码
         pending_auth = (username,)
         ws_send(ws_sock, {"type": "login", "username": username})
@@ -2113,8 +2450,92 @@ def process_input_line(line):
 
 # ====== 主循环 ======
 
+def _run_session():
+    """
+    跑**一次** WebSocket 会话：读到断开 / 心跳判死 / 用户 quit 为止。
+
+    main() 会把"首次连接 → 本函数 → mark_disconnected() → ws_auto_reconnect()"串成一个外层循环，
+    所以断线后命令行模式也会自动重连（和 GUI 走同一套 client.py 实现）。
+    """
+    global running, connected, recv_buf, _user_quit
+    running = True
+    while running:
+        # 心跳线程判定连接已死（connected=False）→ 退出循环，走下面的收尾
+        if not connected:
+            break
+        # ---- 接收网络数据 ----
+        # 注意区分两种情况（原来混在一起，导致对端关闭后只能干等心跳判死）：
+        #   data is None → 只是暂时没数据（EWOULDBLOCK）→ 继续转
+        #   data == b''  → 对端真的关了 / 出错 → **立刻 break**，好让外层自动重连马上接手
+        try:
+            data = ws_sock.recv(4096)
+        except socket.error as e:
+            if e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN) or e.args[0] == 10035:
+                data = None
+            else:
+                data = b''
+        except Exception:
+            data = b''
+
+        if data is None:
+            import time; time.sleep(0.05)
+        elif not data:
+            log("连接已被对端/服务器关闭")
+            break
+        else:
+            note_ws_rx()      # 读方通知心跳线程："还有字节进来"（pong 帧也算）
+            recv_buf += data
+
+        # 解码完整帧
+        while True:
+            msg = ws_recv()
+            if msg is None:
+                break
+            try:
+                obj = json.loads(msg)
+            except:
+                obj = {"raw": msg}
+            dbg(f"[RECV] {json.dumps(obj)}")
+            handle_server_message(obj)
+
+        # ---- 处理用户输入 ----
+        line = None
+
+        if IS_WINDOWS:
+            with queue_lock:
+                if input_queue:
+                    line = input_queue.pop(0)
+        else:
+            import select
+            try:
+                r_stdin, _, _ = select.select([sys.stdin], [], [], 0)
+                if sys.stdin in r_stdin:
+                    line = sys.stdin.readline()
+                    if not line:
+                        line = None
+                    else:
+                        line = line.strip()
+            except (OSError, IOError):
+                pass
+
+        if line is not None:
+            if line == '':
+                continue
+            if line == None:
+                running = False
+                break
+            keep = process_input_line(line)
+            if not keep:
+                running = False
+                break
+
+
+
 def main():
     global connected, ws_sock, recv_buf, pending_auth, DEBUG, SERVER_IP, SERVER_PORT
+
+    global _user_quit
+    _user_quit = False            # 每次启动复位（用户 quit 才会置 True）
 
     parser = argparse.ArgumentParser(description='p2pnet 命令行客户端')
     parser.add_argument('--server', default='127.0.0.1', help='服务器地址（IPv4/IPv6/域名，自动识别）')
@@ -2176,32 +2597,20 @@ def main():
                              kv.get('iface', 'wghelp0')))
     STARTUP_FFMPEG = args.ffmpeg_targets
 
-    # 自动判断 IPv4/IPv6，同时支持域名解析
-    server_info = socket.getaddrinfo(args.server, args.port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    family, socktype, proto, _, sockaddr = server_info[0]
-    ws_sock = socket.socket(family, socktype, proto)
-    ws_sock.settimeout(10)
-    try:
-        ws_sock.connect(sockaddr)
-    except Exception as e:
-        log(f"连接失败: {e}")
+    # ── 首次连接（唯一入口：ws_connect_once 内部就是 getaddrinfo + connect + ws_handshake）
+    #    ⚠️ 这里曾经**残留过一段旧的连接代码**（本函数重构时没删干净）→ 每次启动连两次：
+    #    第一个 socket 泄漏、服务端多挂一条永不登录的连接、`--user/--pass` 时 challenge 对不上。
+    #    现在连接只有这一个入口（见 E2E 里"服务端 [连接] 条数 == 1"的常驻断言）。
+    #    首次失败仍 sys.exit(1)：**首次连不上不自动重连**。──
+    if not ws_connect_once(args.server, args.port):
         sys.exit(1)
-
-    # WebSocket 握手（host 传原始域名，sockaddr 已解析）
-    if not ws_handshake(ws_sock, args.server, args.port):
-        log("WebSocket 握手失败")
-        ws_sock.close()
-        sys.exit(1)
-
-    ws_sock.setblocking(False)
-    connected = True
+    mark_user_connect()           # 手动/首次连接 → 清"被踢/主动退出"状态 + 重连计数清零
     log(f"已连接至 {args.server}:{args.port}（输入 help 查看命令）")
 
     # --user --pass 自动登录
     if ARGS_USER:
-        pending_auth = (ARGS_USER,)
-        ws_send(ws_sock, {"type": "login", "username": ARGS_USER})
         log(f"自动登录: {ARGS_USER}（等待 challenge...）")
+        start_login(ARGS_USER)
 
     # Windows 启动输入线程
     input_t = None
@@ -2209,75 +2618,17 @@ def main():
         input_t = threading.Thread(target=windows_input_thread, daemon=True)
         input_t.start()
 
-    running = True
-    while running:
-        # 心跳线程判定连接已死（connected=False）→ 退出循环，走下面的收尾
-        if not connected:
+    # ── 会话外层：断开（异常/心跳判死）后按策略自动重连；用户 quit 就结束 ──
+    while True:
+        _run_session()
+        mark_disconnected()
+        if _user_quit:
             break
-        # ---- 接收网络数据 ----
-        try:
-            data = ws_sock.recv(4096)
-        except socket.error as e:
-            if e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
-                if IS_WINDOWS:
-                    data = b''
-                else:
-                    import time; time.sleep(0.05); data = b''
-            elif e.args[0] == 10035:  # Windows WSAEWOULDBLOCK
-                data = b''
-            else:
-                data = b''
-        except Exception:
-            data = b''
-
-        if not data:
-            import time; time.sleep(0.05)
-        else:
-            note_ws_rx()      # 读方通知心跳线程："还有字节进来"（pong 帧也算）
-            recv_buf += data
-
-        # 解码完整帧
-        while True:
-            msg = ws_recv()
-            if msg is None:
-                break
-            try:
-                obj = json.loads(msg)
-            except:
-                obj = {"raw": msg}
-            dbg(f"[RECV] {json.dumps(obj)}")
-            handle_server_message(obj)
-
-        # ---- 处理用户输入 ----
-        line = None
-
-        if IS_WINDOWS:
-            with queue_lock:
-                if input_queue:
-                    line = input_queue.pop(0)
-        else:
-            import select
-            try:
-                r_stdin, _, _ = select.select([sys.stdin], [], [], 0)
-                if sys.stdin in r_stdin:
-                    line = sys.stdin.readline()
-                    if not line:
-                        line = None
-                    else:
-                        line = line.strip()
-            except (OSError, IOError):
-                pass
-
-        if line is not None:
-            if line == '':
-                continue
-            if line == None:
-                running = False
-                break
-            keep = process_input_line(line)
-            if not keep:
-                running = False
-                break
+        log("连接已断开，尝试自动重连…")
+        if not ws_auto_reconnect(args.server, args.port, should_stop=lambda: _user_quit):
+            break
+        log(f"已重新连接至 {args.server}:{args.port}（输入 help 查看命令）")
+        resume_login()
 
     connected = False
     # 关掉所有洞 / 还在发 hello 的 socket

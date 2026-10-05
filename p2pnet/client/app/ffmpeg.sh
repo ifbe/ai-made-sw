@@ -26,11 +26,16 @@ ffplay \
     -fflags nobuffer -flags low_delay \
     -framedrop &
 
+# ⚠️ 发送端的"本机端口"必须用**查询参数** localport= 指定。
+#    早先写的 `udp://$PEER_IP:$PEER_PORT@$MY_IP:$MY_PORT` 是**非法形式**：`@` 前面被当成 URL 的
+#    userinfo，ffmpeg 会把包发到 `@` **后面**那个地址（= 自己的端口！），而且源端口是临时端口
+#    → 对端一个字节都收不到（本机实测：接收端落盘 0 字节）、打洞的 NAT 映射也白搭。
+#    改成 localport= 后：源端口就是洞里那个固定端口（本机实测：43616 字节正常收到）。
 ffmpeg \
     -f avfoundation -i "0:0" \
     -c:v libx264 -preset ultrafast -tune zerolatency \
     -c:a aac -b:a 128k \
-    -f mpegts "udp://$PEER_IP:$PEER_PORT@$MY_IP:$MY_PORT?pkt_size=1316" &
+    -f mpegts "udp://$PEER_IP:$PEER_PORT?localport=$MY_PORT&pkt_size=1316" &
 
 sleep "$DURATION"
 exit

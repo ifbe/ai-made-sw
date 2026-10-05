@@ -121,24 +121,33 @@ class LoginViewModel(
     /**
      * WS **协议级**心跳的"同节奏日志"计时器（和应用层 ping 按钮不是一回事）。
      *
-     * ⚠️ 真正的 0x9 ping 帧是 OkHttp 按 [WsClient.PING_INTERVAL_SECONDS] 自己发的，
-     * 而 OkHttp **没有暴露"ping 已发出"的回调**，所以这里用同间隔的计时器来打那行日志：
-     * 节奏与 OkHttp 的 ping 相同，但**不是严格同一瞬间**，与真实发帧可能相差不到 1 个周期。
-     * 随连接起（`onConnected`）、随断开/心跳失败停（`onDisconnected`），断开后不会再刷。
+     * ⚠️ 这两行都是**应用侧**写的，OkHttp 的协议级 ping/pong **没有暴露任何回调**：
+     *  1. "发出"那行：真正的 0x9 ping 帧是 OkHttp 按 [WsClient.PING_INTERVAL_SECONDS] 自己发的，
+     *     这里用**同间隔**计时器打日志 —— 节奏相同，但**不是严格同一瞬间**，可能相差不到 1 个周期；
+     *  2. 第二行**如实说明收不到 pong**（"okhttp不会收到pong"），**不做"收到 pong"的推断** ——
+     *     日志本身必须如实，不靠注释去解释，见 [WsHeartbeatLog]。
+     *     连接仍会因"ping 20s 内没等到 pong"被 OkHttp 判死（`onFailure` → 状态收回未连接），
+     *     只是这个过程没有回调可挂。
+     *
+     * 连接已死（`WsClient.isOpen()` 为 false）时**一行都不打**；
+     * 随连接起（`onConnected`）、随断开/心跳失败停（`onDisconnected` / `onDisconnect`）。
      */
     private var wsPingLogJob: Job? = null
 
     private fun startWsPingLog() {
         wsPingLogJob?.cancel()
         wsPingLogJob = viewModelScope.launch {
-            var n = 1
+            // 这一轮 tick 之前已经发出过的 ping 次数（第 1 轮 = 0）
+            var sent = 0
             while (isActive) {
                 delay(WsClient.PING_INTERVAL_SECONDS * 1000L)
-                appendMessage(
-                    Direction.SYSTEM,
-                    "WS 心跳：发出协议级 ping（第 $n 次，间隔 ${WsClient.PING_INTERVAL_SECONDS}s）"
-                )
-                n++
+                // 连接死了就一行都不打（正常路径由 onDisconnected 先 cancel 掉这个 job，这里是兜底）
+                val alive = repository.getClient().isOpen()
+                WsHeartbeatLog
+                    .linesForTick(sent, alive, WsClient.PING_INTERVAL_SECONDS)
+                    .forEach { appendMessage(Direction.SYSTEM, it) }
+                if (!alive) break
+                sent++
             }
         }
     }
@@ -146,6 +155,78 @@ class LoginViewModel(
     private fun stopWsPingLog() {
         wsPingLogJob?.cancel()
         wsPingLogJob = null
+    }
+
+    // ── WS 自动重连（心跳失败 / 异常断开 → 1s/2s/4s 退避，60s 滑窗内最多 3 次，超了熔断）──
+
+    /** 60 秒滑窗 + 熔断的纯逻辑（见 [WsReconnectPolicy]，有 JVM 单测） */
+    private val reconnectPolicy = WsReconnectPolicy()
+    private var reconnectJob: Job? = null
+    private var stableJob: Job? = null
+
+    /** 用户主动点过"断开"→ 这一次断开不自动重连（下次连接时清掉） */
+    private var userDisconnected = false
+
+    /**
+     * 正在"自动重连过程中"。
+     * 必须单独记：**重连尝试本身失败时 `isConnected` 已经是 false**，
+     * 只靠"之前连上过"判断会导致只重试一次就不再继续（1s/2s/4s 退避就退不起来）。
+     */
+    private var autoReconnectActive = false
+
+    /** 正在进行的自动重连是第几次（`onConnected` 里用来报"成功（第 N 次）"）；null = 不是自动重连 */
+    private var pendingReconnectAttempt: Int? = null
+
+    /** 自动重连前是否处于已登录状态（成功且凭据还在 → 用现有登录流程重登） */
+    private var pendingReconnectWasLoggedIn = false
+
+    /**
+     * 异常断开后的自动重连调度。
+     * 退避 1s → 2s → 4s；窗口内用满 [WsReconnectPolicy.MAX_ATTEMPTS] 次就**放弃**（熔断，等手动连接）。
+     */
+    private fun scheduleAutoReconnect() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val attempt = reconnectPolicy.recordAttempt(now)
+        if (attempt == null) {
+            autoReconnectActive = false
+            pendingReconnectWasLoggedIn = false
+            appendMessage(
+                Direction.SYSTEM,
+                "WS 自动重连已放弃：60 秒内已重连 ${WsReconnectPolicy.MAX_ATTEMPTS} 次仍失败" +
+                    "（不再自动重连，请手动连接）"
+            )
+            return
+        }
+
+        appendMessage(Direction.SYSTEM, "WS 自动重连：第 $attempt 次（60 秒窗口内）")
+        reconnectJob?.cancel()
+        reconnectJob = viewModelScope.launch {
+            delay(reconnectPolicy.delayBefore(attempt))
+            if (!isActive) return@launch
+            pendingReconnectAttempt = attempt
+            connectInternal()
+        }
+    }
+
+    /** 连接稳定满一个窗口（60s）→ 自动重连计数清零、解除熔断（规则②） */
+    private fun startStableTimer() {
+        stableJob?.cancel()
+        stableJob = viewModelScope.launch {
+            delay(WsReconnectPolicy.WINDOW_MS)
+            reconnectPolicy.onStable()
+            appendMessage(Direction.SYSTEM, "WS 已稳定存活 60 秒，自动重连计数已清零")
+        }
+    }
+
+    private fun stopStableTimer() {
+        stableJob?.cancel()
+        stableJob = null
+    }
+
+    private fun cancelReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        pendingReconnectAttempt = null
     }
 
     // ── WireGuard 页配置（「实现」三档 + 外部 VPN 应用）──
@@ -257,7 +338,7 @@ class LoginViewModel(
         _uiState.value = _uiState.value.copy(vpnRunning = true)
         appendMessage(Direction.SYSTEM, "vpn：按页面配置启动 —— ${cfg.summary()}")
         if (channels.isEmpty()) {
-            appendMessage(Direction.SYSTEM, "vpn：还没有接通道（在主页 socket 卡片第 5 行点 tun）")
+            appendMessage(Direction.SYSTEM, "vpn：还没有接通道")
         } else {
             appendMessage(
                 Direction.SYSTEM,
@@ -306,7 +387,7 @@ class LoginViewModel(
         if (channel == null) {
             appendMessage(
                 Direction.SYSTEM,
-                "media：还没打洞（先去主页 socket 卡片第 5 行点 media），拉起等于没有通道可用"
+                "media：还没打洞，拉起等于没有通道可用"
             )
             return
         }
@@ -421,14 +502,57 @@ class LoginViewModel(
     }
 
     fun onConnect() {
+        // 用户手动点"连接" → 自动重连计数清零、解除熔断（规则③），并取消挂着的自动重连
+        userDisconnected = false
+        autoReconnectActive = false
+        reconnectPolicy.onManualConnect()
+        cancelReconnect()
+        connectInternal()
+    }
+
+    /** 真正的连接动作（手动与自动重连共用；不含"手动连接才做的清零"） */
+    private fun connectInternal() {
         val state = _uiState.value
         _uiState.value = state.copy(loading = true, error = null)
 
         val listener = object : com.example.p2pnet.data.remote.WsClient.Listener {
             override fun onConnected() {
                 _uiState.value = _uiState.value.copy(loading = false, isConnected = true)
+                userDisconnected = false
                 // 连接建立 → 起"协议级心跳日志"计时器（断开时在 onDisconnected 里停）
                 startWsPingLog()
+                // 连接稳定满 60s → 自动重连计数清零（规则②）
+                startStableTimer()
+
+                // 这次是不是"自动重连"？是的话报成功，并按需用保存的凭据重新登录
+                val attempt = pendingReconnectAttempt
+                if (attempt != null) {
+                    pendingReconnectAttempt = null
+                    autoReconnectActive = false
+                    appendMessage(Direction.SYSTEM, "WS 自动重连成功（第 $attempt 次）")
+                    val wasLoggedIn = pendingReconnectWasLoggedIn
+                    pendingReconnectWasLoggedIn = false
+                    // 走得到这里说明这次断开是"被动断开"（①不重连）。
+                    // 要不要重登**只看断开前的最后状态**：已登录 → 重登；已连接未登录 → 只恢复连接。
+                    // （被踢过就属于后一种，不需要任何"被踢标记"；用户之后手动登录成功，状态又变回已登录。）
+                    when {
+                        !AutoReconnectRules.shouldRelogin(DisconnectReason.PASSIVE, wasLoggedIn) ->
+                            appendMessage(
+                                Direction.SYSTEM,
+                                "WS 自动重连：连接已恢复，断开前未登录，不自动重新登录"
+                            )
+                        _uiState.value.username.isNotBlank() && _uiState.value.password.isNotBlank() -> {
+                            appendMessage(Direction.SYSTEM, "WS 自动重连：用保存的凭据重新登录")
+                            // 重登失败（login_failed）只会在 onLoginFailed 里记一行，
+                            // **不会循环重试**（重连策略只统计"断开"，不统计登录失败），等用户手动
+                            onLogin()
+                        }
+                        else -> appendMessage(
+                            Direction.SYSTEM,
+                            "WS 自动重连：连接已恢复，但没有可用的凭据，需要手动重新登录"
+                        )
+                    }
+                }
             }
 
             override fun onRawMessage(text: String) {
@@ -480,11 +604,51 @@ class LoginViewModel(
                 _uiState.value = _uiState.value.copy(loading = false, error = message)
             }
 
+            override fun onKicked(message: String) {
+                // ⚠️ 被踢**不是断开**：服务器只取消登录状态，连接还活着（还能收发，只是回 not logged in）。
+                // 所以这里**不关连接、不停心跳/协议级 ping、不排重连、也不记任何"被踢标记"**，只：
+                //   ① 取消登录状态（清会话 + 关掉打好的洞，沿用登出那条路径）——
+                //      于是状态变成"已连接未登录"，之后掉线自然只会重连、不会自动重登（状态即真相）；
+                //   ② 打一行日志（四端逐字一致）。
+                appendMessage(Direction.SYSTEM, "被服务器踢下线（$message）：登录已取消，不会自动重新登录")
+                _uiState.value = _uiState.value.copy(
+                    isLoggedIn = false,
+                    loggedInUsername = "",
+                    myIp = "",
+                    myPort = 0,
+                    peers = emptyList()
+                )
+                closeAllUdpSockets()
+            }
+
             override fun onDisconnected() {
-                // 断开（含心跳失败）→ 停掉协议级心跳日志计时器，别在断开后继续刷
+                // 断开（含心跳失败）→ 停掉协议级心跳日志计时器与"稳定计时器"，别在断开后继续刷
                 stopWsPingLog()
+                stopStableTimer()
+                // 先取状态：下面就会把它们清掉
+                val wasConnected = _uiState.value.isConnected
+                val wasLoggedIn = _uiState.value.isLoggedIn
                 _uiState.value = _uiState.value.copy(isConnected = false, isLoggedIn = false)
                 appendMessage(Direction.SYSTEM, "连接已断开（状态已回到未连接）")
+
+                // 四端统一规则：手动断开 → 不重连；其他被动断开 → 重连（被踢不在此列：它不产生断开）
+                val reason = AutoReconnectRules.classify(userDisconnected = userDisconnected)
+                if (!AutoReconnectRules.shouldReconnect(reason)) {
+                    autoReconnectActive = false
+                    return
+                }
+
+                // 自动重连只在这两种情况下触发：
+                //   · 之前确实连上过（wasConnected）→ 首次连接就失败不会被算进来（保持现状）
+                //   · 已经在自动重连过程中（autoReconnectActive）→ 上一次重连尝试又失败时接着退避重试
+                val establishedDrop = wasConnected
+                if (!establishedDrop && !autoReconnectActive) return
+                if (establishedDrop) {
+                    // 只在"已连上过"的第一次断开时记录要不要重登；后续重试沿用
+                    pendingReconnectWasLoggedIn = wasLoggedIn
+                }
+                autoReconnectActive = true
+                scheduleAutoReconnect()
             }
 
             override fun onError(message: String) {
@@ -499,6 +663,11 @@ class LoginViewModel(
     }
 
     fun onDisconnect() {
+        // 用户主动断开：这次断开不再自动重连（直到下次连接）
+        userDisconnected = true
+        autoReconnectActive = false
+        cancelReconnect()
+        stopStableTimer()
         repository.disconnectOnly()
         onStopService?.invoke()
         // 手动断开时也立刻停掉协议级心跳日志计时器（不等 OkHttp 回调，避免时序上多刷一行；
@@ -523,6 +692,8 @@ class LoginViewModel(
             return
         }
 
+        // 用户手动点"登录"：登录成功后状态自然变回"已登录"，
+        // 之后若被动断开就又会自动重登 —— 判据只看状态，没有标记要清
         _uiState.value = state.copy(loading = true, error = null)
 
         repository.onUdpSend = { text ->

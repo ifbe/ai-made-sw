@@ -24,7 +24,6 @@ struct SocketCard: View {
 
             if card.isPreview {
                 planRows
-                footer("（仅流程预览，尚未实现真实握手）")
             } else if card.kind == "direct" {
                 planRows
                 if !card.note.isEmpty { noteRow(card.note) }
@@ -156,13 +155,6 @@ struct SocketCard: View {
         return line.contains(".") && line.allSatisfy { $0.isNumber || $0 == "." }
     }
 
-    private func footer(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 10))
-            .foregroundColor(.secondary)
-            .lineLimit(1)
-            .padding(.top, 2)
-    }
 
     /// 第 5 行的用法按钮
     private func usageButton(_ id: String) -> some View {

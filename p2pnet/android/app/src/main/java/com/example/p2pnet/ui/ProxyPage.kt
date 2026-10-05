@@ -53,16 +53,35 @@ fun ProxyPage(viewModel: LoginViewModel) {
         Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
             Column(
                 modifier = Modifier.padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("配置", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                // 首行与 vpn / switch 完全同一套：左「配置」+ 通道数状态 + Spacer(weight) + 最右启停按钮
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("配置", style = MaterialTheme.typography.labelMedium)
                     Text(
-                        text = if (uiState.proxyRunning) "运行中" else "已停止",
+                        text = channelStatusText(channels.size),
                         fontSize = 10.sp,
                         color = if (uiState.proxyRunning) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(modifier = Modifier.weight(1f))
+                    // 一个按钮管启停（运行时变红、字变"停止"）
+                    Button(
+                        onClick = {
+                            if (uiState.proxyRunning) viewModel.onProxyStop() else viewModel.onProxyStart()
+                        },
+                        modifier = Modifier.height(26.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        colors = if (uiState.proxyRunning) {
+                            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        } else {
+                            ButtonDefaults.buttonColors()
+                        }
+                    ) { Text(if (uiState.proxyRunning) "停止" else "启动", fontSize = 10.sp) }
                 }
 
                 // 模式
@@ -73,16 +92,6 @@ fun ProxyPage(viewModel: LoginViewModel) {
                     labelOf = { ProxyPageConfig.modeLabel(it) },
                     onSelect = { viewModel.onProxyModeChange(it) }
                 )
-                Text(
-                    text = if (isL) {
-                        "   正向 -L：本机监听一个口，accept 后与洞互转（对端要跑 -R 来接）"
-                    } else {
-                        "   反向 -R：本机 connect 一个本机服务，与洞互转（等同 python proxy.py）"
-                    },
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
                 PxChoiceRow(
                     label = "协议",
                     ids = ProxyPageConfig.PROTO_IDS,
@@ -116,37 +125,20 @@ fun ProxyPage(viewModel: LoginViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            if (uiState.proxyRunning) viewModel.onProxyStop() else viewModel.onProxyStart()
-                        },
-                        modifier = Modifier.weight(1f).height(32.dp),
-                        contentPadding = PaddingValues(vertical = 0.dp),
-                        colors = if (uiState.proxyRunning) {
-                            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                        } else {
-                            ButtonDefaults.buttonColors()
-                        }
-                    ) { Text(if (uiState.proxyRunning) "停止" else "启动", fontSize = 11.sp) }
-                }
+                // 启停按钮已经在首行最右（和 vpn / switch 一样），这里不再单独占一行
 
-                Text(
-                    text = if (channels.isEmpty()) {
-                        "通道：还没有（在主页 socket 卡片第 5 行点 proxy）"
-                    } else {
-                        "通道 ${channels.size} 条：" + channels.joinToString("、") {
+                // 空态不渲染；有通道时才显示这条明细（数量 + 是哪些洞）
+                if (channels.isNotEmpty()) {
+                    Text(
+                        text = "通道 ${channels.size} 条：" + channels.joinToString("、") {
                             "${it.target}(洞${it.localPort})"
-                        }
-                    },
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                        },
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 

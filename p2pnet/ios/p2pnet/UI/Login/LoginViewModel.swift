@@ -89,6 +89,30 @@ class LoginViewModel: ObservableObject {
         uiState.targetUsername = target
     }
 
+    /// 断开前是否处于"已登录"：自动重连成功后据此决定要不要重新登录
+    private var wasLoggedInBeforeDrop = false
+
+    /// 自动重连成功后的收尾：断开前已登录且凭据还在 → 走现有登录流程重新登录；
+    /// 拿不到凭据 → 只说明"需要手动重新登录"，**不假装已登录**。
+    private func handleAutoReconnected() {
+        // 判据：**只看断开前的最后状态**（`wasLoggedInBeforeDrop` 在断开那一刻取 uiState.isLoggedIn）
+        let wasLoggedIn = wasLoggedInBeforeDrop
+        guard WsReconnectRules.shouldRelogin(.passiveDrop, wasLoggedIn: wasLoggedIn) else {
+            appendMessage(.system, "ios: WS 自动重连：连接已恢复，断开前未登录，不自动重新登录")
+            return
+        }
+        let user = uiState.username
+        let pw = uiState.password
+        guard !user.isEmpty, !pw.isEmpty else {
+            // 没有凭据就只恢复连接：打一行说明，**不重试**（等用户手动登录）
+            appendMessage(.system, "ios: WS 自动重连：连接已恢复，但没有可用的凭据，需要手动重新登录")
+            return
+        }
+        appendMessage(.system, "ios: WS 自动重连：用保存的凭据重新登录")
+        // 复用现有登录流程（此时连接已打开）。登录失败只会在日志里留一行，**不会重试/循环**
+        onLogin()
+    }
+
     /// 「我」卡片上 ping 按钮的序号：点一次 +1，从 1 开始
     /// （协议：发 `{"type":"ping","seq":N}` → 服务端原样回 `{"type":"pong","seq":N}`，不需要登录）
     private var pingSeq = 0
@@ -263,7 +287,7 @@ class LoginViewModel: ObservableObject {
         uiState.vpnRunning = true
         appendMessage(.system, "vpn：按页面配置启动 —— \(cfg.summary())")
         if channels.isEmpty {
-            appendMessage(.system, "vpn：还没有接通道（在主页 socket 卡片第 5 行点 tun）")
+            appendMessage(.system, "vpn：还没有接通道")
         } else {
             let list = channels.map { "\($0.target)(洞\($0.localPort))" }.joined(separator: "、")
             appendMessage(.system, "vpn：一对一通道 = \(list)")
@@ -309,7 +333,7 @@ class LoginViewModel: ObservableObject {
         let cfg = uiState.mediaConfig
         guard let channel = sessionManager.sessionsSnapshot().first(where: { $0.handedTo == "media" }) else {
             appendMessage(.system,
-                "media：还没打洞（先去主页 socket 卡片第 5 行点 media），拉起等于没有通道可用")
+                "media：还没打洞，拉起等于没有通道可用")
             return
         }
         let trimmed = cfg.appPackage.trimmingCharacters(in: .whitespaces)
@@ -427,6 +451,7 @@ class LoginViewModel: ObservableObject {
         appendMessage(.system, "点击连接")
         uiState.loading = true
         uiState.error = nil
+        wasLoggedInBeforeDrop = false      // 手动连接 = 新一轮；WsClient 内部也会清自动重连熔断计数
 
         setupRepositoryCallbacks()
         repository.setupConnectionCallbacks()
@@ -633,9 +658,31 @@ class LoginViewModel: ObservableObject {
         }
         repository.onDisconnectedHandler = { [weak self] in
             DispatchQueue.main.async {
-                self?.appendMessage(.system, "onDisconnected 回调")
-                self?.uiState.isConnected = false
-                self?.uiState.isLoggedIn = false
+                guard let self = self else { return }
+                // 记下"断开前是否已登录"：自动重连成功后据此决定要不要用原凭据重登
+                if self.uiState.isLoggedIn { self.wasLoggedInBeforeDrop = true }
+                self.appendMessage(.system, "onDisconnected 回调")
+                self.uiState.isConnected = false
+                self.uiState.isLoggedIn = false
+            }
+        }
+        // 自动重连成功（连接已重新打开）→ 用保存的凭据走现有登录流程
+        repository.onAutoReconnectedHandler = { [weak self] in
+            DispatchQueue.main.async { self?.handleAutoReconnected() }
+        }
+        // 被服务器踢下线：**连接还在**，只是登录被取消 —— 所以这里只清登录状态
+        //（不碰 isConnected、不断连接、不停心跳）。**不改 `wasLoggedInBeforeDrop`**：
+        // 踢的效果就是把状态从"已登录"打回"已连接未登录"，之后掉线自然按"最后状态"落到"不重登"。
+        // 日志已由 WsClient 打（四端统一文案），这里不重复打。
+        repository.onKickedHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.uiState.isLoggedIn = false
+                self.uiState.loggedInUsername = ""
+                self.uiState.myIp = ""
+                self.uiState.myPort = 0
+                self.uiState.peers = []
+                self.sessionManager.closeAll()
             }
         }
         repository.onError = { [weak self] message in
@@ -727,7 +774,7 @@ class LoginViewModel: ObservableObject {
         if let info = info, let fd = sock {
             sessionManager.handOver(fd: fd)
             appendMessage(.system, "P2P已建立: \(info.name)（对端 \(formatHostPort(info.peerIp, info.peerPort))）")
-            appendMessage(.system, "打洞完成，在 socket 卡片第 5 行选用法（udptest / tun / switch / wg）")
+            appendMessage(.system, "打洞完成，在 socket 卡片上选用法（udptest / tun / switch / wg）")
         } else {
             appendMessage(.system, "onHelloDone info=null（hello 线程超时或异常）")
         }

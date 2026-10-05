@@ -57,7 +57,7 @@ fun VpnPage(viewModel: LoginViewModel) {
                 ) {
                     Text("配置", style = MaterialTheme.typography.labelMedium)
                     Text(
-                        text = if (channels.isEmpty()) "未接线" else "已接 ${channels.size} 条",
+                        text = channelStatusText(channels.size),
                         fontSize = 10.sp,
                         color = if (uiState.vpnRunning) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant
@@ -77,12 +77,6 @@ fun VpnPage(viewModel: LoginViewModel) {
                         }
                     ) { Text(if (uiState.vpnRunning) "停止" else "启动", fontSize = 10.sp) }
                 }
-                Text(
-                    text = "一对一：一个洞 ↔ 一块 tun/tap（对应 python 端 client/app/vpn.py）；" +
-                        "多人互联用 switch 页",
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
 
                 ChoiceRow(
                     label = "card 设备",
@@ -123,46 +117,61 @@ fun VpnPage(viewModel: LoginViewModel) {
                     onChange = { viewModel.onVpnRouteTtlChange(it) }
                 )
 
-                Text(
-                    text = if (channels.isEmpty()) {
-                        "通道：还没有（在主页 socket 卡片第 5 行点 tun）"
-                    } else {
-                        "通道：" + channels.joinToString("、") {
+                // 配置卡最后一行：内嵌 DHCP 开关（开 → 下面才出现 DHCP 卡；默认关）
+                // 行高与 MTU / 路由老化 那些行**完全一致**（都是 vpnFieldHeight），
+                // 开关的左边也落在字段列上（label 宽 vpnLabelWidth + 同一个 4dp 间距 = NumberField 里文本框的位置），
+                // 不放到卡片最右边。
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(vpnFieldHeight),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("内嵌 DHCP", fontSize = 11.sp, modifier = Modifier.width(vpnLabelWidth))
+                    Switch(
+                        checked = cfg.dhcpEnabled,
+                        onCheckedChange = { viewModel.onVpnDhcpEnabledChange(it) },
+                        modifier = Modifier.height(vpnFieldHeight)
+                    )
+                }
+
+                // 空态不渲染（"未接线"已由配置卡首行的状态表达）；有通道时才显示这条明细
+                if (channels.isNotEmpty()) {
+                    Text(
+                        text = "通道：" + channels.joinToString("、") {
                             "${it.target}(洞${it.localPort})"
-                        } + if (channels.size > 1) "  ⚠️ 一对一只要一条" else ""
-                    },
-                    fontSize = 9.sp,
-                    color = if (channels.size > 1) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                        } + if (channels.size > 1) "  ⚠️ 一对一只要一条" else "",
+                        fontSize = 9.sp,
+                        color = if (channels.size > 1) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 
-        // ── DHCP（和 switch 页一致；以后别的内嵌服务各自单独一张卡）──
-        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
-            Column(
-                modifier = Modifier.padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+        // ── DHCP 卡：只有「内嵌 DHCP」开关打开时才渲染（开关在配置卡最后一行）──
+        if (cfg.dhcpEnabled) {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text("嵌入 DHCP 服务器", fontSize = 11.sp, modifier = Modifier.weight(1f))
-                    Text(
-                        text = "尚未实现",
-                        fontSize = 9.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 6.dp)
-                    )
-                    Switch(
-                        checked = cfg.dhcpEnabled,
-                        onCheckedChange = { viewModel.onVpnDhcpEnabledChange(it) }
-                    )
-                }
-                FieldRow(
+                    // 首行与配置卡首行同构：左标签 + Spacer(weight 1f) 把右侧内容顶到同一个右边界
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("嵌入 DHCP 服务器", fontSize = 11.sp, modifier = Modifier.weight(1f))
+                        Text(
+                            text = "尚未实现",
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    FieldRow(
                     label = "地址池",
                     value = cfg.dhcpPool,
                     enabled = false,
@@ -180,6 +189,7 @@ fun VpnPage(viewModel: LoginViewModel) {
                     enabled = false,
                     onChange = { viewModel.onVpnDhcpDnsChange(it) }
                 )
+                }
             }
         }
     }
