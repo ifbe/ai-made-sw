@@ -2672,11 +2672,21 @@ class EngineBridge(QObject):
         self._serve_until_disconnect()
 
     def _serve_until_disconnect(self, reason: str = "引擎线程结束") -> None:
-        """跑读循环，直到断开/判死/被停；收尾后按策略决定要不要自动重连。"""
+        """
+        跑读循环，直到断开/判死/被停；收尾后按策略决定要不要自动重连。
+
+        ⚠️ 必须 try/finally：循环里任何未预期异常（消息处理、socket 层…）如果直接逃出，
+        引擎线程会**静默死掉** → `_teardown` 与 `_maybe_reconnect` 都不执行 →
+        UI 就一直显示"已连接"、也永不重连（用户报过的那类现象）。
+        """
         self.running = True
-        self._engine_loop(self.sock)
-        self._teardown(reason)
-        self._maybe_reconnect()
+        try:
+            self._engine_loop(self.sock)
+        except Exception as exc:
+            self.line.emit(f"desktop: 引擎循环异常（按断开处理）：{exc!r}")
+        finally:
+            self._teardown(reason)
+            self._maybe_reconnect()
 
     # ── WS 自动重连（带熔断）── 实现全在 client.py（`ws_auto_reconnect`），GUI 只负责起线程 + 收尾。
     def _reconnect_plan(self, now: float):
@@ -2775,9 +2785,13 @@ class EngineBridge(QObject):
                     obj = json.loads(msg)
                 except Exception:
                     obj = {"raw": msg}
-                self._observe(obj)
-                cli.handle_server_message(obj)
-                self._emit_holes()
+                try:
+                    self._observe(obj)
+                    cli.handle_server_message(obj)
+                    self._emit_holes()
+                except Exception as exc:
+                    # 单条消息/单次 UI 更新出错不该断开连接，更不该静默打死引擎线程
+                    self.line.emit(f"desktop: 处理服务器消息出错（已跳过这条）：{exc!r}")
 
     def _emit_holes(self) -> None:
         """cli.holes 的快照 → 界面（只在真的变了才发，别每 50ms 刷一次界面）"""

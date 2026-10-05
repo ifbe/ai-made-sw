@@ -659,8 +659,11 @@ class LoginViewModel: ObservableObject {
         repository.onDisconnectedHandler = { [weak self] in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                // 记下"断开前是否已登录"：自动重连成功后据此决定要不要用原凭据重登
-                if self.uiState.isLoggedIn { self.wasLoggedInBeforeDrop = true }
+                // 记下"断开前的**最后状态**"：自动重连成功后据此决定要不要用保存的凭据重登。
+                // ⚠️ 必须**无条件赋值**，不能写成"已登录时置 true" —— 那样它一旦为 true 就永远留着：
+                // 用户之后登出 / 被服务器踢下线（isLoggedIn 变 false）再遇到一次被动断开时，
+                // 会被错误地用还留在内存里的凭据自动登回去（违反"被踢不自动重登"）。
+                self.wasLoggedInBeforeDrop = self.uiState.isLoggedIn
                 self.appendMessage(.system, "onDisconnected 回调")
                 self.uiState.isConnected = false
                 self.uiState.isLoggedIn = false

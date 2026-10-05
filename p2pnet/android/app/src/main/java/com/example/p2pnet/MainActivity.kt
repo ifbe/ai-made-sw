@@ -58,6 +58,9 @@ class MainActivity : ComponentActivity() {
             p2pService = b.getService()
             serviceBound = true
             repository.useClient(p2pService!!.wsClient)
+            // 换完 client 让它把常驻监听器重新装上、并在"后台这条连接还活着"时把界面状态同步过来
+            // （Activity 重建后新 VM 靠这一次调用恢复显示，否则会一直停在"未连接"）
+            viewModel.onClientAttached()
             // session（打洞产出的 UDP socket）归服务所有，ViewModel 只观察
             viewModel.attachSessionManager(p2pService!!.sessionManager)
         }

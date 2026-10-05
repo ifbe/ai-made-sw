@@ -15,6 +15,12 @@ class P2pRepository(
     private var _loggedInUsername: String? = null
     val loggedInUsername: String? get() = _loggedInUsername
 
+    /** 常驻监听器的登记处：换 client 时要把同一份重新装上（单槽，见 [ClientListenerHolder]） */
+    private val listenerHolder = ClientListenerHolder<WsClient, WsClient.Listener> { c, l -> c.listener = l }
+
+    /** 系统级日志（例如"保留当前 client、拒绝切换"）：由 `LoginViewModel` 接到 App 内日志 */
+    var onSystemLog: ((String) -> Unit)? = null
+
     sealed class LoginResult {
         data class Success(val username: String) : LoginResult()
         data class Error(val message: String) : LoginResult()
@@ -31,11 +37,41 @@ class P2pRepository(
     /** 收到服务器转来的 direct 地址交换（from, ipv4, ipv6, isReply） */
     var onP2pDirect: ((String, List<String>, List<String>, Boolean) -> Unit)? = null
 
+    /**
+     * 装上"常驻监听器"（`LoginViewModel` 的 UI 监听器）：**记住它** + 装到**当前** client。
+     * 幂等，可以重复调用（`connectInternal()` 每次连接都会调一遍）。
+     */
+    fun installListener(listener: WsClient.Listener) {
+        listenerHolder.install(_client, listener)
+    }
+
+    /**
+     * 把仓库切到另一个 `WsClient`（例如绑定上后台服务持有的那个）。
+     *
+     * 两条硬约束：
+     * - **(a) 当前 client 还在连接/已连接时不切**：这次会话（socket + 监听器）挂在旧实例上，
+     *   切走就等于把它丢在背后（后续 `send*` / `login` 会发到一个没连接的 client）。如实打一行日志。
+     * - **(b) 换完立刻把常驻监听器装到新 client 上**：监听器是装在 client 实例上的，
+     *   不重装的话界面（尤其 Activity 重建后的新 VM）就再也收不到状态回调了。
+     */
     fun useClient(client: WsClient?) {
-        _client = client ?: WsClient(localPrefs)
+        val next = client ?: WsClient(localPrefs)
+        if (_client === next) return
+        if (!ClientSwapPolicy.canSwap(_client.isBusy())) {
+            onSystemLog?.invoke("当前客户端正在连接/已连接，保留它、暂不切换到新的客户端（避免会话被丢在背后）")
+            return
+        }
+        _client = next
+        listenerHolder.installOn(next)
     }
 
     fun getClient(): WsClient = _client
+
+    /** LocalPrefs 里记的"上次登录过"（Activity 重建后用来尽量把登录状态同步回来） */
+    fun isLoggedInSaved(): Boolean = localPrefs.loggedIn
+
+    /** LocalPrefs 里记的上次登录用户名（密码不落盘，恢复不了） */
+    fun savedUsername(): String? = localPrefs.username
 
     private val ws: WsClient get() = _client
 
@@ -47,7 +83,9 @@ class P2pRepository(
         localPrefs.loggedIn = true
 
         return suspendCancellableCoroutine { cont ->
-            val listener = object : WsClient.Listener {
+            // 仓库既有的直通钩子：数据/日志类事件仍按老样子走这些（onSend / onRawMessage / onUdp* / …），
+            // 登录结果也在这里 resume 协程。连接类事件不走这里，由下面的转发代理负责（见 LoginListenerProxy）。
+            val hooks = object : WsClient.Listener {
                 override fun onConnected() {}
 
                 override fun onSend(text: String) {
@@ -114,7 +152,23 @@ class P2pRepository(
                 }
             }
 
-            ws.listener = listener
+            // ⚠️ `WsClient.listener` 是**单槽**：登录必须临时装个监听器才能收 login_ok / login_failed，
+            // 但**不能**因此把常驻监听器（LoginViewModel 装的那个）挤掉 ——
+            // 否则登录成功之后：心跳失败 / 网络消失（关 4G+WiFi）/ 被踢 这些回调全部到不了界面，
+            // 界面会永远停在"已连接"、也不会自动重连（用户实测 bug）。
+            // 所以这里包一层转发代理：连接类事件继续转给常驻监听器，登录一结束就把常驻监听器装回单槽。
+            val persistent = ws.listener
+            var proxy: LoginListenerProxy? = null
+            val restoreSlot: () -> Unit = {
+                // 只在槽里还是本代理时才替换（避免踩掉这期间别人新装的监听器）
+                if (ws.listener === proxy) ws.listener = persistent
+            }
+            proxy = LoginListenerProxy(
+                persistent = persistent,
+                hooks = hooks,
+                restoreSlot = restoreSlot
+            )
+            ws.listener = proxy
             ws.login(useWss, host, port, username, password)
 
             cont.invokeOnCancellation {

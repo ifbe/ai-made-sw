@@ -232,6 +232,7 @@ thisisyourpeer_udp → markStep(.serverReplied) → 填公网/对端地址（第
   连接仍活着、仍可收发（再发消息回 `not logged in`）。所以客户端收到 `kicked` **不能**走断开收尾：
   **不关连接、不停心跳/看门狗、不排重连**；只做两件事：① 取消登录状态（`isLoggedIn=false`、清 `sessionKey`/用户名/密码、`sessionManager.closeAll()`，但**不动 `isConnected`**）；② 打日志
   `ios: 被服务器踢下线（<message>）：登录已取消，不会自动重新登录`。
+- **"断开前最后状态"必须无条件记录**：`onDisconnected` 里是 `wasLoggedInBeforeDrop = uiState.isLoggedIn`（**赋值**，不是"已登录时置 true"）。写成后者的话它一旦为 true 就永远留着 —— 用户之后登出/被踢（`isLoggedIn` 变 false）再遇到一次被动断开，会被错误地用内存里还留着的凭据自动登回去。
 - **自动重登的判据只看"断开前的最后状态"**（没有"被踢标记"这种东西，状态即真相）：
   `WsReconnectRules.shouldRelogin(event, wasLoggedIn:)` = `event == .passiveDrop && wasLoggedIn`，
   其中 `wasLoggedIn` 在断开那一刻取 `uiState.isLoggedIn`。于是：

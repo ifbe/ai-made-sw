@@ -2496,7 +2496,12 @@ def _run_session():
             except:
                 obj = {"raw": msg}
             dbg(f"[RECV] {json.dumps(obj)}")
-            handle_server_message(obj)
+            try:
+                handle_server_message(obj)
+            except Exception as e:
+                # 单条消息的处理出错**不该**打死会话：否则客户端会崩掉，
+                # 或者（GUI 那种长驻线程）静默死掉、UI 一直显示"已连接"。跳过这条继续读。
+                log(f"处理服务器消息出错（已跳过这条）：{e!r}")
 
         # ---- 处理用户输入 ----
         line = None
@@ -2524,7 +2529,11 @@ def _run_session():
             if line == None:
                 running = False
                 break
-            keep = process_input_line(line)
+            try:
+                keep = process_input_line(line)
+            except Exception as e:
+                log(f"处理本地命令出错（已跳过）：{e!r}")     # 本地命令出错不该断开连接
+                keep = True
             if not keep:
                 running = False
                 break
@@ -2620,7 +2629,12 @@ def main():
 
     # ── 会话外层：断开（异常/心跳判死）后按策略自动重连；用户 quit 就结束 ──
     while True:
-        _run_session()
+        try:
+            _run_session()
+        except Exception as e:
+            # 会话循环里任何未预期异常都按"断开"处理，走下面的 mark_disconnected + 自动重连，
+            # 而不是让整个客户端带着 traceback 退出。
+            log(f"会话循环异常（按断开处理）：{e!r}")
         mark_disconnected()
         if _user_quit:
             break

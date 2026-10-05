@@ -112,6 +112,15 @@ class WsClient(
      */
     fun isOpen(): Boolean = wsOpen
 
+    /**
+     * 是否**有活连接**：已经连上（[isOpen]）或仍在连接/关闭途中（[ws] 还在）。
+     *
+     * 用在换 client 之前判断"这次会话能不能安全丢掉"：
+     * `P2pRepository.useClient()` 不允许把还在连接/已连接的 client 换掉。
+     * 注意不能用 [isOpen] 代替 —— 连接**正在建立**时 `wsOpen` 还是 false。
+     */
+    fun isBusy(): Boolean = wsOpen || ws != null
+
     private var ws: WebSocket? = null
     private var wsOpen = false
     var listener: Listener? = null
@@ -140,7 +149,15 @@ class WsClient(
     private val stopFlag = AtomicBoolean(false)
     private var helloThread: Thread? = null
 
+    /**
+     * 这次断开是不是**我们自己主动 close()** 的（用户点「断开」/登出）。
+     * 自己断的时候 OkHttp 常常以 `onFailure`（EOFException / Connection reset）收尾，
+     * 那不是"连接失败"，不该报错（见 [WsFailureLog]）。
+     */
+    private var closedByUs = false
+
     fun connect(url: String) {
+        closedByUs = false   // 新连接：清掉上一次"主动断开"的标记
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -154,14 +171,15 @@ class WsClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 wsOpen = false
-                // 心跳（pingInterval 20s）收不到 pong 时，OkHttp 就是用 SocketTimeoutException 把连接判死的；
-                // 连接已经死了，状态必须一起收回「未连接」，否则界面还显示"已连接"（旧 bug）。
-                val reason = if (t is SocketTimeoutException) {
-                    "WS 心跳失败（20s 没收到 pong），连接已断开"
-                } else {
-                    "WS 连接失败：${t.message ?: "connection failed"}"
+                // 该报什么由纯逻辑决定（可单测，见 WsFailureLog）：
+                // - 心跳超时（pingInterval 20s 没收到 pong）→ SocketTimeoutException，报"心跳失败"；
+                // - **我们自己 close() 造成的**（用户点断开/登出）→ 返回 null，**不报错**
+                //   （OkHttp 这时常以 EOFException / Connection reset 收尾，报"连接失败"是误导用户）；
+                // - 其余才报"WS 连接失败：…"。
+                WsFailureLog.errorText(t, closedByUs = closedByUs)?.let { reason ->
+                    listener?.onError(reason)
                 }
-                listener?.onError(reason)
+                // 无论报不报错，状态都必须收回到「未连接」（否则界面还显示"已连接"，旧 bug）
                 listener?.onDisconnected()
             }
 
@@ -474,6 +492,9 @@ class WsClient(
     }
 
     fun disconnectOnly() {
+        // 先打上"是我们自己断的"标记：紧接着的 onFailure（OkHttp 对优雅关闭的常见收尾）
+        // 就不会被当成"WS 连接失败"报给用户（见 WsFailureLog）
+        closedByUs = true
         resetUdpState()
         wsOpen = false
         helloSocket = null
