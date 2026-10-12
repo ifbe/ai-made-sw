@@ -15,9 +15,8 @@ anchor 字段偏移、位图块头偏移、分配策略编号、各种上限、�
 # ============================================================ 1. 卷 / 块基本量
 
 BLOCK_4K = 4096                 # 元数据块的固定大小（common.md §2）
-HDR_SIZE = 64                   # 通用块头大小；也是 dir / 对象块的载荷起点
-MAX_PAYLOAD = BLOCK_4K - HDR_SIZE   # 4032：单块载荷上限（dir / 对象块）
-MAGIC = b"easypart"             # 通用块头魔数：所有块类型共用
+HDR_SIZE = 64                   # 通用块头大小；也是 dir / 链接块的载荷起点
+MAX_PAYLOAD = BLOCK_4K - HDR_SIZE   # 4032：单块载荷上限（dir / 链接块）
 POOL_MAGIC = b"easyraid"        # pool 段魔数（anchor [0x200,0x400)，【将来方向】）
 VERSION = 1                     # 格式版本
 
@@ -46,7 +45,7 @@ HDR_OFF_RESERVED = 56           # 8 B  保留（必须 0）
 BT_NULL = 0                     # 无效 / 未初始化：写入方永不产出，读到一律当损坏
 BT_ALLOC = 1                    # 空闲位图块
 BT_DIR = 2                      # 目录块
-BT_LINK = 3                     # 对象块（NLINK + 时间 + 位置表）
+BT_LINK = 3                     # 链接块（NLINK + 时间 + 位置表）
 BT_FILE = 4                     # 文件数据 —— **裸数据块，没有块头**，这个值不出现在任何字节里
 BT_ANCHOR = 5                   # head / tail anchor
 BT_BAD = 6                      # 坏块标记
@@ -55,10 +54,24 @@ BT_NAME = {
     BT_NULL: "null",
     BT_ALLOC: "alloc",
     BT_DIR: "dir",
-    BT_LINK: "object",
+    BT_LINK: "link",
     BT_FILE: "file-data",
     BT_ANCHOR: "anchor",
     BT_BAD: "bad",
+}
+
+# 块头魔数：**每类一个独立词**（共同前缀 `easy` ⇒ "是不是我们的块" 仍是一次前缀比较）
+#   * `null` 不给魔数（写入方永不产出；读到全零 magic 就当未初始化）
+#   * `file data`（BT_FILE）是**裸块、没有头** ⇒ 不在这里
+#   * anchor 仍是 `easypart`（卷 / 分区这一层的标记，见 5-anchor.md）
+#   * 补到 8 字节用**尾部空格**（与 tag 名同一约定：`blktype ` / `policy  `）
+MAGIC_PREFIX = b"easy"          # "是不是我们的块"看这 4 个字节
+BLOCK_MAGIC = {
+    BT_ALLOC:  b"easyallc",
+    BT_DIR:    b"easydir ",
+    BT_LINK:   b"easylink",
+    BT_ANCHOR: b"easypart",
+    BT_BAD:    b"easybad ",
 }
 
 # ============================================================ 4. 属性类型（2-dir.md §2.1）
@@ -74,7 +87,7 @@ ATTR_PADN = 0x0F                # TLV 占位：len 可为 0 ⇒ 最小 2 字节
 
 # --- dir 家族（0x10–0x1F）---
 ATTR_DIR_PTR = 0x10             # {i64 first_dir_block}  目录 → 子目录链头
-ATTR_DIR_OBJECT = 0x11          # {i64 L}                目录 → 对象块（内容块表）【读侧已有】
+ATTR_DIR_OBJECT = 0x11          # {i64 L}                目录 → 链接块（内容块表）【读侧已有】
 
 # --- symlink 家族（0x20–0x2F）---
 ATTR_SYMLINK_TINY = 0x20        # {path}（≤255 B）       目标就在属性里
@@ -84,7 +97,7 @@ ATTR_SYMLINK_OBJECT = 0x22      # {i64 L}{u32 size}     目标放数据块里，
 # --- data 家族（0x30–0x3F）---
 ATTR_DATA_TINY = 0x30           # {data}（≤255 B）       内联内容（0 jump）
 ATTR_DATA_PTR = 0x31            # {i64 delta}{u32 size} 直接指向（1 jump）
-ATTR_DATA_OBJECT = 0x32         # {i64 L}               条目 → 对象块（2 jump）
+ATTR_DATA_OBJECT = 0x32         # {i64 L}               条目 → 链接块（2 jump）
 ATTR_CRC32 = 0x33               # {u32}                 内容校验和（可选，必须在末位）
 
 # --- 名字 / 时间（0x40–0x4F）---
@@ -93,8 +106,8 @@ ATTR_NAME_HASH = 0x41           # {u8}                  名字哈希（索引用
 ATTR_TCREATE = 0x42             # {u32 unix}            创建时间
 ATTR_TMODIFY = 0x43             # {u32 unix}            修改时间
 
-# --- 对象家族（0x50–0x5F）---
-ATTR_NLINK = 0x50               # {u32}                 对象块内的引用计数
+# --- 链接家族（0x50–0x5F）---
+ATTR_NLINK = 0x50               # {u32}                 链接块内的引用计数
 
 ATTR_NAME_STR = {
     ATTR_PAD1: "PAD1",
@@ -203,9 +216,9 @@ ANCHOR_TAGS_STATE = (
 
 # 分配结构的类型（anchor 的 `allotype` tag；与 ROOT_TYPE_* 对称）
 ALLOC_TYPE_CHAIN = 1            # 扁平位图链（现状，**v0 只用这个**）
-ALLOC_TYPE_OBJECT = 2           # 分配器对象块（bitmap_OBJECT，将来）
+ALLOC_TYPE_OBJECT = 2           # 分配器**对象**（结构放链接块里；bitmap_OBJECT，将来）
 ALLOC_TYPE_NAME = {ALLOC_TYPE_CHAIN: "chain（扁平位图链）",
-                   ALLOC_TYPE_OBJECT: "object（分配器对象块）"}
+                   ALLOC_TYPE_OBJECT: "object（分配器对象：结构在链接块里）"}
 ANCHOR_TAGS_POOL = (
     ("easypool", 8),            # pool 魔数 tag；值是 pool 版本字符串 —— **有它 = 池成员**
     ("poolcrc ", 8),            # u32 **pool 段 CRC**：覆盖 [0x200, 0x3d0)（本字段按 0 计）

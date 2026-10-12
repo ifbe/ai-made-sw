@@ -63,9 +63,9 @@ python3 test/anchor_v3.py       # 只跑 anchor 布局用例
 | `doccheck.py` | 读全部 `doc/*.md` → 逐条比对 14 项（索引覆盖 / 链接与锚点 / 属性注册表 ↔ 代码 / 块类型表 ↔ 代码 / 陈旧用语 / 跨文档与本文内 `§` 引用 / 章节重号·跳号）→ 打印"发现问题 N 个" |
 | `anchor_v3.py` | `mkfs` 建 8 MiB 卷 → 直接读第 0 块解 tag（A1 魔数+版本串、A2 `hdrbytes`、A3 两份 `hdrcrc`、A4 裸 16 字节 uuid、A5 非池成员）→ 再复制几份**故意破坏**（A6 改字段不修 CRC ⇒ 该份不可用、回落另一份；A7 头尾 `gen` 不一致 ⇒ `ESTALE`；A8 pool 段乱写 ⇒ 仍能挂载；A9 假 `easypool` ⇒ `poolcrc` 不匹配；A10 dirty 往返）→ 看每行 `True` |
 | `mixed.py` | ① 纯算选型（1 TiB / 16 TiB / `--fixbitsize 4K`·`64K`，**不落盘**）→ ② 真建 1 GiB 卷：挂载、空闲账、写 5 个小文件、`fsck` → ③ 一直写 4 KiB 文件**填满细粒度子区域**，逼出自动分裂 → ④ 1 GiB ↔ 1.5 GiB 扩缩 → ⑤ 写 40 个文件再全删（元数据不会自动回收）→ `optimize alloc --dry-run` 与实跑 → ⑥ 查"一个 bit 一主"（分配块与根目录块不共用粗 bit）与分裂次数上界 → 最后看 `ALL = True` |
-| `dirobj.py` | 建卷并写子目录 → 取出它的 dir 链块 → **手工**造一个对象块（载荷 = 内容块表 `DATA_PTR × n`）→ 把子目录条目改成 `DIR_OBJECT` 形态 → 重新挂载读 → 看 12 项（目录内容对不对、块表顺序生效、顺序错报错、指向非 dir 报错、空块表报错、写对象目录 ⇒ `ENOTSUP` …）|
+| `dirobj.py` | 建卷并写子目录 → 取出它的 dir 链块 → **手工**造一个链接块（载荷 = 内容块表 `DATA_PTR × n`）→ 把子目录条目改成 `DIR_OBJECT` 形态 → 重新挂载读 → 看 12 项（目录内容对不对、块表顺序生效、顺序错报错、指向非 dir 报错、空块表报错、写对象目录 ⇒ `ENOTSUP` …）|
 | `shell_prompt.py` | 没有卷就先 `mkfs` 一个 16 MiB 的 → 真 pty 起 shell → **逐行慢喂**三种输入（`" "`、`""`、`"   "`）再喂 `ls /`、`pwd`、`quit` → 看：提示符行数 = 输入行数、同一行不出现两个提示符、纯空提示符行 = 空输入的个数 |
-| `rt/feat.py` | 手工拼 14 种格式场景（硬链接 `NLINK=2` + 两个名字、跨块条目 `span.bin`、软链接两种编码、`PAD1`/`PADn` 跳过、对象块）→ 直接读回验证 + 重新挂载再验 → 看"全部通过" |
+| `rt/feat.py` | 手工拼 14 种格式场景（硬链接 `NLINK=2` + 两个名字、跨块条目 `span.bin`、软链接两种编码、`PAD1`/`PADn` 跳过、链接块）→ 直接读回验证 + 重新挂载再验 → 看"全部通过" |
 | `rt/harness.py` | **工具模块**（不是测试）：`make(路径)` 造卷、`snapshot(路径, offs, size)` 存快照、`run(路径, 旧几何, 新几何, verify=True)` 跑一次 resize 并自检 —— 被 `run_all.py` 和它生成的 `rz.py` 调用 |
 
 ## 约定（加用例时请遵守）

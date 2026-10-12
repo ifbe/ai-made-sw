@@ -276,7 +276,7 @@ try:
     _r1 = _tc3.main(["mbr", "--disk", _fd, "--create", "--yes"])
     _r2 = _tc3.main(["mbr", "--disk", _fd, "--part", "1", "--seteasy", "--yes"])
     _r3 = _tc3.main(["mkfs", "--disk", _fd, "--part", "1", "--yes"])
-    _r4 = _tc3.main(["optimize", "alloc", "--disk", _fd, "--part", "1", "--yes"])
+    _r4 = _tc3.main(["optimize", "--alloc-merge", "--disk", _fd, "--part", "1", "--yes"])
     _r5 = _tc3.main(["resize", "--disk", _fd, "--offs", "1M", "--size", "15M",
                      "--newoffs", "1M", "--newsize", "15M", "--yes"])
     _r6 = _tc3.main(["resize", "--disk", _fd, "--offs", "1M", "--size", "15M",
@@ -364,6 +364,37 @@ run("%s fsck -n --vdisk %s --part 1" % (TOOL, _rp), 0, "--part 方式 resize 后
 rc, out = run("%s resize --vdisk %s --part 1 --offs 1M --newsize 24M --yes" % (TOOL, _rp),
               None, "--part 与 --offs 混用")
 check(rc != 0 and "二选一" in out, "--part 与 --offs/--size 混用 ⇒ 报错")
+# 1k) 块头魔数：逐类核对（表 ↔ stamp/parse）+ 真卷上的块带对魔数
+import easyfs as _E
+_bad = []
+for _t in range(0, 8):
+    _b = bytearray(4096)
+    _E.stamp_header(_b, _t, 64, 0)
+    _h = _E.parse_header(_b)
+    _want = _E.BLOCK_MAGIC.get(_t)
+    if _want is None:
+        if bytes(_b[:8]) != b"\x00" * 8 or not _h["magic_ok"]:
+            _bad.append((_t, "应该没有魔数（全零）"))
+    elif bytes(_b[:8]) != _want or not _h["magic_ok"]:
+        _bad.append((_t, _want))
+check(not _bad, "块头魔数逐类核对（null 无魔数、file-data 无头）%s" % (_bad or "✓"))
+_b3 = bytearray(4096)
+_E.stamp_header(_b3, _E.BT_DIR, 64, 0)
+_b3[0:8] = b"easyzzz "
+_h3 = _E.parse_header(_b3)
+check((not _h3["magic_ok"]) and _h3["prefix_ok"],
+      "前缀对但类型不认识 ⇒ magic_ok=False / prefix_ok=True（报错能说清）")
+_dk = os.path.join(WORK, "mag.img")
+if os.path.exists(_dk):
+    os.remove(_dk)
+run("%s mkfs --file %s --size 16M" % (TOOL, _dk), 0, "mkfs（魔数用例）")
+_dev = _E.FileDevice(_dk)
+_v = _E.Volume.mount(_dev)
+_m1 = _dev.read_at(_v.alloc_off, 8)
+_m2 = _dev.read_at(_v.root_off, 8)
+_dev.close()
+check(_m1 == _E.BLOCK_MAGIC[_E.BT_ALLOC] and _m2 == _E.BLOCK_MAGIC[_E.BT_DIR],
+      "真卷上 alloc=%r / dir=%r 各带自己的魔数" % (_m1, _m2))
 # ---------- 2 put -r / get -r 整树往返 ----------
 print("[2] sftpcli 递归上传/下载（含空目录、空文件、带空格名、>io-chunk 大文件）")
 src = W + "/src"

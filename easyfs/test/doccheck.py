@@ -20,6 +20,10 @@ base = lambda p: os.path.basename(p)
 text = {base(p): io.open(p, encoding="utf-8").read() for p in DOCS}
 issues = []
 
+# 历史文件：故意保留旧名字与死链接 ⇒ 只查"索引覆盖"，不查内容规则 ✓
+LINT_SKIP = {"gotcha.md"}
+LINT = dict((b, t) for b, t in text.items() if b not in LINT_SKIP)
+
 # ---- 1 索引覆盖 ----
 idx = text["README.md"]
 for b in sorted(text):
@@ -30,7 +34,7 @@ for b in sorted(text):
 def slug(h): return re.sub(r" ", "-", re.sub(r"[^\w\s\u4e00-\u9fff-]", "", h.strip().lower()))
 anchors = {b: set([""] + [slug(m.group(2)) for m in re.finditer(r"^(#{2,4})\s+(.+)$", t, re.M)])
             for b, t in text.items()}
-for b, t in text.items():
+for b, t in LINT.items():
     for m in re.finditer(r"\[([^\]]+)\]\(([^)]+)\)", t):
         tgt = m.group(2)
         if tgt.startswith(("http", "mailto")): continue
@@ -65,11 +69,13 @@ for k, v in sorted(easyfs.BT_NAME.items()):
     if doc_bt.get(k) != v: issues.append(("块类型表不一致", "common.md", "%d: 文档%r ≠ 代码%r" % (k, doc_bt.get(k), v)))
 
 # ---- 5 陈旧用语 ----
-stale = ["TINY_DATA", "HARDLINK_PTR", "SYMLINK_PTR_LOGICAL", "3-link", "硬链接块",
+stale = ["TINY_DATA", "HARDLINK_PTR", "SYMLINK_PTR_LOGICAL", "3-object", "硬链接块",
+         "对象块", "对象家族", "对象表", "objectid", "optimize object",
+         "DATA_LINK", "DIR_LINK", "rootid",
          "EASYFS4K", "EASYFSPL", "形态即策略", "=> 一律",
          "block_type=2（空闲位图）", "block_type=1（anchor", "block_type=3（dir）",
          "block_type=4（cont", "按逻辑位置（模式④）"]
-for b, t in text.items():
+for b, t in LINT.items():
     for s in stale:
         for m in re.finditer(re.escape(s), t):
             line = t[:m.start()].count("\n") + 1
@@ -77,7 +83,7 @@ for b, t in text.items():
 
 # ---- 6 交叉引用 §N 是否真存在 ----
 secref = re.compile(r"\[`?([0-9a-z\-]+\.md)`?\]\(([^)]*)\)\s*§([0-9]+)")
-for b, t in text.items():
+for b, t in LINT.items():
     for m in secref.finditer(t):
         f = base(m.group(1)); sec = m.group(3)
         if f not in text: continue
@@ -85,7 +91,7 @@ for b, t in text.items():
             issues.append(("§引用指向不存在的节", "%s → %s §%s" % (b, f, sec), ""))
 
 # ---- 9 章节编号：不许重号 ----
-for b, t in text.items():
+for b, t in LINT.items():
     nums = [int(m.group(1)) for m in re.finditer(r"^##\s+(\d+)\.", t, re.M)]
     dup = sorted(set(n for n in nums if nums.count(n) > 1))
     if dup:
@@ -97,7 +103,7 @@ for b, t in text.items():
         issues.append(("章节编号跳号", b, "缺 §" + "、§".join(str(n) for n in miss)))
 
 # ---- 10 文档内部的 §N 引用必须指向存在的节 ----
-for b, t in text.items():
+for b, t in LINT.items():
     secs = set(int(m.group(1)) for m in re.finditer(r"^##\s+(\d+)\.", t, re.M))
     for m in re.finditer(r"§(\d+)", t):
         n = int(m.group(1))
@@ -105,7 +111,7 @@ for b, t in text.items():
             issues.append(("§引用指向不存在的节（本文内）", "%s §%d" % (b, n), ""))
 
 # ---- 11 不许再有跨文档的 §N 精确引用（只允许"详见 xxx 文档"这种模糊说法）----
-for b, t in text.items():
+for b, t in LINT.items():
     for m in re.finditer(r"\.md`?\]?\(?[^)\n]{0,20}\)?\s*[–\-、,，]?\s*§\d+", t):
         issues.append(("跨文档 §引用（应改模糊说法）", b, m.group(0)[:40]))
 
@@ -126,6 +132,23 @@ try:
                            "第 %d 行：文档 %r / 代码 %r" % (i + 1, got[i], exp[i])))
 except Exception as e:
     issues.append(("anchor tag 表检查失败", "5-anchor.md", repr(e)[:90]))
+
+# ---- 16 块头魔数表 vs 代码（common.md ↔ easyfs_config.BLOCK_MAGIC）----
+try:
+    rows = re.findall(r"^\|\s*(\d+)\s*`([a-z\-]+)`\s*\|\s*"
+                      r"(?:\*\*（无）\*\*|\*\*（裸块，没有头）\*\*|`([^`]+)`)\s*\|",
+                      text["common.md"], re.M)
+    got = dict((int(_n), (_m if _m else None)) for _n, _name, _m in rows)
+    exp = dict((_t, _m.decode("ascii")) for _t, _m in easyfs.BLOCK_MAGIC.items())
+    exp[easyfs.BT_NULL] = None
+    exp[easyfs.BT_FILE] = None
+    for _k in sorted(set(list(got.keys()) + list(exp.keys()))):
+        if got.get(_k) != exp.get(_k):
+            issues.append(("块头魔数表与代码不一致", "common.md",
+                           "type %s：文档 %r / 代码 %r"
+                           % (_k, got.get(_k), exp.get(_k))))
+except Exception as e:
+    issues.append(("块头魔数表检查失败", "common.md", repr(e)[:90]))
 
 print("发现问题 %d 个\n" % len(issues))
 from collections import Counter

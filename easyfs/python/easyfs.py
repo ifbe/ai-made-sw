@@ -41,7 +41,7 @@ from easyfs_config import *      # noqa: F401,F403
 
 
 # root_type：根的引用种类（5-anchor.md §2.1）
-ROOT_TYPE_NONE, ROOT_TYPE_CHAIN, ROOT_TYPE_OBJECT, ROOT_TYPE_OBJECTID = 0, 1, 2, 3
+ROOT_TYPE_NONE, ROOT_TYPE_CHAIN, ROOT_TYPE_OBJECT = 0, 1, 2   # 3–255 保留
 ALLOC_HDR = 96         # 位图块：64 通用 + 32 位图扩展（1-alloc.md §3.2）
 
 # TLV 属性类型（2-dir.md §2.1）—— **按家族分段**
@@ -136,7 +136,9 @@ def stamp_header(buf, block_type, header_bytes, payload_len, seq=0,
     """
     if not (HDR_SIZE <= header_bytes <= len(buf)) or header_bytes % 8:
         raise EasyFSError("header_bytes 非法: %r" % (header_bytes,))
-    struct.pack_into("<8sHHI", buf, HDR_OFF_MAGIC, MAGIC, block_type, VERSION, flags)
+    struct.pack_into("<8sHHI", buf, HDR_OFF_MAGIC,
+                     BLOCK_MAGIC.get(block_type, b"\x00" * 8),   # 每类一个独立魔数
+                     block_type, VERSION, flags)
     struct.pack_into("<qq", buf, HDR_OFF_PREV, prev_delta, next_delta)
     struct.pack_into("<Q", buf, HDR_OFF_SEQ, seq)
     struct.pack_into("<III", buf, HDR_OFF_PAYLOAD_LEN, payload_len,
@@ -158,7 +160,12 @@ def parse_header(buf):
         "<IIII", buf, 40)
     hdr = {
         "magic": magic,
-        "magic_ok": magic == MAGIC,
+        "magic": magic,
+        "magic_expect": BLOCK_MAGIC.get(block_type),
+        # 该类型应有的魔数对不对；没有魔数的类型（null）就当"全零即合法"
+        "magic_ok": (magic == BLOCK_MAGIC[block_type] if block_type in BLOCK_MAGIC
+                     else (magic == b"\x00" * 8 or magic[0:4] == MAGIC_PREFIX)),
+        "prefix_ok": magic[0:4] == MAGIC_PREFIX,   # 是我们的块、但类型字段不认识时也看得出来
         "block_type": block_type,
         "version": version,
         "flags": flags,
@@ -1171,7 +1178,7 @@ class Volume(object):
         `CONT` 已经退场：**链上的下一块就是续段**，不需要任何指针属性。
         属性不跨块，所以每块的载荷边界就是属性边界。
 
-        `blocks` 给定时，按那个**块序列**遍历（`DIR_OBJECT` → 对象块 → 内容块表，
+        `blocks` 给定时，按那个**块序列**遍历（`DIR_OBJECT` → 链接块 → 内容块表，
         [`2-dir.md`](2-dir.md) §3.3）：此时不跟 `next_delta`。
 
         yield `(type, value, base_off, attr_start, attr_end)`；`base_off` 是该属性
@@ -1201,7 +1208,7 @@ class Volume(object):
             ent["kind"] = "dir"
             ent["child"] = base + struct.unpack_from("<q", value, 0)[0]
         elif atype == ATTR_DIR_OBJECT:
-            # 目录的对象形态：内容是对象块里的**内容块表**（读侧，2-dir.md §3.3）
+            # 目录的对象形态：内容是链接块里的**内容块表**（读侧，2-dir.md §3.3）
             if len(value) != 8:
                 raise EasyFSError("DIR_OBJECT 的值必须是 8 字节（{i64 L}）")
             ent["kind"] = "dir"
@@ -1224,7 +1231,7 @@ class Volume(object):
             ent["ctime"], = struct.unpack("<I", value)
 
     def _apply_link(self, ent, value):
-        """`DATA_OBJECT {i64 L}` → 读对象块，把它的属性并进本条目（3-object.md）。
+        """`DATA_OBJECT {i64 L}` → 读链接块，把它的属性并进本条目（3-link.md）。
 
         链接块里的 `DATA_PTR` 的 delta 基准是**链接块自己**，所以并进来时把 base 记成
         链接块地址即可 —— 后面的读取路径（内容、范围读、位图重建）完全不用改。
@@ -1236,32 +1243,32 @@ class Volume(object):
         loff = self.logical_to_phys(lval)
         ent["link_blocks"].append(loff)
         ent["kind"] = "file"
-        for atype, v, b, _a0, _a1 in self._iter_stream(loff, BT_LINK, "对象块链"):
+        for atype, v, b, _a0, _a1 in self._iter_stream(loff, BT_LINK, "链接块链"):
             if atype == ATTR_NLINK:
                 if len(v) != 4:
                     raise EasyFSError("NLINK 值必须是 4 字节")
                 ent["nlink"], = struct.unpack("<I", v)
                 continue
             if atype == ATTR_DATA_OBJECT:
-                raise EasyFSError("对象块里不允许再出现 DATA_OBJECT @%d" % b)
+                raise EasyFSError("链接块里不允许再出现 DATA_OBJECT @%d" % b)
             ent["attrs"].append((atype, v, b))
             self._apply_attr(ent, atype, v, b)
 
     def dir_object_blocks(self, obj_off):
-        """读一个**目录对象块**（`DIR_OBJECT` → 对象块），返回内容块表（有序）。
+        """读一个**目录链接块**（`DIR_OBJECT` → 链接块），返回内容块表（有序）。
 
-        对象块载荷 = 目录的内容块表（`DATA_PTR` 列表，delta 基准 = 属性所在块），
+        链接块载荷 = 目录的内容块表（`DATA_PTR` 列表，delta 基准 = 属性所在块），
         内容块是普通的 dir 块（TLV 条目流）。这就是"目录的链 → 块表"
         （[`2-dir.md`](2-dir.md) §3.3、[`cow.md`](cow.md) §11）。
         """
         blocks = []
         for atype, value, base, _a0, _a1 in self._iter_stream(
-                obj_off, BT_LINK, "目录对象块"):
+                obj_off, BT_LINK, "目录链接块"):
             if atype == ATTR_DATA_PTR:
                 x, size = parse_data_ptr(value)
                 blocks.append((base + x, size))
         if not blocks:
-            raise EasyFSError("目录对象块 @%d 的内容块表为空" % obj_off)
+            raise EasyFSError("目录链接块 @%d 的内容块表为空" % obj_off)
         for off, _size in blocks:
             h = parse_header(self.read_block(off))
             if not h["magic_ok"] or h["block_type"] != BT_DIR:
@@ -1279,11 +1286,11 @@ class Volume(object):
     def read_dir(self, head_off, dir_object=None):
         """读一个目录（dir 块双向链），返回条目 list。
 
-        条目形态（4-file.md §1 / 3-object.md）：内容内联在条目里（模式①②③④）、
-        或 `NAME + DATA_OBJECT` 指向对象块。**条目可以顺着链跨块继续** ——
+        条目形态（4-file.md §1 / 3-link.md）：内容内联在条目里（模式①②③④）、
+        或 `NAME + DATA_OBJECT` 指向链接块。**条目可以顺着链跨块继续** ——
         下一个 `NAME`（或流的尽头）才是它的终点。
 
-        `dir_object` 给定时，目录内容是那个**对象块里的内容块表**（`DIR_OBJECT` 形态，
+        `dir_object` 给定时，目录内容是那个**链接块里的内容块表**（`DIR_OBJECT` 形态，
         [`2-dir.md`](2-dir.md) §3.3）：此时 `head_off` 不参与（传 None 即可）。
         """
         if dir_object is None:
@@ -1363,7 +1370,7 @@ class Volume(object):
 
         `DATA_PTR` 是相对**属性所在块**的自相对 delta，所以要带上 `base`
         （2-dir.md §2.1）；带 `_LOGICAL` 的先按 `L` 换算成物理地址。
-        指向对象块的条目会由 `read_dir` 把链接块的属性并进来，这里不用特殊处理。
+        指向链接块的条目会由 `read_dir` 把链接块的属性并进来，这里不用特殊处理。
         """
         tiny = b""
         runs = []
@@ -1597,7 +1604,7 @@ class Volume(object):
                human(self.free_bytes()), human(biggest), human(need_avg)))
 
     def _free_allocations(self, ent):
-        """释放条目的数据段与对象块（不含子目录链）。"""
+        """释放条目的数据段与链接块（不含子目录链）。"""
         tiny, runs = self.entry_content(ent)
         for phys, size in runs:
             self.free(phys, size)
@@ -1809,19 +1816,19 @@ class Volume(object):
     # ------------------------------------------------------------ 链接
 
     def _object_nlink(self, obj):
-        """读对象块的 `NLINK`，并返回它的块字节 / 头 / `NLINK` 属性的绝对偏移。"""
+        """读链接块的 `NLINK`，并返回它的块字节 / 头 / `NLINK` 属性的绝对偏移。"""
         blk = bytearray(self.read_block(obj))
         h = parse_header(blk)
         if not h["magic_ok"] or h["block_type"] != BT_LINK:
-            raise EasyFSError("@%d 不是对象块" % obj)
+            raise EasyFSError("@%d 不是链接块" % obj)
         for atype, value, a0, a1 in scan_attrs(blk, h["header_bytes"],
                                                h["header_bytes"] + h["payload_len"]):
             if atype == ATTR_NLINK:
                 return struct.unpack("<I", value)[0], blk, h, a0
-        raise EasyFSError("对象块 @%d 里没有 NLINK" % obj)
+        raise EasyFSError("链接块 @%d 里没有 NLINK" % obj)
 
     def _set_object_nlink(self, obj, n):
-        """原地改对象块的 `NLINK` 并重算载荷 CRC。"""
+        """原地改链接块的 `NLINK` 并重算载荷 CRC。"""
         _old, blk, h, a0 = self._object_nlink(obj)
         struct.pack_into("<I", blk, a0 + ATTR_TLV_HDR, n)
         payload = bytes(blk[h["header_bytes"]:
@@ -1831,7 +1838,7 @@ class Volume(object):
         self.dev.write_at(obj, blk)
 
     def _new_object(self, tiny, runs, mtime, nlink):
-        """建一个对象块，返回它的物理地址（内容 delta 基准 = 对象块自己）。"""
+        """建一个链接块，返回它的物理地址（内容 delta 基准 = 链接块自己）。"""
         obj, _n = self.alloc(BLOCK_4K)
         payload = encode_attr(ATTR_NLINK, struct.pack("<I", nlink))
         if mtime:
@@ -1850,7 +1857,7 @@ class Volume(object):
         return obj
 
     def _object_data(self, obj):
-        """对象块引用的数据段 `[(phys, size)]`。"""
+        """链接块引用的数据段 `[(phys, size)]`。"""
         out = []
         for atype, value, base, _a0, _a1 in self._iter_stream(obj, BT_LINK):
             if atype == ATTR_DATA_PTR:
@@ -1860,14 +1867,14 @@ class Volume(object):
 
     def link(self, parent_dir_off, name, target_ent, mtime=None,
              dir_object=None):
-        """建**硬链接**（`3-object.md` §3 的 copy-on-link 升格）。
+        """建**硬链接**（`3-link.md` §3 的 copy-on-link 升格）。
 
-        * 目标已经是对象形态 ⇒ 加一条指向同一对象块的条目，`NLINK += 1`
-        * 否则 ⇒ **升格**：内容搬进新对象块（`NLINK = 2`），原条目改写成
-          `NAME + DATA_OBJECT{L}`，再加新条目 —— 两条指向同一个对象块
+        * 目标已经是对象形态 ⇒ 加一条指向同一链接块的条目，`NLINK += 1`
+        * 否则 ⇒ **升格**：内容搬进新链接块（`NLINK = 2`），原条目改写成
+          `NAME + DATA_OBJECT{L}`，再加新条目 —— 两条指向同一个链接块
         """
         if target_ent["kind"] != "file":
-            raise EasyFSError("ENOTSUP: 目录不许硬链接（3-object.md）")
+            raise EasyFSError("ENOTSUP: 目录不许硬链接（3-link.md）")
         if target_ent["symlink"]:
             raise EasyFSError("ENOTSUP: 不许硬链接到软链接")
         if self.lookup(parent_dir_off, name, dir_object) is not None:
@@ -2070,8 +2077,8 @@ class Volume(object):
     def _walk_used(self, head_off, dir_object=None):
         """从某个目录出发，标出所有可达的块（1-alloc.md §7.4）。
 
-        `dir_object` 给定时，这个目录是**对象形态**：内容块表在对象块里
-        （`DIR_OBJECT`，2-dir.md §3.3），要连对象块与内容块一起标记。
+        `dir_object` 给定时，这个目录是**对象形态**：内容块表在链接块里
+        （`DIR_OBJECT`，2-dir.md §3.3），要连链接块与内容块一起标记。
         """
         if dir_object is None:
             off = head_off
@@ -2086,7 +2093,7 @@ class Volume(object):
             for boff in self.dir_object_blocks(dir_object):
                 self._mark_used(boff, BLOCK_4K)
         for ent in self.read_dir(head_off, dir_object):
-            for loff in ent["link_blocks"]:          # 对象块本身也是元数据块
+            for loff in ent["link_blocks"]:          # 链接块本身也是元数据块
                 self._mark_used(loff, BLOCK_4K)
             tiny, runs = self.entry_content(ent)
             for phys, size in runs:

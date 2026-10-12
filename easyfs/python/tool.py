@@ -14,12 +14,16 @@
 用法::
 
     python3 python/tool.py help                        # 列出可用工具
-    python3 python/tool.py ctrl    mkfs  --file disk.img --size 64M
-    python3 python/tool.py mkfs    --file disk.img --size 64M     # 等价：ctrl 子命令可直接当顶层命令
+    python3 python/tool.py mkfs  --file disk.img --size 64M
     python3 python/tool.py migrate --file src.img --newfile dst.img --newoffs 3M
-    python3 python/tool.py ctrl    probe --vdisk vm.vhd --part 1
+    python3 python/tool.py optimize --dir              # 子命令可直接当顶层命令用 ✓
+    python3 python/tool.py probe --vdisk vm.vhd --part 1
     python3 python/tool.py sftpcli --file disk.img
     python3 python/tool.py server  --mem 64M --port 8080
+
+``mkfs`` / ``migrate`` / ``optimize`` … 都是 **tool-ctrl 的子命令** ✓ ——
+写 ``tool.py <子命令>`` 就行（认不出的名字自动转给 ``tool-ctrl`` ✓），
+也可以直接跑 ``python3 python/tool-ctrl.py <子命令>`` ✓。
 
 核心是 ``easyfs.py``（格式层）与 ``easyfs_device.py``（设备层）；
 ``tool-*.py`` 都是外层工具。
@@ -115,7 +119,7 @@ def main(argv=None):
     name, rest = argv[0], argv[1:]
     if name in tools:
         return call(name, tools[name], rest)
-    # 不是工具名 ⇒ 当成 **tool-ctrl 的子命令**（方便：`tool migrate …` ≡ `tool ctrl migrate …`）
+    # 不是工具名 ⇒ 当成 **tool-ctrl 的子命令**（方便：`tool migrate …` ≡ `tool migrate …`）
     if "ctrl" in tools:
         return call("ctrl", tools["ctrl"], [name] + rest)
     print("error: 没有这个工具: %r" % name, file=sys.stderr)

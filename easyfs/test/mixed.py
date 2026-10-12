@@ -147,8 +147,8 @@ for i in range(40):
     v.delete(v.root_off, "o%02d" % i)
 v.commit(); v.mark_clean()
 r_after_del = len(v.regions)
-dry = cli("optimize", "alloc", "--dry-run", "--file", P4)
-real = cli("optimize", "alloc", "--file", P4)
+dry = cli("optimize", "--alloc-merge", "--dry-run", "--file", P4)
+real = cli("optimize", "--alloc-merge", "--file", P4)
 d.close()
 d = FileDevice(P4); v = Volume.mount(d)
 r_after_opt = len(v.regions)
@@ -161,11 +161,16 @@ ok.append(("M13 optimize alloc：写 40 个文件 %d 区域 ⇒ 删光仍 %d ⇒
            r_after_write > 2 and r_after_del == r_after_write and
            r_after_opt == 2 and "可以合并" in dry and "已合并" in real and
            readable == b"y" * 4096 and fsck(P4) == 0))
-ok.append(("M14 optimize dir 明确报未实现（不是静默成功）",
-           "ENOTSUP" in cli("optimize", "dir", "--file", P4) and
-           "ENOTSUP" in cli("optimize", "object", "--file", P4)))
-ok.append(("M15 optimize alloc 幂等（再跑一次 0 个可合并）",
-           "已合并 0 个" in cli("optimize", "alloc", "--file", P4)))
+ok.append(("M14 optimize --dir-compact / --link-merge 明确报未实现（不是静默成功）",
+           "ENOTSUP" in cli("optimize", "--dir-compact", "--file", P4) and
+           "ENOTSUP" in cli("optimize", "--link-merge", "--file", P4)))
+ok.append(("M14b optimize --dir / --link 打家族帮助、optimize 无参数打总帮助（都不需要载体 ✓）",
+           "--dir-compact" in cli("optimize", "--dir") and
+           "--link-merge" in cli("optimize", "--link") and
+           "用法" in cli("optimize") and
+           "--alloc-merge" in cli("optimize")))
+ok.append(("M15 optimize --alloc-merge 幂等（再跑一次 0 个可合并）",
+           "已合并 0 个" in cli("optimize", "--alloc-merge", "--file", P4)))
 
 
 # ---- M16：一个 bit 一主（分配块与目录块不共用同一个粗 bit）----

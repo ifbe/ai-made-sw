@@ -3,7 +3,7 @@
 """EasyFS 控制/诊断工具：mkfs / probe / device / df / fsck / inspect / resize
 
 这是**外层工具**之一（核心是 ``easyfs.py`` 与 ``easyfs_device.py``）。
-也可以用统一入口：``python3 python/tool.py ctrl <同样的参数>``。
+也可以用统一入口：``python3 python/tool.py <同样的参数>``。
 
 用法::
 
@@ -31,7 +31,7 @@
             --offs 16M --size 64M --newoffs 0 --newsize 80M --dry-run
 
 ``df`` 打印空间用量：默认**字节数**（脚本友好），``-h`` 人类可读；
-还会给出明细（位图链 / 目录块 / 对象块 / 文件数据 / 未分类），
+还会给出明细（位图链 / 目录块 / 链接块 / 文件数据 / 未分类），
 "未分类"非零就说明有位图置位但从根不可达的块（泄漏）。
 
 ``resize`` 的注意事项：
@@ -66,7 +66,7 @@ from easyfs import (
     anchor_layout, anchor_off, anchor_put, anchor_get, anchor_geti, anchor_crc,
     ANCHOR_VOL_HDR_END, ANCHOR_POOL_END, ANCHOR_OFF_POOL, ANCHOR_MAGIC_TAG,
     ANCHOR_POOL_MAGIC_TAG, ANCHOR_VERSION_STR,
-    ROOT_TYPE_NONE, ROOT_TYPE_CHAIN, ROOT_TYPE_OBJECT, ROOT_TYPE_OBJECTID,ATTR_CRC32, ATTR_DATA_PTR, ATTR_DIR_PTR, ATTR_DIR_OBJECT,
+    ROOT_TYPE_NONE, ROOT_TYPE_CHAIN, ROOT_TYPE_OBJECT, ATTR_CRC32, ATTR_DATA_PTR, ATTR_DIR_PTR, ATTR_DIR_OBJECT,
                     ATTR_DATA_OBJECT, ATTR_NAME, ATTR_NAME_HASH, ATTR_NLINK, ATTR_PADN,
                     ATTR_PAD1, ATTR_TCREATE, ATTR_DATA_TINY, ATTR_TMODIFY,
                     ATTR_SYMLINK_PTR, ATTR_SYMLINK_OBJECT, ATTR_SYMLINK_TINY,
@@ -121,10 +121,10 @@ def _fmt_delta(base, delta):
 
 
 ROOT_NAME = {0: "无根（空卷）", 1: "链式目录（→ 第一个 dir 块）",
-             2: "对象块（→ 内容块表）", 3: "objectid【将来】"}
+             2: "object（对象根：内容块表在链接块里）"}
 
 # 分配结构的类型（anchor 的 `allotype` tag）—— 与 ROOT_NAME 对称
-ALLOC_NAME = {1: "扁平位图链", 2: "分配器对象块【将来】"}
+ALLOC_NAME = {1: "扁平位图链", 2: "分配器对象（结构在链接块里）【将来】"}
 
 
 def _print_anchor(name, a, peer_name):
@@ -179,7 +179,7 @@ def _partid_create(args, kind):
         if t != "none":
             raise EasyFSError("这个容器已经有 %s 分区表了（要重建请加 --force；"
                               "只想改标识用 --seteasy）" % t.upper())
-        if head[:8] == b"easypart":
+        if head[:8] == ANCHOR_MAGIC_TAG:          # 卷 / 分区标记（anchor 魔数）
             raise EasyFSError("这个容器里已经是 EasyFS 卷了 —— 建分区表会毁掉它"
                               "（真要这么干：--force）")
         if any(head):
@@ -485,7 +485,7 @@ def cmd_df(args):
     def count_chain(head, want):
         """数一条链（dir / link）里**尚未计数过**的块；顺带校验块类型。
 
-        对象块会被多个条目共享，所以"重复出现"不等于成环：
+        链接块会被多个条目共享，所以"重复出现"不等于成环：
         成环只在**单次走链内**判定，全局按块去重。
         """
         off, n, local = head, 0, set()
@@ -508,7 +508,7 @@ def cmd_df(args):
         nonlocal dir_bytes, link_bytes, data_bytes, data_alloc, n_dirs, n_links
         if dir_object is None:
             n_dirs += count_chain(head, BT_DIR)
-        else:                                     # 对象形态目录：对象块 + 内容块表
+        else:                                     # 对象形态目录：链接块 + 内容块表
             n_links += count_chain(dir_object, BT_LINK)
             for boff in vol.dir_object_blocks(dir_object):
                 n_dirs += count_chain(boff, BT_DIR)
@@ -568,7 +568,7 @@ def cmd_df(args):
     print("  明细                    块数      占用")
     print("  位图链                  %4d    %s" % (len(vol.regions), fmt(alloc_size)))
     print("  目录块                  %4d    %s" % (n_dirs, fmt(dir_bytes)))
-    print("  对象块                %4d    %s" % (n_links, fmt(link_bytes)))
+    print("  链接块                %4d    %s" % (n_links, fmt(link_bytes)))
     print("  文件数据                            %s（%d chunk）"
           % (fmt(data_alloc), ck(data_alloc)))
     print("    其中真实字节                      %s" % fmt(data_bytes))
@@ -692,8 +692,8 @@ class _Check(object):
         self.n_dirs += 1
         if dir_object is None:
             self.chain(head, BT_DIR, "目录链")
-        else:                                     # 对象形态目录：对象块 + 内容块表
-            self.chain(dir_object, BT_LINK, "目录对象块")
+        else:                                     # 对象形态目录：链接块 + 内容块表
+            self.chain(dir_object, BT_LINK, "目录链接块")
             for boff in self.vol.dir_object_blocks(dir_object):
                 self.chain(boff, BT_DIR, "目录内容块")
         try:
@@ -735,7 +735,7 @@ class _Check(object):
                 if ent["nlink"] < 2:
                     self.fail("NLINK < 1", "%s/%s: nlink=%d" % (path, disp, ent["nlink"]))
                 for lo in ent["link_blocks"]:
-                    blocks = self.chain(lo, BT_LINK, "对象块链")
+                    blocks = self.chain(lo, BT_LINK, "链接块链")
                     nl = 0
                     for off2, blk2, h2 in blocks:
                         start = h2["header_bytes"]
@@ -802,7 +802,7 @@ class _Check(object):
                           "@%d: NLINK=%d，被 %d 个条目引用"
                           % (lo, self.link_nlink[lo], refs))
         if self.link_nlink:
-            self.ok("对象块 NLINK 计数", "%d 块" % len(self.link_nlink))
+            self.ok("链接块 NLINK 计数", "%d 块" % len(self.link_nlink))
 
 
 def _check_anchors(chk, vol):
@@ -902,7 +902,7 @@ def cmd_fsck(args):
         if any("目录链" in n or "目录解析" in n for n, _w in chk.fails):
             chk.note("根目录/目录链本身不可读 → 下面的可达性比对没有意义，已跳过")
             chk.root_bad = True
-        chk.ok("目录树", "%d 个目录 / %d 个条目 / %d 个对象块"
+        chk.ok("目录树", "%d 个目录 / %d 个条目 / %d 个链接块"
                % (chk.n_dirs, chk.n_entries, chk.n_links))
         if not getattr(chk, "root_bad", False):
             chk.compare_bitmap()
@@ -947,13 +947,13 @@ def _attr_value(vol, off, atype, val):
         return "  L=%d -> @%d  size=%d (%s)" % (x, vol.logical_to_phys(x), sz, human(sz))
     if atype == ATTR_DIR_OBJECT and len(val) == 8:
         x, = struct.unpack("<q", val)
-        return "  L=%d -> @%d（目录对象块：内容块表）" % (x, vol.logical_to_phys(x))
+        return "  L=%d -> @%d（目录链接块：内容块表）" % (x, vol.logical_to_phys(x))
     if atype == ATTR_DIR_PTR and len(val) == 8:
         x, = struct.unpack("<q", val)
         return "  x=%+#x -> @%d" % (x, off + x)
     if atype == ATTR_DATA_OBJECT and len(val) == 8:
         x, = struct.unpack("<q", val)
-        return "  L=%d -> @%d（对象块）" % (x, vol.logical_to_phys(x))
+        return "  L=%d -> @%d（链接块）" % (x, vol.logical_to_phys(x))
     if atype == ATTR_NLINK and len(val) == 4:
         return "  nlink=%d" % struct.unpack("<I", val)[0]
     if atype in (ATTR_TMODIFY, ATTR_TCREATE) and len(val) == 4:
@@ -1069,7 +1069,9 @@ def _dump_block(vol, off, with_hex=False):
     h = parse_header(blk)
     print("=== 块 @%d ===" % off)
     if not h["magic_ok"]:
-        print("  magic 不是 easypart（块头不可信）→ 按裸数据/损坏处理")
+        print("  块头魔数不对（应 %s，实际 %r）→ 按裸数据 / 损坏处理"
+              % (h["magic_expect"].decode() if h["magic_expect"] else "无（null/未初始化）",
+                 h["magic"]))
         _hexdump(blk, off, 256)
         return
     pc = verify_payload_crc(blk, h)
@@ -1160,7 +1162,7 @@ def cmd_hexdump(args):
               % (h["magic"].decode(), h["block_type"],
                  BT_NAME.get(h["block_type"], "?"), h["version"]))
     else:
-        print("  （不是 easypart 块 ⇒ 按裸数据看）")
+        print("  （块头魔数不对 ⇒ 按裸数据看）")
     _hexdump(data, off, n)
     return 0
 
@@ -1211,39 +1213,78 @@ def cmd_inspect(args):
         dev.close()
 
 
-def cmd_optimize(args):
-    """整理卷（1-alloc.md §13.6）：`optimize alloc | dir | object | all`。
+OPT_FAMILIES = (
+    ("alloc", "--alloc-merge", "合并全空的子区域：清掉父位图那一位、把子位图块从链上摘掉、"
+                             "把它管的那个单位还成粗单位", True),
+    ("dir",   "--dir-compact",  "压实目录链：把 `PADn` / 尾追加撑出来的空洞收掉（后面的条目往前挪）", False),
+    ("link",  "--link-merge", "合并链接块的内容块表：把相邻的 `DATA_PTR` 段并成一段（块表变短）", False),
+)
+OPT_DONE = dict((f, d) for f, _, _, d in OPT_FAMILIES)
+FLAG_OF = dict((f, flag) for f, flag, _, _ in OPT_FAMILIES)
 
-    这些操作都是"只用不还"的补偿：删掉东西不会自动回收元数据，所以整理要显式做。
-    """
+
+def _optimize_help(fam=None):
+    """打 `optimize` 帮助：给家族 = 只列那一族；不给 = 全列。**不碰盘** ✓"""
+    print("optimize —— 整理卷（「只用不还」的补偿：删东西不会自动回收元数据 ✓）")
+    print("")
+    print("用法：")
+    print("   optimize --alloc | --dir | --link      # 看某一族有哪些动作（只打帮助 ✓）")
+    print("   optimize --<family>-<action>             # 执行（加 --dry-run 先看能回收多少 ✓）")
+    print("   optimize --all                          # 依次跑所有已实现的动作")
+    print("")
+    for f, flag, desc, done in OPT_FAMILIES:
+        if fam and f != fam:
+            continue
+        print("   %s 家族：" % f)
+        print("     %-12s %s" % (flag, desc))
+        print("     %-12s %s" % ("", "已实现 ✓" if done else "还没实现 ✗（设计见 1-alloc.md §13.6）"))
+    return 0
+
+
+def cmd_optimize(args):
+    """整理卷（1-alloc.md §13.6）：`--家族` 看帮助 / `--家族-动作` 执行 / `--all` 全跑。"""
+    fam = "alloc" if args.alloc else ("dir" if args.dir else ("link" if args.link else None))
+    acts = [f for f, flag, _, _ in OPT_FAMILIES
+            if {"--alloc-merge": args.alloc_merge, "--dir-compact": args.dir_compact,
+                "--link-merge": args.link_merge}[flag]]
+    if args.all:
+        acts = [f for f, _, _, _ in OPT_FAMILIES]
+    if fam is not None or not acts:
+        return _optimize_help(fam)                   # 只打帮助 ⇒ 不开设备 ✓
+    if not args.all:                                 # 点名要的没实现 ⇒ 直接拦（不碰盘 ✓）
+        for f in acts:
+            if not OPT_DONE[f]:
+                raise EasyFSError("ENOTSUP: optimize %s 还没实现（设计见 1-alloc.md §13.6）"
+                                  % (FLAG_OF.get(f, "")))
+    acts = [f for f in acts if OPT_DONE[f]]          # `--all` 只跑已实现的，其余打一行说明 ✓
     dev, desc = easyfs_device.open_device(args, read_only=getattr(args, "dry_run", False))
     print("设备          %s" % desc)
     vol = Volume.mount(dev)
-    if vol.is_dirty():                        # 上次没干净卸载 ⇒ 按惯例先重建位图再动手
-        print("  （卷是 dirty 的：先重建位图）")
-        vol.rebuild_bitmap(apply=True)
-        vol.mark_clean()
-    what = args.what
-    if what in ("dir", "object"):
-        raise EasyFSError("ENOTSUP: optimize %s 还没实现（设计见 1-alloc.md §13.6）" % what)
-    if what in ("alloc", "all"):
-        rep = vol.optimize_alloc(dry_run=getattr(args, "dry_run", False))
-        n = len(rep["merged"])
-        print("  optimize alloc   %s %d 个全空子区域，回收 %s"
-              % ("可以合并" if rep["dry_run"] else "已合并", n, human(rep["bytes_freed"])))
-        for m in rep["merged"]:
-            if getattr(args, "verbose", False) or rep["dry_run"]:
-                print("    - 子区域 @%d（%s，位图块 @%d %s）← 父 @%d"
-                      % (m["off"], human(m["bytes"]), m["block_off"],
-                         human(m["block_bytes"]), m["parent"]))
-        if not rep["dry_run"] and n:
-            vol.commit()
+    if vol.is_dirty():
+        if getattr(args, "dry_run", False):
+            print("  （卷是 dirty 的：dry-run 不重建位图，只看现状）")
+        else:
+            print("  （卷是 dirty 的：先重建位图）")
+            vol.rebuild_bitmap(apply=True)
             vol.mark_clean()
-            print("  ✓ 已提交：位图 %d 块 / %s"
-                  % (len(vol.regions), human(sum(r.block_bytes for r in vol.regions))))
-    if what == "all":
-        print("  （optimize dir / object 还没实现，见 1-alloc.md §13.6）")
-    vol.mark_clean()
+    rep = vol.optimize_alloc(dry_run=getattr(args, "dry_run", False))
+    n = len(rep["merged"])
+    print("  optimize --alloc-merge   %s %d 个全空子区域，回收 %s"
+          % ("可以合并" if rep["dry_run"] else "已合并", n, human(rep["bytes_freed"])))
+    for m in rep["merged"]:
+        if getattr(args, "verbose", False) or rep["dry_run"]:
+            print("    - 子区域 @%d（%s，位图块 @%d %s）← 父 @%d"
+                  % (m["off"], human(m["bytes"]), m["block_off"],
+                     human(m["block_bytes"]), m["parent"]))
+    if not rep["dry_run"] and n:
+        vol.commit()
+        vol.mark_clean()
+        print("  ✓ 已提交：位图 %d 块 / %s"
+              % (len(vol.regions), human(sum(r.block_bytes for r in vol.regions))))
+    if args.all:
+        print("  （--dir-compact / --link-merge 还没实现，见 python/README.md ✓）")
+    if not getattr(args, "dry_run", False):          # dry-run 是只读句柄：不许写 clean 标志
+        vol.mark_clean()
     dev.close()
     return 0
 
@@ -1322,7 +1363,7 @@ UNSUPPORTED = {
     "umount": "同上",
     "su": "没有用户概念", "sudo": "没有用户概念",
     "dd": "没有块设备语义；用 cp 或 tool-sftpcli 的 get/put",
-    "mkfs": "先退出，用 `tool ctrl mkfs` 建卷",
+    "mkfs": "先退出，用 `tool mkfs` 建卷",
     "ln": None,                     # 支持（见下）
 }
 
@@ -1335,7 +1376,7 @@ HELP_TEXT = """\
   卷     sync（提交+标干净） | probe | device | df [-h] | fsck [-n]
          dump <tag>（解算 anchor 字段并 dump 它指向的块）
          hexdump --tag <名字> | --block N [--len N]
-         optimize alloc|dir|object|all [--dry-run] [-v]
+         optimize alloc|dir|link|all [--dry-run] [-v]
          inspect --block N | --path P | --tag <tag>
          （后 5 个直接委派给 argv 侧同一实现；resize / mkfs 交互里拒绝，见理由）
   其它   help | quit / exit（或 Ctrl-D）
@@ -1344,7 +1385,7 @@ HELP_TEXT = """\
 
 
 class CtrlShell(object):
-    """`tool ctrl shell` 的交互循环。
+    """`tool shell` 的交互循环。
 
     只做"把命令翻译成 Volume / PathWalker 调用"这一件事；所有语义在库里。
     """
@@ -1602,7 +1643,7 @@ class CtrlShell(object):
 
     def do_resize(self, a):
         print("error: 交互模式里不允许改几何 —— 卷还挂着，改完内存里的几何就过期了；\n"
-              "       请 quit 之后用 `tool ctrl resize ...`（1-alloc.md §8）")
+              "       请 quit 之后用 `tool resize ...`（1-alloc.md §8）")
 
     def do_mkdir(self, a):
         par = "-p" in a
@@ -1732,7 +1773,7 @@ class CtrlShell(object):
             print("%s -> %s" % (link, target))
             return
         if not self.allow_object:
-            print("error: 硬链接**必须**用对象形态（3-object.md）—— 要加 --object；"
+            print("error: 硬链接**必须**用对象形态（3-link.md）—— 要加 --object；"
                   "默认的 ①②③ 形态给不出两个名字共享一份内容")
             return
         _tp, _tn, te = self.walker.entry_pos(target)
@@ -1757,7 +1798,7 @@ class CtrlShell(object):
         print("committed（已落盘并标干净）")
 
     def do_optimize(self, a):
-        """`optimize alloc|dir|object|all [--dry-run] [-v]`。"""
+        """`optimize alloc|dir|link|all [--dry-run] [-v]`。"""
         kw = {"what": None, "dry_run": False, "verbose": False}
         for x in a:
             if x in ("--dry-run", "-n"):
@@ -1766,9 +1807,9 @@ class CtrlShell(object):
                 kw["verbose"] = True
             elif not x.startswith("-") and kw["what"] is None:
                 kw["what"] = x
-        if kw["what"] not in ("alloc", "dir", "object", "all"):
-            raise EasyFSError("用法: optimize alloc|dir|object|all [--dry-run] [-v]")
-        if kw["what"] in ("dir", "object"):
+        if kw["what"] not in ("alloc", "dir", "link", "all"):
+            raise EasyFSError("用法: optimize alloc|dir|link|all [--dry-run] [-v]")
+        if kw["what"] in ("dir", "link"):
             raise EasyFSError("ENOTSUP: optimize %s 还没实现（设计见 1-alloc.md §13.6）" % kw["what"])
         # **在本进程里做**（不要委派：那会再开一个进程写同一个卷 ✗）
         rep = self.vol.optimize_alloc(dry_run=kw["dry_run"])
@@ -2048,11 +2089,19 @@ def main(argv=None):
                    help="（尚未实现）强制全量检查")
     c.set_defaults(func=cmd_fsck)
 
-    op = sub.add_parser("optimize", help="整理卷：optimize alloc | dir | object | all")
-    easyfs_device.add_device_args(op)
-    easyfs_device.add_disk_safety_args(op)
-    op.add_argument("what", choices=["alloc", "dir", "object", "all"],
-                    help="优化什么：分配（合并空子区域）/ 目录 / object / 全部")
+    op = sub.add_parser("optimize", help="整理卷：`--家族` 看帮助 / `--家族-动作` 执行（见 --help）")
+    easyfs_device.add_device_args(op, required=False)   # 帮助路径不需要载体 ✓
+    easyfs_device.add_disk_safety_args(op, with_force=True)
+    op.add_argument("--alloc", action="store_true", help="看 alloc 家族有哪些整理动作（只打帮助，不碰盘）")
+    op.add_argument("--alloc-merge", dest="alloc_merge", action="store_true",
+                    help="把\"全空的子区域\"合回粗粒度（已实现 ✓）")
+    op.add_argument("--dir", action="store_true", help="看 dir 家族有哪些整理动作（只打帮助，不碰盘）")
+    op.add_argument("--dir-compact", dest="dir_compact", action="store_true",
+                    help="压实目录链：收掉 PADn / 尾追加撑出来的空洞（还没实现 ✗）")
+    op.add_argument("--link", action="store_true", help="看 link 家族有哪些整理动作（只打帮助，不碰盘）")
+    op.add_argument("--link-merge", dest="link_merge", action="store_true",
+                    help="合并链接块的内容块表：相邻 DATA_PTR 并成一段（还没实现 ✗）")
+    op.add_argument("--all", action="store_true", help="依次跑所有已实现的动作")
     op.add_argument("--dry-run", action="store_true", help="只报告能回收多少，不写盘")
     op.add_argument("--verbose", "-v", action="store_true", help="逐项打印")
     op.set_defaults(func=cmd_optimize)

@@ -11,9 +11,9 @@ sys.path.insert(0, os.path.join(ROOT, "python"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "rt"))
 
-"""DIR_OBJECT 读侧验证（手工把一个子目录改造成"对象块 + 内容块表"形态）。
+"""DIR_OBJECT 读侧验证（手工把一个子目录改造成"链接块 + 内容块表"形态）。
 
-不依赖库的写侧（写侧还没做）：用内部 API 拼出对象块，再走读路径，
+不依赖库的写侧（写侧还没做）：用内部 API 拼出链接块，再走读路径，
 检查 解析 / 块表 / 列目录 / 跨目录查找 / PathWalker / df 记账 / 反例 / 写侧拒绝。
 """
 import os
@@ -49,7 +49,7 @@ while off:
 print("A1 sub 的 dir 链块数 =", len(blocks))
 
 
-# ---------- 2) 造对象块：载荷 = 内容块表（DATA_PTR × n，delta 基准 = 对象块自己）----------
+# ---------- 2) 造链接块：载荷 = 内容块表（DATA_PTR × n，delta 基准 = 链接块自己）----------
 obj, _n = v.alloc(BLOCK_4K)
 tbl = b""
 for b in blocks:
