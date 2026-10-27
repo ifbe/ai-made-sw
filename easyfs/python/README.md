@@ -32,7 +32,7 @@ python3 python/tool.py vdisk --file disk.vmdk --create --size 64M   # 新建虚�
 python3 python/tool.py mbr --vdisk disk.img --part 1 --seteasy  # 给分区打上我们的标识
 ```
 
-「卷放在哪」/ 分区标识 / 保护措施见 [`../doc/parttable.md`](../doc/parttable.md) ✓；
+「卷放在哪」/ 分区标识 / 保护措施见 [`../doc/medium-parttable.md`](../doc/medium-parttable.md) ✓；
 伸缩与分配见 [`../doc/1-alloc.md`](../doc/1-alloc.md) ✓；目录 / 文件 / 链接块 / anchor 见各自模块文档 ✓。
 
 ## 3. 实现现状（逐模块）
@@ -48,18 +48,19 @@ python3 python/tool.py mbr --vdisk disk.img --part 1 --seteasy  # 给分区打�
 | **4 file** | 四种模式**读侧全支持** ✓；**工具默认只写 ①②③**（`DATA_TINY` → `DATA_PTR` ✓）；只有命令行显式给 `--object` 才会尝试对象形态，而**对象写侧 v0 尚未实现** ✗（唯一已实现的对象写入是硬链接 `ln` ✓）|
 | **5 anchor** | head / tail anchor 的写入与校验 ✓、`gen` / `stateflg` / `policy` ✓、resize 改 anchor 几何 ✓ |
 | **6 bad** | 类型与语义已定义，但**产出与扫描都没实现** ✗（离线检查尚未做）；读取路径遇到 `block_type=6` 一律跳过 ✓ |
-| **COW / 快照** | 「每个对象各自原子」已实现 ✓；根引用现在**只用 `roottype = 1`**（链式目录）✓；`2`（根 = 链接块）**只有读侧** ✓；**多世代根 / 快照未实现** ✗（设计上根表住在根对象块的一条属性里，不新增 `roottype` ✓）；`bitmap_OBJECT`（新一代分配器结构）**未实现** ✗ —— 现在始终 `allotype = 1` |
+| **COW / 快照** | 「每个对象各自原子」已实现 ✓（[`../doc/feature-cow.md`](../doc/feature-cow.md)）；根引用现在**只用 `roottype = 1`**（链式目录）✓；`2`（根 = 链接块）**只有读侧** ✓；**多世代根 / 快照未实现** ✗（设计：根表住在根目录的那个链接块里，不新增 `roottype` ✓ —— 见 [`../doc/feature-snapshot.md`](../doc/feature-snapshot.md)）；`bitmap_OBJECT`（新一代分配器结构）**未实现** ✗ —— 现在始终 `allotype = 1` |
 | **resize** | 区域内部伸缩 ✓（缩容的腾空阶段**只挪位图块**，遇到文件数据块 / dir 块就 `ENOTSUP` ✗）；`--part N` 可代替 `--offs/--size` 说"改前位置" ✓；**扩出来的新空间按 `chunk` 粒度** ✓；合并成粗粒度要等 `optimize` ✓ |
 | **optimize** | `alloc` 已实现 ✓（合并全空子区域）；`dir` / `link` **明确 `ENOTSUP`** ✗ |
 
 ## 4. 代码层的坑
 
-**已经删掉的实现 / 已经修掉的坑**不写在正文里 ✗ ⇒ 放本目录的 `gotcha.md` ✓（现在还没有 ✓，需要时再建 ✓；设计层的同类东西在 [`../doc/gotcha.md`](../doc/gotcha.md) ✓）。
+**写代码过程中踩的坑**记在 [`gotcha.md`](gotcha.md) ✓（现象 / 原因 / 以后怎么避 ✓）；
+**已经删掉的实现**不写进正文 ✗（会干扰后续编码 ✓）。
 
 ## 5. 自检与测试挂钩
 
 * `easyfs_config.BLOCK_MAGIC` 是**块头魔数的唯一权威表** ✓；`test/doccheck.py` 有一条规则
-  逐行核对 `doc/common.md` 的魔数表 ↔ 这张表 ✓（还有一条禁止退役用词 ✓）。
+  逐行核对 `doc/detail-common.md` 的魔数表 ↔ 这张表 ✓（还有一条禁止退役用词 ✓）。
 * `test/run_all.py` 的子检查 1b–1k 覆盖：anchor tag 解析、容器 / 分区与 `--create`、
   真盘确认（`--yes` / `y/N`）、resize（`--part` / 确认）、块头魔数逐类核对 ✓。
 * 完整清单与每个子测试的流程见 [`../test/README.md`](../test/README.md) ✓。

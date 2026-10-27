@@ -9,12 +9,12 @@ anchor 字段偏移、位图块头偏移、分配策略编号、各种上限、�
 * 单独成文件还有一个现实好处：``easyfs_device.py`` 可以 import 它而**不必** import ``easyfs.py``
   （否则两边循环导入）；
 * ``doc/`` 是**语义权威**，本文件的注释与之一一对应。改这里的值 = 改格式，
-  必须同时改对应文档（``common.md`` / ``layout.md`` / ``1-alloc.md`` / ``2-dir.md`` / ``5-anchor.md``）。
+  必须同时改对应文档（``detail-common.md`` / ``detail-layout.md`` / ``1-alloc.md`` / ``2-dir.md`` / ``5-anchor.md``）。
 """
 
 # ============================================================ 1. 卷 / 块基本量
 
-BLOCK_4K = 4096                 # 元数据块的固定大小（common.md §2）
+BLOCK_4K = 4096                 # 元数据块的固定大小（detail-common.md §2）
 HDR_SIZE = 64                   # 通用块头大小；也是 dir / 链接块的载荷起点
 MAX_PAYLOAD = BLOCK_4K - HDR_SIZE   # 4032：单块载荷上限（dir / 链接块）
 POOL_MAGIC = b"easyraid"        # pool 段魔数（anchor [0x200,0x400)，【将来方向】）
@@ -24,7 +24,7 @@ I64_MIN = -(1 << 63)            # 逻辑坐标 L / 自相对 delta 都按有符�
 I64_MAX = (1 << 63) - 1
 
 # ============================================================ 2. 通用块头字段偏移
-# common.md §2；`stamp_header` / `parse_header` 按这些偏移读写
+# detail-common.md §2；`stamp_header` / `parse_header` 按这些偏移读写
 
 HDR_OFF_MAGIC = 0               # 8 B  magic
 HDR_OFF_TYPE = 8                # 2 B  block_type
@@ -40,7 +40,7 @@ HDR_OFF_HEADER_CRC = 48         # 4 B  header_crc32（覆盖 [0, header_bytes)�
 HDR_OFF_HEADER_BYTES = 52       # 4 B  header_bytes（类型专属区起点）
 HDR_OFF_RESERVED = 56           # 8 B  保留（必须 0）
 
-# ============================================================ 3. 块类型（common.md §3）
+# ============================================================ 3. 块类型（detail-common.md §3）
 
 BT_NULL = 0                     # 无效 / 未初始化：写入方永不产出，读到一律当损坏
 BT_ALLOC = 1                    # 空闲位图块
@@ -159,7 +159,7 @@ BIT_UNIT_MAX = 1 << 40          # bit_unit 上限（1 TiB；覆盖到 32 PiB 的
 MAX_BITMAP_BLOCKS = 1024        # 位图链块数上限（自动选型，1-alloc.md §3.4）
 
 # ============================================================ 7. anchor 块（5-anchor.md §2.1）
-# **只有 head/tail anchor 用这个布局**（其它块还是 common.md §2 的 64 B 通用头）。
+# **只有 head/tail anchor 用这个布局**（其它块还是 detail-common.md §2 的 64 B 通用头）。
 # 形式：每个字段 = 8 字节 ASCII 名（空格补齐）+ 它的值 ⇒ **每个字段 16 字节**，
 # 字段起点都是 16 的倍数：
 #   0  "easypart" + 版本字符串（如 "0.0.0.0"）   ← 魔数本身就是一个 tag

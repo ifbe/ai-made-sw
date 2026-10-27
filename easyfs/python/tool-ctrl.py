@@ -2029,7 +2029,7 @@ def main(argv=None):
         description="EasyFS 控制/诊断工具：mkfs / probe / device / df / fsck / inspect / resize")
     sub = ap.add_subparsers(dest="cmd")
 
-    # `tool mbr … --seteasy` / `tool gpt … --seteasy`：看/改分区标识（见 doc/parttable.md）
+    # `tool mbr … --seteasy` / `tool gpt … --seteasy`：看/改分区标识（见 doc/medium-parttable.md）
     for _nm, _kind, _hlp in (("mbr", "mbr", "看/改 MBR 分区的标识（我们的 = 0x7F）"),
                              ("gpt", "gpt", "看/改 GPT 分区的标识（GUID 用 16 字节 ASCII）")):
         _x = sub.add_parser(_nm, help=_hlp)

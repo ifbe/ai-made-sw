@@ -20,8 +20,8 @@ base = lambda p: os.path.basename(p)
 text = {base(p): io.open(p, encoding="utf-8").read() for p in DOCS}
 issues = []
 
-# 历史文件：故意保留旧名字与死链接 ⇒ 只查"索引覆盖"，不查内容规则 ✓
-LINT_SKIP = {"gotcha.md"}
+# 内容规则豁免名单（当前为空 ✓：`doc/` 里不再放历史文件 ✓，历史移到 `python/gotcha.md` ✓）
+LINT_SKIP = set()
 LINT = dict((b, t) for b, t in text.items() if b not in LINT_SKIP)
 
 # ---- 1 索引覆盖 ----
@@ -63,10 +63,10 @@ for name, val in sorted(doc_attrs.items()):
     if name not in code_attrs: issues.append(("代码无此属性", "2-dir.md", "%s=0x%02X" % (name, val)))
 
 # ---- 4 块类型表 vs 代码 ----
-rows = re.findall(r"^\|\s*\*{0,2}(\d)\*{0,2}\s*\|\s*`([a-z\-]+)`\s*\|", text["common.md"], re.M)
+rows = re.findall(r"^\|\s*\*{0,2}(\d)\*{0,2}\s*\|\s*`([a-z\-]+)`\s*\|", text["detail-common.md"], re.M)
 doc_bt = {int(n): nm for n, nm in rows}
 for k, v in sorted(easyfs.BT_NAME.items()):
-    if doc_bt.get(k) != v: issues.append(("块类型表不一致", "common.md", "%d: 文档%r ≠ 代码%r" % (k, doc_bt.get(k), v)))
+    if doc_bt.get(k) != v: issues.append(("块类型表不一致", "detail-common.md", "%d: 文档%r ≠ 代码%r" % (k, doc_bt.get(k), v)))
 
 # ---- 5 陈旧用语 ----
 stale = ["TINY_DATA", "HARDLINK_PTR", "SYMLINK_PTR_LOGICAL", "3-object", "硬链接块",
@@ -133,22 +133,22 @@ try:
 except Exception as e:
     issues.append(("anchor tag 表检查失败", "5-anchor.md", repr(e)[:90]))
 
-# ---- 16 块头魔数表 vs 代码（common.md ↔ easyfs_config.BLOCK_MAGIC）----
+# ---- 16 块头魔数表 vs 代码（detail-common.md ↔ easyfs_config.BLOCK_MAGIC）----
 try:
     rows = re.findall(r"^\|\s*(\d+)\s*`([a-z\-]+)`\s*\|\s*"
                       r"(?:\*\*（无）\*\*|\*\*（裸块，没有头）\*\*|`([^`]+)`)\s*\|",
-                      text["common.md"], re.M)
+                      text["detail-common.md"], re.M)
     got = dict((int(_n), (_m if _m else None)) for _n, _name, _m in rows)
     exp = dict((_t, _m.decode("ascii")) for _t, _m in easyfs.BLOCK_MAGIC.items())
     exp[easyfs.BT_NULL] = None
     exp[easyfs.BT_FILE] = None
     for _k in sorted(set(list(got.keys()) + list(exp.keys()))):
         if got.get(_k) != exp.get(_k):
-            issues.append(("块头魔数表与代码不一致", "common.md",
+            issues.append(("块头魔数表与代码不一致", "detail-common.md",
                            "type %s：文档 %r / 代码 %r"
                            % (_k, got.get(_k), exp.get(_k))))
 except Exception as e:
-    issues.append(("块头魔数表检查失败", "common.md", repr(e)[:90]))
+    issues.append(("块头魔数表检查失败", "detail-common.md", repr(e)[:90]))
 
 print("发现问题 %d 个\n" % len(issues))
 from collections import Counter

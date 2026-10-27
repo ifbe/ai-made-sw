@@ -1,10 +1,10 @@
 # anchor 块
 
-> 模块编号 **5**。本文是 anchor 的完整规格；**节号沿用 [`layout.md`](layout.md) 的原编号**
-> （§2 / §2.1 / §2.2 / §3 / §5）。
+> 模块编号 **5**。本文是 anchor 的完整规格；用 **§2 / §2.1 / §2.2 / §2.3 / §3 / §5** 这套节号，
+> 其中 §2 / §3 / §5 与 [`detail-layout.md`](detail-layout.md) 的同名节对应，便于对照。
 > 📌 **pool 段（RAID / 存储池）**：anchor 块 `[0x200, 0x3d0)` 是 **pool 段**（RAID / 存储池），由 `easypool` tag 自识别、自带 `poolcrc`；**没有它就是没有 RAID 的普通卷** ✓。见 §2.1 大段二与 §2.3。
 >
-> 块类型总表见 [`common.md`](common.md)；区域几何与设备接口见 [`layout.md`](layout.md)；
+> 块类型总表见 [`detail-common.md`](detail-common.md)；区域几何与设备接口见 [`detail-layout.md`](detail-layout.md)；
 > 伸缩对 anchor 的影响见下面 §5 与 [`1-alloc.md`](1-alloc.md)。
 
 ---
@@ -12,9 +12,9 @@
 ## 2. anchor 块（`block_type = 5`）
 
 - head anchor 在 `start`，tail anchor 在 `start + region_len − 4096`。
-- **`hdrbytes = 0x200`**：把全部 anchor 字段都纳入头部 CRC（`header_crc32` 覆盖 `[0, header_bytes)`）。
+- **`hdrbytes = 0x200`**：把全部**卷头**字段都纳入头部 CRC（tag `hdrcrc` 覆盖 `[0, 0x200)`；pool 段另用 `poolcrc`）。
 - **`payload_len = 0`**：anchor 没有"载荷"区，字段全在头部内。
-- 通用块头的 `flags` 位图块语义在这里不用；anchor 自己的状态位在载荷字段 `flags`（偏移 128）。
+- anchor **不使用**通用块头的 `flags`；自己的状态位在 tag `stateflg`（偏移 `0x110`，bit0 = clean）。
 
 ### 2.1 块内布局：两大段（**卷头** + **pool 段**）
 
@@ -126,7 +126,7 @@
    `gen` / `stateflg` / `roottype` / `allotype` / `allocnum` / `allosize` / `policy` / `polstate`；
 2. **delta 字段解算成绝对地址后相等**：`rootioff` → 根块；`alloioff` → 分配结构的入口块
    （`peer` 例外：head 与 tail 本来就互为对方的地址）；
-3. **tag 顺序必须一致**（顺序僵化是"自描述"的代价）；三段的 CRC 各自校验。
+3. **tag 顺序必须一致**（顺序僵化是"自描述"的代价）；**两段各有自己的 CRC**（`hdrcrc` / `poolcrc`）。
 
 **任一不满足 ⇒ 报错（`ESTALE`），不许猜。** 两个 anchor 不一样只有两种可能：
 ① 一次提交 / resize 没做完（撕裂）；② 调用方给的 `[start, region_len_hint)` 不对，读到的是**上一代** anchor。
@@ -134,7 +134,7 @@
 诊断工具 `probe` 在这种状态下**仍然照常打印**（它只读、不拒绝）。
 
 > `gen` 是单调的**卷级提交计数**，但**不用于挑赢家** —— 两份不一致一律拒绝。
-> 原子性分层：**对象级**由链接块自己的 A/B 双槽保证（[`cow.md`](cow.md)）；
+> 原子性分层：**对象级**由链接块自己的 A/B 双槽保证（[`feature-cow.md`](feature-cow.md)）；
 > **卷级**靠"头尾必须一致"把关。
 >
 > **校验权威是 `hdrcrc`**（覆盖 `[0, hdrbytes)` = **卷头** `[0, 0x200)`，一票决定）；
@@ -151,7 +151,7 @@
 * **可以完全没有**：非池成员该段全零，卷头 CRC 也不管它 ✓
 * **安全规则**：`easypool` 有效且 `memcount > 1` 时**必须经 vdev 层挂载**；
   当普通卷直接挂载要返回 `ENOTSUP`（否则读到的是"看起来正常其实错位"的条带列）
-* 字段细节与仲裁见 [`raid.md`](raid.md)。
+* 字段细节与仲裁见 [`feature-raid.md`](feature-raid.md)。
 
 ## 3. 挂载 / 发现流程
 
@@ -169,8 +169,8 @@
 8. dev.size < region_len   → **拒绝**（EINVAL："容器比卷小，是不是被截断了？"）
    dev.size > region_len   → 允许挂载，但打印提示"容器比卷大，需要 resize 采纳"。
                              （卷只在自己 region_len 内读写，不会越界，所以不必强制只读）
-9. 加载位图链，**校验 I7′**（见 [`1-alloc.md`](1-alloc.md) 的混合粒度一节）：链按 `logical_start` 递增、同层区域首尾相接、
-   子区域落在父区域的某个单位内、**叶区域**的并集 == `[data_lo, data_hi)`
+9. 加载位图链，**校验 I7′**（见 [`1-alloc.md`](1-alloc.md) 的混合粒度一节）：链按 `logical_start` **非递减**（同起点父在前）、同层区域首尾相接、
+   子区域落在父区域的**若干完整单位**内（不占半格）、**叶区域**的并集 == `[data_lo, data_hi)`
    不成立 → **拒绝写入**（ESTALE：链和 region_len 对不上 = 上次 resize 没做完）
 10. 看 `stateflg` 的 bit0：clean → 直接用；dirty → 先重建位图（1-alloc.md）再转 clean
 11. 按 `roottype` 读根：`1` ⇒ `rootioff` 指向链式目录（校验 `block_type=2`）；
@@ -186,10 +186,10 @@
 ## 5. 伸缩
 
 四个方向（右扩 / 左扩 / 右缩 / 左缩）的具体动作、写顺序、收缩前提，见
-[`1-alloc.md`](1-alloc.md)。anchor 层面的规则只有两条：
+[`1-alloc.md`](1-alloc.md)。anchor 层面的规则只有三条：
 
-1. **扩容**：先改 anchor（`reglen` 变大 + head/tail 搬家），后写位图；
+1. **扩容**：先写位图块（新区域入链），后改 anchor（`reglen` 变大 + head/tail 搬家）—— 位图永远在 anchor 之前，避免"anchor 说区域更大、位图还没跟上"；
 2. **缩容**：先写位图（区域裁掉），后改 anchor（`reglen` 变小）。
-3. 左扩/左缩时 `data_lo_logical` 必须与 `data_lo` 同步 ∓N（[`layout.md`](layout.md) 的表）。
+3. 左扩/左缩时 `data_lo_logical` 必须与 `data_lo` 同步 ∓N（[`detail-layout.md`](detail-layout.md) 的表）。
 
 ---

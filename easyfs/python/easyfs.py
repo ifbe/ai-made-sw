@@ -8,8 +8,8 @@
 
 格式规格（唯一权威）在 ``doc/``：
 
-* ``doc/common.md``  §1 坐标（自相对 delta、逻辑坐标 L）、§2 通用 4K 块头、§4 不变量
-* ``doc/layout.md``  §1 区域几何、§2 anchor 字段表、§3 挂载/发现、§4 逻辑坐标
+* ``doc/detail-common.md``  §1 坐标（自相对 delta、逻辑坐标 L）、§2 通用 4K 块头、§4 不变量
+* ``doc/detail-layout.md``  §1 区域几何、§2 anchor 字段表、§3 挂载/发现、§4 逻辑坐标
 * ``doc/1-alloc.md`` §3 位图块、§4 自举（mkfs）、§5 分配策略、§7 崩溃一致性
 * ``doc/2-dir.md``   §2 TLV 属性、§3 目录块、§5 条目增删改
 
@@ -35,9 +35,9 @@ from easyfs_config import *      # noqa: F401,F403
 
 # ================================================================ 1. 常量
 
-# pool 段（anchor 块 [0x200,0x400)，【将来方向】见 raid.md §5）的魔数；v0 只占位、不读写
+# pool 段（anchor 块 [0x200,0x400)，【将来方向】见 feature-raid.md §5）的魔数；v0 只占位、不读写
 
-# 块类型（common.md §3）：0 无效 / 1 位图 / 2 目录 / 3 硬链接 / 4 文件数据 / 5 anchor / 6 坏块
+# 块类型（detail-common.md §3）：0 无效 / 1 位图 / 2 目录 / 3 硬链接 / 4 文件数据 / 5 anchor / 6 坏块
 
 
 # root_type：根的引用种类（5-anchor.md §2.1）
@@ -71,7 +71,7 @@ ALLOC_HDR = 96         # 位图块：64 通用 + 32 位图扩展（1-alloc.md §
 _POP8 = bytes(bin(i).count("1") for i in range(256))
 
 # 逻辑坐标 `L` 是有符号 64 位；`data_lo_logical` 存在 anchor 里，
-# `data_hi_logical` 是派生值（见 layout.md §4），但派生值同样不能越界。
+# `data_hi_logical` 是派生值（见 detail-layout.md §4），但派生值同样不能越界。
 
 
 class EasyFSError(Exception):
@@ -90,7 +90,7 @@ class EasyFSFragmented(EasyFSError):
 # ================================================================ 2. 小工具
 
 def crc32(data):
-    """CRC-32/IEEE，与 zlib.crc32 一致（common.md §2）。"""
+    """CRC-32/IEEE，与 zlib.crc32 一致（detail-common.md §2）。"""
     return zlib.crc32(data) & 0xFFFFFFFF
 
 
@@ -129,7 +129,7 @@ def ceil_div(x, y):
 
 def stamp_header(buf, block_type, header_bytes, payload_len, seq=0,
                  prev_delta=0, next_delta=0, flags=0, payload_crc=None):
-    """把 64 B 通用块头写进 buf（common.md §2）。
+    """把 64 B 通用块头写进 buf（detail-common.md §2）。
 
     `header_crc32` 覆盖 `[0, header_bytes)`。
     `payload_crc` 为 None 表示不启用载荷 CRC（flags.bit0 = 0）。
@@ -549,7 +549,7 @@ class Volume(object):
 
     @classmethod
     def mount(cls, dev, strict=True):
-        """读 head/tail anchor、校验、加载位图（layout.md §3）。
+        """读 head/tail anchor、校验、加载位图（detail-layout.md §3）。
 
         `strict=True`（默认）：head/tail 不一致（I9）或位图链和 `region_len` 对不上（I7）
         就**拒绝**（`ESTALE`）—— 那意味着"上次 resize 没做完"或"几何给错了"，不许猜。
@@ -563,7 +563,7 @@ class Volume(object):
 
         vol.head = vol.read_anchor(0)
         if vol.head is not None:
-            # tail 的位置**由卷自己说**（layout.md §3），不由设备大小推
+            # tail 的位置**由卷自己说**（detail-layout.md §3），不由设备大小推
             tail_off = vol.head["region_len"] - BLOCK_4K
             if tail_off < 0 or tail_off + BLOCK_4K > size:
                 msg = ("容器比卷小：卷记 region_len=%d，设备只有 %d（被截断了？）"
@@ -706,7 +706,7 @@ class Volume(object):
         return self.data_bytes // self.chunk
 
     def phys_to_logical(self, phys):
-        """`L(P) = data_lo_logical + (P − data_lo)`（common.md §1.2）。"""
+        """`L(P) = data_lo_logical + (P − data_lo)`（detail-common.md §1.2）。"""
         return self.data_lo_logical + (phys - self.data_lo)
 
     def logical_to_phys(self, logical):
@@ -861,7 +861,7 @@ class Volume(object):
         raise EasyFSError("物理地址 0x%x 不在任何位图区域内" % phys)
 
     def region_of_logical(self, logical):
-        """逻辑坐标 L → (region_index, bit_index)（layout.md §4）。"""
+        """逻辑坐标 L → (region_index, bit_index)（detail-layout.md §4）。"""
         for i, r in enumerate(self.regions):
             if r.logical_start <= logical < r.logical_start + r.region_bytes:
                 return i, (logical - r.logical_start) // r.bit_unit
@@ -1182,7 +1182,7 @@ class Volume(object):
         [`2-dir.md`](2-dir.md) §3.3）：此时不跟 `next_delta`。
 
         yield `(type, value, base_off, attr_start, attr_end)`；`base_off` 是该属性
-        所在块的物理位置 —— 自相对 delta 相对的就是它（common.md §1.1）。
+        所在块的物理位置 —— 自相对 delta 相对的就是它（detail-common.md §1.1）。
         """
         for off in self._block_seq(head_off, what, blocks):
             blk = self.read_block(off)
@@ -1259,7 +1259,7 @@ class Volume(object):
 
         链接块载荷 = 目录的内容块表（`DATA_PTR` 列表，delta 基准 = 属性所在块），
         内容块是普通的 dir 块（TLV 条目流）。这就是"目录的链 → 块表"
-        （[`2-dir.md`](2-dir.md) §3.3、[`cow.md`](cow.md) §11）。
+        （[`2-dir.md`](2-dir.md) §3.3、[`cow.md`](feature-cow.md) §11）。
         """
         blocks = []
         for atype, value, base, _a0, _a1 in self._iter_stream(
@@ -2102,7 +2102,7 @@ class Volume(object):
                 self._walk_used(ent["child"], ent.get("dir_object"))
 
     def rebuild_bitmap(self, apply=True):
-        """全量重建位图：从根可达的块集合的补集 = 空闲（common.md I3）。
+        """全量重建位图：从根可达的块集合的补集 = 空闲（detail-common.md I3）。
 
         返回 `(used_before, used_after)`；`apply=True` 时写回。
         """
@@ -2319,7 +2319,7 @@ def plan_layout(region_len, chunk=BLOCK_4K, logical_origin=0, policy=3,
     返回 dict；纯计算，不碰设备（方便测试）。规则见 1-alloc.md §3.4/§4。
     """
     if chunk not in (512, 1024, 2048, 4096):
-        raise EasyFSError("chunk 只支持 512/1024/2048/4096（layout.md §1）")
+        raise EasyFSError("chunk 只支持 512/1024/2048/4096（detail-layout.md §1）")
     region_len = align_down(region_len, chunk)
     if region_len < 16 * chunk:
         raise EasyFSError("区域太小: %d B" % region_len)
@@ -2522,7 +2522,7 @@ def mkfs(path=None, size=None, chunk=BLOCK_4K, policy=3, logical_origin=0,
     stamp_header(root, BT_DIR, HDR_SIZE, 0, payload_crc=crc32(b""))
     dev.write_at(root_off, root)
 
-    # head / tail anchor（layout.md §2）
+    # head / tail anchor（detail-layout.md §2）
     vol_uuid = uuidlib.uuid4().bytes
     for is_head in (True, False):
         base = 0 if is_head else region_len - BLOCK_4K

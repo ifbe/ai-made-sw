@@ -1,5 +1,6 @@
 # 分区表与分区标识
-> 相关：[`layout.md`](layout.md)（区域几何、设备接口）✓、[`common.md`](common.md)（不变量）✓；**命令怎么用**见 [`../python/README.md`](../python/README.md) ✓。
+
+> 相关：[`detail-layout.md`](detail-layout.md)（区域几何、设备接口）✓、[`detail-common.md`](detail-common.md)（不变量）✓；**命令怎么用**见 [`../python/README.md`](../python/README.md) ✓。
 ---
 
 ## 1. 我们的分区标识
@@ -33,7 +34,7 @@
 「卷放在哪」怎么给 / 偏移怎么算 / 各命令的用法 ⇒ 见 [`../python/README.md`](../python/README.md) 的「命令与用法」✓。
 
 ## 3. 待定项
-1. 目前只有"看 + `--seteasy`" ✓ —— 将来可加 `--new` / `--del` / `--resize` ✗；
+1. 现在有 `--create`（建表 + 一个占满的分区）/ 看 / `--seteasy`（只改标识）✓ —— 将来可加 `--del` / `--resize` ✗；
    写分区表（不只是改类型）更危险 ⇒ 那类子命令要单独设计保护；
 2. **扩展分区**（MBR 逻辑分区链）还没展开 ✗；
 3. `0x7F` 是私有值 ✓ —— 撞车就改常量 `MBR_TYPE_EASYFS` ✓；

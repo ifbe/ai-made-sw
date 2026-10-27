@@ -1,6 +1,7 @@
-# 卷布局与 anchor
+# 卷布局
 
-> 区域几何、head/tail anchor 字段表、挂载与发现流程。坐标见 [`common.md`](common.md)；
+> 区域几何、数据区的逻辑坐标 `L`、设备接口。**anchor 的字段表与挂载 / 发现流程**见
+> [`5-anchor.md`](5-anchor.md)；坐标约定见 [`detail-common.md`](detail-common.md)；
 > 位图见 [`1-alloc.md`](1-alloc.md)；目录与属性见 [`2-dir.md`](2-dir.md)。
 
 ---
@@ -33,7 +34,7 @@
 
 ## 3. 挂载 / 发现流程
 
-> **本节内容已搬到 [`5-anchor.md`](5-anchor.md)**（读 head/tail、I9/I7 检查、尺寸守卫）。
+> **本节内容已搬到 [`5-anchor.md`](5-anchor.md)**（读 head/tail、I9/I7′ 检查、尺寸守卫）。
 
 ## 4. 数据区的逻辑坐标 `L`
 
@@ -96,14 +97,15 @@ P(L) = data_lo + (L − data_lo_logical)
 要点：
 
 * **只按偏移读写，没有"块号"**：所有坐标都是 `[0, region_len)` 里的字节偏移（§1）。
-  换载体不需要改格式层一个字节 —— 这正是"卷内不含绝对地址"（[`common.md`](common.md)）
+  换载体不需要改格式层一个字节 —— 这正是"卷内不含绝对地址"（[`detail-common.md`](detail-common.md)）
   在宿主侧的对应物。
 * **不要求"块设备"语义**：扇区大小、对齐、擦除粒度都由**后端**负责，格式层只认字节。
   所以同一个格式既能放在 `/dev/sdaX`、也能放在镜像文件的一段、还能放在 RAM 里。
 * **写不要求原子**：所有崩溃安全性靠 [`1-alloc.md`](1-alloc.md) 的写顺序 + dirty 重建，
   不依赖设备的原子写（4 KiB 目录块是"提交点"，但那说的是**逻辑**提交点，不是硬件原子性）。
 * 已提供的实现：`FileDevice`（整文件）、`RegionDevice`（文件里的一段 / 分区）、
-  `MemDevice`（内存）、`VhdDevice`（`.vhd`，fixed + dynamic，块按需分配）。
+  `MemDevice`（内存）、`VhdDevice`（`.vhd`，fixed + dynamic，块按需分配）、
+  `VmdkDevice`（`.vmdk`，单文件稀疏）。
   另有按内容识别容器（raw / vhd）与 MBR / GPT 分区解析。
 * **裸机上要把这一层换掉**：例如 NOR flash 需要"读改写 + 擦除 + 磨损均衡"，
   NAND 需要坏块管理与 ECC。这些都在设备层之下，格式层不感知。

@@ -1,7 +1,7 @@
 # 6 · bad（坏块标记）
 
 > 模块编号 6。把"这块介质坏了"**显式记在卷里**，让分配器永远不再用它。
-> 块类型总表见 [`common.md`](common.md)；carve-out 规则见 [`1-alloc.md`](1-alloc.md)。
+> 块类型总表见 [`detail-common.md`](detail-common.md)；carve-out 规则见 [`1-alloc.md`](1-alloc.md)。
 
 | 项 | 值 |
 |---|---|

@@ -1,7 +1,7 @@
 # 0 · null（无效块）
 
 > 模块编号 0。**它不是一个真正的块类型**，而是"这里没有合法块"的标记。
-> 块类型总表见 [`common.md`](common.md)。
+> 块类型总表见 [`detail-common.md`](detail-common.md)。
 
 | 项 | 值 |
 |---|---|
@@ -11,4 +11,4 @@
 | 为什么 0 不给 anchor | 全零块**按类型本身**就该无效，不必只靠 `magic` 兜底；anchor 因此拿 **5**（[`5-anchor.md`](5-anchor.md)）|
 
 **与"保留"的区别**：0 = *null*（无效），7–255 = *rsvd*（保留，将来可能分配）。
-工具看到 0 应当报错并**停止解析那一条链**（检查项见 [`common.md`](common.md) 与各模块的 fsck 清单）。
+工具看到 0 应当报错并**停止解析那一条链**（检查项见 [`detail-fsck.md`](detail-fsck.md) 的 A2 与 FATAL 一档）。
